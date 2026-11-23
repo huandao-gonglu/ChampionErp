@@ -4,7 +4,12 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const fetchCategoryAttributeValues = vi.hoisted(() => vi.fn())
+const translateTextSilent = vi.hoisted(() => vi.fn(async () => ({ translations: {}, source: 'cache', degraded: false })))
 vi.mock('@/api/workflow/publishing', () => ({ fetchCategoryAttributeValues }))
+vi.mock('@/api/workflow/translation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/workflow/translation')>()),
+  translateTextSilent,
+}))
 
 import CategoryAttributesPanel from '@/components/domain/CategoryAttributesPanel.vue'
 import { createEmptyDraftDetail, createEmptyDraftProductContext } from '@/constants/initialState'
@@ -88,7 +93,7 @@ describe('CategoryAttributesPanel', () => {
       optionalAttributes: required ? [] : [attr], fetchedAt: '2026-10-03T00:00:00Z', raw: {},
     }
     const wrapper = mount(CategoryAttributesPanel, { props: { ...panelProps(draft, category), target: yandexTarget } })
-    await wrapper.findAll('button').find((button) => button.text().includes(required ? '必填属性 1 个' : '可选属性 1 个'))!.trigger('click')
+    // 方案 A：无必填属性时可选属性默认自动展开，首屏即可直接编辑。
     const editor = wrapper.get('textarea[data-attribute-id="extra"]')
     expect(editor.attributes('aria-invalid')).toBe('true')
     expect(wrapper.get('[role="alert"]').text()).toContain('第 2 行缺少英文冒号')
@@ -117,7 +122,8 @@ describe('CategoryAttributesPanel', () => {
     }
     const wrapper = mount(CategoryAttributesPanel, { props: panelProps(draft, category) })
     expect(wrapper.get('[data-testid="system-grouping-attributes"]').text()).toContain('组合展示：Golovejoy XKZ42')
-    expect(wrapper.text()).toContain('必填属性 0 个')
+    expect(wrapper.text()).toContain('必填已完成 0 / 0')
+    expect(wrapper.text()).toContain('当前没有需要手动填写的必填属性。')
     expect(wrapper.text()).not.toContain('待复核属性')
     expect(wrapper.findAll('input[placeholder="请输入属性值"]')).toHaveLength(0)
     await wrapper.setProps({ draft: { ...draft, grouping: { mode: 'combined', name: '新组名' } } })
@@ -127,7 +133,7 @@ describe('CategoryAttributesPanel', () => {
     expect(wrapper.get('[data-testid="system-grouping-attributes"]').text()).not.toContain('旧组名')
   })
 
-  it('Mercado CBT 明确只维护一个由全部销售市场共用的全局类目', () => {
+  it('Mercado CBT 明确只维护一个由全部销售市场共用的全局类目', async () => {
     const draft = createEmptyDraftDetail('mercadolibre')
     draft.draftId = 'draft-mercado-shared-category'
     draft.site = 'CBT'
@@ -160,42 +166,98 @@ describe('CategoryAttributesPanel', () => {
     expect(notice.text()).toContain('哥伦比亚（MCO）、智利（MLC）')
     expect(notice.text()).toContain('不能为每个市场分别设置类目 ID')
     expect(notice.text()).not.toContain('category_id')
+    expect(wrapper.get('[data-testid="selected-category-id"]').text()).toContain('CBT123456')
+
+    // 点击“改 ID”展开共享 CBT 类目手填表单
+    await wrapper.get('[data-testid="toggle-manual-category-edit"]').trigger('click')
     expect(wrapper.text()).toContain('共享 CBT 类目 ID')
     expect(wrapper.text()).toContain('共享 CBT 类目路径')
     expect(wrapper.findAll('input[placeholder="请输入 CBT 类目 ID"]')).toHaveLength(1)
   })
 
-  it('uses separate category and attribute translation triggers', async () => {
+  it('移除手动翻译按钮并自动展示双语对照、进度、筛选与布尔选择器', async () => {
     const draft = createEmptyDraftDetail('ozon')
-    draft.draftId = 'draft-translation'
+    draft.draftId = 'draft-bilingual-ux'
     draft.site = 'global'
     draft.categoryId = '971049422'
     const category: CategorySelection = {
       platform: 'ozon',
       categoryId: '971049422',
       categoryPath: 'Автотовары / Запчасти',
-      requiredAttributes: [{ id: '7236', name: 'Название модели', required: true, options: [] }],
-      optionalAttributes: [],
+      categoryPathZh: '汽车用品 / 配件',
+      cacheSource: 'cache',
+      requiredAttributes: [
+        {
+          id: '7236',
+          name: 'Название модели',
+          nameZh: '型号名称',
+          description: 'Укажите модель',
+          descriptionZh: '请填写型号',
+          required: true,
+          options: [],
+        },
+        {
+          id: '9001',
+          name: 'Влагозащита',
+          nameZh: '防水',
+          required: true,
+          valueType: 'boolean',
+          options: [],
+        },
+      ],
+      optionalAttributes: [
+        { id: '8229', name: 'Цвет', nameZh: '颜色', required: false, options: [] },
+      ],
       fetchedAt: '2026-08-05T00:00:00Z',
       raw: {},
     }
     const wrapper = mount(CategoryAttributesPanel, {
       props: {
         ...panelProps(draft, category),
-        categoryResults: [{ id: '971049422', name: 'Запчасти', path: 'Автотовары / Запчасти', raw: {} }],
+        categoryTranslatedQuery: 'разводной ключ',
+        categoryResults: [{
+          id: '971049422',
+          name: 'Запчасти',
+          nameZh: '配件',
+          path: 'Автотовары / Запчасти',
+          pathZh: '汽车用品 / 配件',
+          raw: {},
+        }],
       },
     })
 
-    const categoryButton = wrapper.findAll('button').find((button) => button.text() === '翻译候选类目')
-    const attributeButton = wrapper.findAll('button').find((button) => button.text() === '翻译平台属性')
-    expect(categoryButton).toBeDefined()
-    expect(attributeButton).toBeDefined()
+    expect(wrapper.get('[data-testid="category-translated-query-hint"]').text()).toContain('разводной ключ')
 
-    await categoryButton!.trigger('click')
-    await attributeButton!.trigger('click')
+    // 彻底移除手动翻译按钮
+    expect(wrapper.findAll('button').some((button) => button.text() === '翻译候选类目')).toBe(false)
+    expect(wrapper.findAll('button').some((button) => button.text() === '翻译平台属性')).toBe(false)
 
-    expect(wrapper.emitted('translateCategoryResults')).toHaveLength(1)
-    expect(wrapper.emitted('translateCategoryAttributes')).toHaveLength(1)
+    // 双语对照展示：中文主标题 + 灰色原文
+    expect(wrapper.text()).toContain('汽车用品 / 配件')
+    expect(wrapper.text()).toContain('Автотовары / Запчасти')
+    expect(wrapper.text()).toContain('型号名称')
+    expect(wrapper.text()).toContain('Название модели')
+    expect(wrapper.text()).toContain('请填写型号')
+    expect(wrapper.text()).toContain('本地缓存')
+    expect(wrapper.get('[data-testid="required-progress-badge"]').text()).toContain('必填已完成 0 / 2')
+
+    // 布尔属性渲染原生 select 且保存标准 true/false
+    const boolSelect = wrapper.get<HTMLSelectElement>('select[data-attribute-id="9001"]')
+    await boolSelect.setValue('true')
+    expect(draft.attributes['9001']).toBe('true')
+    expect(wrapper.get('[data-testid="required-progress-badge"]').text()).toContain('必填已完成 1 / 2')
+
+    // 按中文关键词检索属性（自动展开可选区）
+    const searchInput = wrapper.get<HTMLInputElement>('[data-testid="attribute-filter-search"]')
+    await searchInput.setValue('颜色')
+    expect(wrapper.find('[data-attribute-id="8229"]').exists()).toBe(true)
+    expect(wrapper.find('[data-attribute-id="7236"]').exists()).toBe(false)
+
+    // 筛选“待处理”仅展示未完成必填项
+    await searchInput.setValue('')
+    await wrapper.findAll('button').find((button) => button.text().startsWith('待处理'))!.trigger('click')
+    expect(wrapper.find('[data-attribute-id="7236"]').exists()).toBe(true)
+    expect(wrapper.find('[data-attribute-id="9001"]').exists()).toBe(false)
   })
 
   it('平台属性定义未加载时不再用草稿属性生成临时输入框', async () => {
@@ -249,9 +311,12 @@ describe('CategoryAttributesPanel', () => {
       props: panelProps(draft, category),
     })
 
-    expect(wrapper.find('[data-testid="required-attribute-fields"]').exists()).toBe(false)
+    // 必填属性默认展开，先收起再验证点击待复核标签能自动展开并聚焦定位
+    expect(wrapper.find('[data-testid="required-attribute-fields"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="optional-attribute-fields"]').exists()).toBe(false)
     expect(wrapper.findAll('button').some((button) => button.text() === 'Бренд')).toBe(false)
+    await wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))!.trigger('click')
+    expect(wrapper.find('[data-testid="required-attribute-fields"]').exists()).toBe(false)
 
     const reviewButton = wrapper.findAll('button').find((button) => button.text() === 'Название модели')
     expect(reviewButton).toBeDefined()
@@ -284,8 +349,6 @@ describe('CategoryAttributesPanel', () => {
       props: panelProps(draft, category),
     })
 
-    const requiredButton = wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))
-    await requiredButton!.trigger('click')
     await wrapper.get('[data-attribute-id="7236"]').setValue('Desk fan')
 
     expect(wrapper.emitted('invalidateCategoryPrecheck')).toHaveLength(1)
@@ -314,7 +377,6 @@ describe('CategoryAttributesPanel', () => {
       },
     })
 
-    await wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))!.trigger('click')
     expect(wrapper.text()).toContain('待复核属性')
     expect(wrapper.text()).toContain('该属性需要核对，请确认商品资料。')
 
@@ -366,7 +428,6 @@ describe('CategoryAttributesPanel', () => {
       },
     })
 
-    await wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))!.trigger('click')
     const brandPicker = wrapper.get<HTMLInputElement>('input[data-attribute-id="BRAND"]')
     const modelInput = wrapper.get<HTMLInputElement>('input[data-attribute-id="MODEL"]')
     expect(brandPicker.attributes()).toHaveProperty('readonly')
@@ -432,7 +493,6 @@ describe('CategoryAttributesPanel', () => {
       },
     })
 
-    await wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))!.trigger('click')
     const brandPicker = wrapper.get<HTMLInputElement>('input[data-attribute-id="BRAND"]')
     await brandPicker.trigger('focus')
     await flushPromises()
@@ -524,7 +584,6 @@ describe('CategoryAttributesPanel', () => {
       },
     })
 
-    await wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))!.trigger('click')
     const brandPicker = wrapper.get<HTMLInputElement>('input[data-attribute-id="BRAND"]')
     expect(brandPicker.element.value).toBe('蔚小电')
     expect(wrapper.text()).toContain('旧值“蔚小电”不是平台选项，请重新选择。')
@@ -562,7 +621,6 @@ describe('CategoryAttributesPanel', () => {
       },
     })
 
-    await wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))!.trigger('click')
     const brandInput = wrapper.get<HTMLInputElement>('input[data-attribute-id="BRAND"]')
     expect(brandInput.attributes()).toHaveProperty('readonly')
     expect(draft.attributes.BRAND).toEqual({ values: [{ dictionaryValueId: 'old-brand-id', value: 'Old Brand' }] })
@@ -578,12 +636,12 @@ describe('CategoryAttributesPanel', () => {
       categoryId: 'CBT455865',
       categoryPath: 'Computers / Portable Fans',
       requiredAttributes: [
-        { id: 'PACKAGE_LENGTH', name: 'Package length', required: true, options: [] },
-        { id: 'ITEM_CONDITION', name: 'Item condition', required: true, options: [] },
+        { id: 'PACKAGE_LENGTH', name: 'Package length', required: true, options: [], managedBy: 'draft_derived' },
+        { id: 'ITEM_CONDITION', name: 'Item condition', required: true, options: [], managedBy: 'draft_derived' },
       ],
       optionalAttributes: [
-        { id: 'SELLER_SKU', name: 'Seller SKU', required: false, options: [] },
-        { id: 'GTIN', name: 'GTIN', required: false, options: [] },
+        { id: 'SELLER_SKU', name: 'Seller SKU', required: false, options: [], managedBy: 'draft_derived' },
+        { id: 'GTIN', name: 'GTIN', required: false, options: [], managedBy: 'draft_derived' },
         { id: 'VOLTAGE', name: 'Voltage', required: false, options: [] },
       ],
       fetchedAt: '2026-08-28T00:00:00Z',
@@ -596,10 +654,9 @@ describe('CategoryAttributesPanel', () => {
       },
     })
 
-    expect(wrapper.text()).toContain('必填属性 0 个')
+    expect(wrapper.text()).toContain('必填已完成 0 / 0')
     expect(wrapper.text()).toContain('可选属性 1 个')
-    await wrapper.findAll('button').find((button) => button.text().startsWith('可选属性'))!.trigger('click')
-
+    // 必填为 0 时可选属性默认展开，无需再手动点击展开
     expect(wrapper.find('[data-attribute-id="PACKAGE_LENGTH"]').exists()).toBe(false)
     expect(wrapper.find('[data-attribute-id="VOLTAGE"]').exists()).toBe(true)
     expect(wrapper.find('[data-attribute-id="ITEM_CONDITION"]').exists()).toBe(false)
@@ -689,7 +746,6 @@ describe('CategoryAttributesPanel', () => {
       },
     })
 
-    await wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))!.trigger('click')
     const valueInput = wrapper.get<HTMLInputElement>('[data-attribute-id="MATERIAL"]')
     expect(valueInput.attributes()).toHaveProperty('readonly')
     await valueInput.trigger('focus')
@@ -748,7 +804,6 @@ describe('CategoryAttributesPanel', () => {
       },
     })
 
-    await wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))!.trigger('click')
     await wrapper.get<HTMLInputElement>('[data-attribute-id="COMPATIBLE_DEVICES"]').trigger('focus')
 
     await wrapper.findAll('button').find((button) => button.text().includes('Phone'))!.trigger('click')
@@ -802,6 +857,9 @@ describe('CategoryAttributesPanel', () => {
       },
     })
 
+    // 必填属性默认展开，先收起再点击类目预检定位标签
+    expect(wrapper.find('[data-testid="required-attribute-fields"]').exists()).toBe(true)
+    await wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))!.trigger('click')
     expect(wrapper.find('[data-testid="required-attribute-fields"]').exists()).toBe(false)
     const issueButton = wrapper.findAll('button').find((button) => button.text() === 'attributes.9048')
     expect(issueButton).toBeDefined()
@@ -851,8 +909,6 @@ describe('CategoryAttributesPanel', () => {
       props: panelProps(draft, category),
     })
 
-    const requiredButton = wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))
-    await requiredButton!.trigger('click')
     expect(wrapper.text()).toContain('旧值“中性”不是平台选项')
 
     const selectedValue = wrapper.get<HTMLInputElement>('[data-attribute-id="85"]')
@@ -914,7 +970,6 @@ describe('CategoryAttributesPanel', () => {
       props: panelProps(draft, category),
     })
 
-    await wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))!.trigger('click')
     await wrapper.get<HTMLInputElement>('[data-attribute-id="85"]').trigger('focus')
     await flushPromises()
 
@@ -973,7 +1028,6 @@ describe('CategoryAttributesPanel', () => {
       props: panelProps(draft, category),
     })
 
-    await wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))!.trigger('click')
     await wrapper.get<HTMLInputElement>('[data-attribute-id="85"]').trigger('focus')
     await flushPromises()
     expect(fetchCategoryAttributeValues).toHaveBeenCalledTimes(1)
@@ -1010,8 +1064,6 @@ describe('CategoryAttributesPanel', () => {
       props: panelProps(draft, category),
     })
 
-    const requiredButton = wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))
-    await requiredButton!.trigger('click')
     const input = wrapper.get<HTMLInputElement>('[data-attribute-id="9048"]')
 
     expect(input.attributes('placeholder')).toBe('请输入属性值')
@@ -1062,8 +1114,6 @@ describe('CategoryAttributesPanel', () => {
       },
     })
 
-    const requiredButton = wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))
-    await requiredButton!.trigger('click')
     await wrapper.get<HTMLInputElement>('[data-attribute-id="85"]').trigger('focus')
     await flushPromises()
 
@@ -1108,9 +1158,6 @@ describe('CategoryAttributesPanel', () => {
       },
     })
 
-    const requiredButton = wrapper.findAll('button').find((button) => button.text().startsWith('必填属性'))
-    await requiredButton!.trigger('click')
-
     const input = wrapper.get<HTMLInputElement>('[data-attribute-id="9048"]')
     await input.setValue('500')
     expect(draft.attributes['9048']).toEqual({ value: '500', unit: 'г' })
@@ -1133,7 +1180,6 @@ describe('草稿属性的官方值限制', () => {
     const category: CategorySelection = { platform: 'yandex', categoryId: 'category', categoryPath: '打印机', fetchedAt: '2026-10-28', raw: {},
       requiredAttributes: [], optionalAttributes: [{ id: 'version', name: 'Версия', required: false, maxLength: 100 }] }
     const wrapper = mount(CategoryAttributesPanel, { props: { ...panelProps(draft, category), target: yandexTarget, skuScope } })
-    if (!skuScope) await wrapper.findAll('button').find(b => b.text().includes('可选属性 1 个'))!.trigger('click')
     expect(wrapper.text()).toContain('当前 104 个字符，超过上限 100，需减少 4 个字符')
     expect(wrapper.text()).toContain('每个值最多 100 个字符')
     const input = wrapper.get('input[data-attribute-id="version"]')
@@ -1195,6 +1241,67 @@ describe('禁售类目候选展示与防选', () => {
     expect(compliantButton!.attributes('disabled')).toBeUndefined()
     await compliantButton!.trigger('click')
     expect(wrapper.emitted('selectCategory')).toEqual([[compliantItem]])
+    wrapper.unmount()
+  })
+})
+
+describe('方案 A 聚焦工作台交互（自适应类目检索、自动展开可选属性与 SKU 跳转）', () => {
+  it('已选类目默认收起搜索区、必填为 0 自动展开选填，点“更换类目”展开并在点选后自动收起', async () => {
+    const draft = createEmptyDraftDetail('yandex')
+    draft.draftId = 'draft-focus-ux'
+    draft.categoryId = '15695322'
+    draft.categoryPath = 'Все товары / Инструменты / Сантехнические, разводные ключи'
+    draft.skuItems = [
+      { sku_id: 's1', selected: true, sku: 's1', stock: '10', overrides: {}, pricing: {}, publications: {}, attributes_by_target: {} },
+      { sku_id: 's2', selected: true, sku: 's2', stock: '10', overrides: {}, pricing: {}, publications: {}, attributes_by_target: {} },
+    ]
+    const category: CategorySelection = {
+      platform: 'yandex',
+      categoryId: '15695322',
+      categoryPath: draft.categoryPath,
+      categoryPathZh: '全部商品 / 工具 / 水暖扳手、活动扳手',
+      requiredAttributes: [],
+      optionalAttributes: [
+        { id: '21194330', name: 'Тип', nameZh: '类型', required: false, options: [] },
+        { id: '14871214', name: 'Цвет', nameZh: '颜色', required: false, variationRole: 'variant', options: [] },
+      ],
+      fetchedAt: '2026-11-23T00:00:00Z',
+      raw: {},
+    }
+    const nextItem = {
+      id: '91626',
+      name: 'Рожковые ключи',
+      path: 'Все товары / Инструменты / Рожковые ключи',
+      pathZh: '全部商品 / 工具 / 开口扳手',
+      raw: {},
+    }
+    const wrapper = mount(CategoryAttributesPanel, {
+      props: {
+        ...panelProps(draft, category),
+        target: yandexTarget,
+      },
+    })
+
+    // 1. 已选类目默认收起搜索面板，首屏直出可选属性与双语路径
+    expect(wrapper.find('[data-testid="category-picker-panel"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="selected-category-id"]').text()).toContain('15695322')
+    expect(wrapper.get('[data-testid="selected-category-path"]').text()).toContain('水暖扳手、活动扳手')
+    expect(wrapper.find('[data-testid="optional-attribute-fields"]').exists()).toBe(true)
+    expect(wrapper.find('[data-attribute-id="21194330"]').exists()).toBe(true)
+
+    // 2. SKU 差异字段跳转按钮触发 openSkuTab
+    await wrapper.get('[data-testid="jump-to-sku-tab"]').trigger('click')
+    expect(wrapper.emitted('openSkuTab')).toHaveLength(1)
+
+    // 3. 点击“更换类目”展开检索面板，更新候选后点选自动收起
+    await wrapper.get('[data-testid="toggle-category-picker"]').trigger('click')
+    expect(wrapper.find('[data-testid="category-picker-panel"]').exists()).toBe(true)
+    await wrapper.setProps({ categoryResults: [nextItem] })
+    const candidateBtn = wrapper.findAll('button').find(b => b.text().includes('91626'))
+    expect(candidateBtn).toBeDefined()
+    await candidateBtn!.trigger('click')
+    expect(wrapper.emitted('selectCategory')).toEqual([[nextItem]])
+    expect(wrapper.find('[data-testid="category-picker-panel"]').exists()).toBe(false)
     wrapper.unmount()
   })
 })

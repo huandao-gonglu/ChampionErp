@@ -9,12 +9,13 @@ CategoryProvider 注册表处理；facade 不直接访问文件、网络或 SQLi
 from typing import Any
 
 from erp_web.context import get_context
-from erp_web.facades.category_match_facade import match_category
+from erp_web.facades.category_match_facade import match_categories_batch, match_category
 from erp_web.product_model import validate_category_precheck
 from erp_web.services.forbidden_category_service import forbidden_category_issue
 from erp_web.services.operation_availability import require_model_platform
 from erp_web.services.ai_run_cancellation import check_cancellation
 from erp_web.schemas.requests import RequestValidationError, validate_request_payload
+from erp_web.runtime_units.category_localization import resolve_manual_search_query
 from erp_web.runtime_units.category_store import (
     fetch_category_attribute_page,
     fetch_category_attribute_values,
@@ -135,6 +136,7 @@ def category_attrs_payload(body: Payload) -> ResponseWithStatus:
                 site=site,
                 cursor=str(body.get("cursor") or "").strip(),
                 limit=limit,
+                force_refresh=bool(body.get("force_refresh")),
             ),
             200,
         )
@@ -177,10 +179,19 @@ def category_search_payload(body: Payload) -> ResponseWithStatus:
     site = str(body.get("site") or body.get("country") or "").strip()
     query = str(body.get("query") or body.get("keyword") or "").strip()
     limit = int(body.get("limit") or 20)
+    translated_query = ""
+    search_language = ""
     try:
+        effective_query, search_language, _ = resolve_manual_search_query(
+            platform,
+            site,
+            query,
+        )
+        if effective_query and effective_query != query:
+            translated_query = effective_query
         results = search_categories_live(
             platform,
-            query=query,
+            query=effective_query or query,
             site=site,
             limit=limit,
         )
@@ -191,6 +202,8 @@ def category_search_payload(body: Payload) -> ResponseWithStatus:
         "platform": platform,
         "site": site,
         "query": query,
+        **({"translated_query": translated_query} if translated_query else {}),
+        **({"search_language": search_language} if translated_query and search_language else {}),
         "source": f"{platform}_live",
         "results": results,
     }, 200
@@ -245,22 +258,64 @@ def category_match_batch_payload(body: Payload) -> ResponseWithStatus:
         )
         for target in raw_targets
     ]
-    items = []
-    for target in targets:
+    check_cancellation()
+    require_model_platform(get_context().config.load_app_config(), "category.product_match")
+
+    resolved_entries: list[tuple[int, dict[str, Any], Payload, Payload, Payload]] = []
+    results_by_index: dict[int, dict[str, Any]] = {}
+    for idx, target in enumerate(targets):
         check_cancellation()
         try:
-            result, _ = category_match_payload(target)
+            product, draft, normalized_target, error = load_category_match_subject(target)
         except RequestValidationError as exc:
-            result = {"ok": False, "error": str(exc), "error_code": exc.error_code}
-        if not result.get("ok") and "failure" not in result and result.get("error"):
-            result = {**result, "status": "failed", "failure": {
-                "code": result.get("error_code", "CATEGORY_MATCH_FAILED"),
-                "message": result["error"], "stage": "request", "retryable": False,
-            }}
-        items.append({
-            "target": {key: target[key] for key in ("platform", "site")},
-            **result,
-        })
+            error_payload = {
+                "ok": False,
+                "error": str(exc),
+                "error_code": exc.error_code,
+                "status": "failed",
+                "failure": {
+                    "code": exc.error_code,
+                    "message": str(exc),
+                    "stage": "request",
+                    "retryable": False,
+                },
+            }
+            results_by_index[idx] = {
+                "target": {key: target[key] for key in ("platform", "site")},
+                **error_payload,
+            }
+            continue
+        if error is not None:
+            err_body, _ = error
+            if not err_body.get("ok") and "failure" not in err_body and err_body.get("error"):
+                err_body = {
+                    **err_body,
+                    "status": "failed",
+                    "failure": {
+                        "code": err_body.get("error_code", "CATEGORY_MATCH_FAILED"),
+                        "message": err_body["error"],
+                        "stage": "request",
+                        "retryable": False,
+                    },
+                }
+            results_by_index[idx] = {
+                "target": {key: target[key] for key in ("platform", "site")},
+                **err_body,
+            }
+            continue
+        resolved_entries.append((idx, target, product, draft, normalized_target))
+
+    if resolved_entries:
+        batch_results = match_categories_batch(
+            [(prod, drf, tgt) for _, _, prod, drf, tgt in resolved_entries]
+        )
+        for (idx, target, _, _, _), result in zip(resolved_entries, batch_results, strict=True):
+            results_by_index[idx] = {
+                "target": {key: target[key] for key in ("platform", "site")},
+                **dict(result),
+            }
+
+    items = [results_by_index[idx] for idx in range(len(targets))]
     return {"ok": any(item.get("ok") for item in items), "items": items}, 200
 
 

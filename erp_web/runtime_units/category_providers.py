@@ -4,21 +4,23 @@ from __future__ import annotations
 """Mercado Libre、Ozon 与 Yandex 的统一类目 Provider 注册表。
 
 每个平台显式继承 :class:`CategoryProvider` ABC：类目详情、属性定义与枚举
-值三个核心契约缺失会在实例化阶段失败。属性定义由 Provider 所有的持久缓存
-承载（fresh/stale 规则见 ``category_definition_cache``）；完整枚举候选只能
-通过 ``attribute_values`` 分页读取。
+值三个核心契约缺失会在实例化阶段失败。属性定义、类目树与枚举/只读 HTTP
+缓存统一归口到 :class:`CategoryCatalogStore`（SQLite WAL + FTS5）。
 
-类目搜索与树导航是可选能力：``search_categories`` /
-``root_categories`` / ``browse_categories`` 只在支持的平台实现，消费者用
+类目搜索与树导航是可选能力：``search_categories`` / ``root_categories`` /
+``browse_categories`` 只在支持的平台实现，消费者用
 ``CategorySearchProvider`` / ``CategoryNavigationProvider`` 运行时判断。
 """
 
-import hashlib
-import time
-import urllib.parse
-import urllib.error
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from datetime import timedelta
+import hashlib
+import json
+import time
 from typing import Any
+import urllib.error
+import urllib.parse
 
 from erp_web.marketplace_registry import (
     CAP_CATEGORY_ATTRIBUTES,
@@ -32,16 +34,15 @@ from erp_web.schemas.category_definition import (
     CategoryDefinition,
     CategoryDetail,
 )
-
-from .category_http_cache import cached_category_http
-
-from .category_definition_cache import (
+from erp_web.stores.category_catalog_store import (
     DEFINITION_CACHE_FRESH_TTL,
     DEFINITION_CACHE_MAX_AGE,
-    load_definition_through_cache,
 )
+
 from .category_definition_support import (
+    CategoryAttributesUnavailableError,
     definition_from_legacy_attributes,
+    is_transient_category_api_error,
     paginate_value_candidates,
 )
 from .category_refresh import (
@@ -58,17 +59,26 @@ from .ozon_category_api import (
     fetch_ozon_category_children,
     fetch_ozon_category_record,
     fetch_ozon_category_roots,
+    fetch_ozon_category_siblings,
+    load_ozon_category_corpus,
     ozon_credential_scope_hash,
     search_ozon_categories,
 )
 from .store_credentials import get_mercadolibre_access_token
 from .yandex_category_api import (
     cached_yandex_category_ancestor_map,
+    fetch_yandex_category_children,
     fetch_yandex_category_parameter_definitions,
+    fetch_yandex_category_roots,
+    fetch_yandex_category_siblings,
     fetch_yandex_leaf_record,
     search_yandex_categories,
+    yandex_category_ancestor_ids,
     yandex_credential_scope_hash,
 )
+
+_ML_HTTP_CACHE_TTL_SECONDS = 900.0
+_ML_SEARCH_DETAIL_ENRICH_LIMIT = 8
 
 
 def _deadline_at(timeout_seconds: float | None) -> float | None:
@@ -92,10 +102,36 @@ def _remaining_timeout(
     return remaining
 
 
-def _cache_root():
+def _catalog_store():
     from erp_web.context import get_context
 
-    return get_context().paths.cache_dir
+    return get_context().category_catalog_store
+
+
+def _is_cacheable_ml_http(method: str, url: str) -> bool:
+    path = urllib.parse.urlsplit(url).path
+    if method == "GET":
+        return "/categories/" in path or "/catalog_domains/" in path
+    if method == "POST":
+        return "/catalog_domains/" in path and path.rstrip("/").endswith("/top_values")
+    return False
+
+
+def _ml_http_cache_key(
+    method: str,
+    url: str,
+    scope_key: str,
+    payload: Any,
+) -> str:
+    payload_text = (
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if payload is not None
+        else ""
+    )
+    digest = hashlib.sha256(
+        f"{method}|{url}|{payload_text}".encode("utf-8")
+    ).hexdigest()
+    return f"ml_http:{scope_key}:{method}:{digest}"
 
 
 class MercadoLibreCategoryProvider(CategoryProvider):
@@ -118,7 +154,13 @@ class MercadoLibreCategoryProvider(CategoryProvider):
     def _access_token_and_scope(self) -> tuple[str, str]:
         token = get_mercadolibre_access_token()
         store_config = self._store_config()
-        scope_identity = str(store_config.get("user_id") or token).strip()
+        user_id = str(store_config.get("user_id") or "").strip()
+        if user_id:
+            scope_identity = f"user:{user_id}"
+        elif token:
+            scope_identity = f"token:{token}"
+        else:
+            scope_identity = "public"
         digest = hashlib.sha256(scope_identity.encode("utf-8")).hexdigest()
         return token, f"sha256:{digest}"
 
@@ -135,13 +177,26 @@ class MercadoLibreCategoryProvider(CategoryProvider):
         try:
             return http_json(url, access_token, **kwargs)
         except Exception as exc:
-            status = exc.code if isinstance(exc, urllib.error.HTTPError) else (getattr(exc,"details",{}) or {}).get("http_status")
+            status = (
+                exc.code
+                if isinstance(exc, urllib.error.HTTPError)
+                else (getattr(exc, "details", {}) or {}).get("http_status")
+            )
             if status != 401 or not access_token:
                 raise
-            token = get_mercadolibre_access_token({"mercadolibre":{"access_token":access_token}}, force_refresh=True)
+            token = get_mercadolibre_access_token(
+                {"mercadolibre": {"access_token": access_token}},
+                force_refresh=True,
+            )
             return http_json(url, token, **kwargs)
 
-    def _scoped_http_client(self, deadline_at: float | None):
+    def _scoped_http_client(
+        self,
+        deadline_at: float | None,
+        *,
+        scope_key: str = "public",
+        force_refresh: bool = False,
+    ):
         def scoped_http_client(
             url: str,
             access_token: str | None = None,
@@ -150,28 +205,49 @@ class MercadoLibreCategoryProvider(CategoryProvider):
             payload: dict[str, Any] | list[Any] | None = None,
         ) -> dict[str, Any] | list[Any]:
             normalized_method = str(method or "GET").strip().upper()
-            if deadline_at is None:
+
+            def _do_request() -> dict[str, Any] | list[Any]:
+                if deadline_at is None:
+                    if normalized_method == "GET" and payload is None:
+                        return self._request_with_auth_refresh(url, access_token)
+                    return self._request_with_auth_refresh(
+                        url,
+                        access_token,
+                        method=normalized_method,
+                        payload=payload,
+                    )
+                timeout = _remaining_timeout(deadline_at, 8) or 8
                 if normalized_method == "GET" and payload is None:
-                    return cached_category_http(self._request_with_auth_refresh, url, access_token)
-                return cached_category_http(self._request_with_auth_refresh,
-                    url,
-                    access_token,
-                    method=normalized_method,
-                    payload=payload,
-                )
-            timeout = _remaining_timeout(deadline_at, 8) or 8
-            if normalized_method == "GET" and payload is None:
-                return cached_category_http(self._request_with_auth_refresh,
+                    return self._request_with_auth_refresh(
+                        url,
+                        access_token,
+                        timeout_seconds=timeout,
+                    )
+                return self._request_with_auth_refresh(
                     url,
                     access_token,
                     timeout_seconds=timeout,
+                    method=normalized_method,
+                    payload=payload,
                 )
-            return cached_category_http(self._request_with_auth_refresh,
+
+            if not _is_cacheable_ml_http(normalized_method, url):
+                return _do_request()
+
+            resolved_scope = scope_key if access_token else "public"
+            cache_key = _ml_http_cache_key(
+                normalized_method,
                 url,
-                access_token,
-                timeout_seconds=timeout,
-                method=normalized_method,
-                payload=payload,
+                resolved_scope,
+                payload,
+            )
+            return _catalog_store().load_cached_value(
+                cache_key,
+                platform=self.platform,
+                scope_key=resolved_scope,
+                loader=_do_request,
+                ttl_seconds=_ML_HTTP_CACHE_TTL_SECONDS,
+                force_refresh=force_refresh,
             )
 
         return scoped_http_client
@@ -189,13 +265,18 @@ class MercadoLibreCategoryProvider(CategoryProvider):
         resolved_site = self.resolve_site(site)
         deadline_at = _deadline_at(timeout_seconds)
         is_cbt = resolved_site == "CBT" or category_id.upper().startswith("CBT")
-        access_token = self._access_token_and_scope()[0] if is_cbt else ""
+        if is_cbt:
+            access_token, scope_key = self._access_token_and_scope()
+        else:
+            access_token, scope_key = "", "public"
         detail = mercadolibre_category_detail(
             category_id,
             access_token or None,
-            http_client=self._scoped_http_client(deadline_at),
+            http_client=self._scoped_http_client(deadline_at, scope_key=scope_key),
         )
         record = mercadolibre_category_record(detail, resolved_site, None)
+        children = detail.get("children_categories")
+        is_leaf = isinstance(children, list) and len(children) == 0
         return CategoryDetail(
             platform=self.platform,
             site=resolved_site,
@@ -203,7 +284,7 @@ class MercadoLibreCategoryProvider(CategoryProvider):
             name=str(record.get("name_original") or category_id),
             path=str(record.get("category_path") or ""),
             parent_id=str(record.get("parent_id") or ""),
-            is_leaf=False,
+            is_leaf=is_leaf,
             active=True,
         )
 
@@ -213,6 +294,7 @@ class MercadoLibreCategoryProvider(CategoryProvider):
         *,
         site: str = "",
         timeout_seconds: float | None = None,
+        force_refresh: bool = False,
     ) -> CategoryDefinition:
         category_id = str(category_id or "").strip()
         if not category_id:
@@ -226,7 +308,11 @@ class MercadoLibreCategoryProvider(CategoryProvider):
             access_token, credential_scope_hash = "", "public"
 
         def live_loader() -> CategoryDefinition:
-            http = self._scoped_http_client(deadline_at)
+            http = self._scoped_http_client(
+                deadline_at,
+                scope_key=credential_scope_hash,
+                force_refresh=force_refresh,
+            )
             detail = mercadolibre_category_detail(
                 category_id,
                 access_token or None,
@@ -311,13 +397,15 @@ class MercadoLibreCategoryProvider(CategoryProvider):
                 optional=list(attributes.get("optional") or []),
             )
 
-        return load_definition_through_cache(
-            cache_root=_cache_root(),
+        return _catalog_store().load_definition_through_cache(
             platform=self.platform,
             credential_scope_hash=credential_scope_hash,
             site=resolved_site,
             category_id=category_id,
             live_loader=live_loader,
+            is_transient_error=is_transient_category_api_error,
+            unavailable_error_factory=CategoryAttributesUnavailableError,
+            force_refresh=force_refresh,
             fresh_ttl=DEFINITION_CACHE_FRESH_TTL,
             max_age=DEFINITION_CACHE_MAX_AGE,
         )
@@ -340,8 +428,11 @@ class MercadoLibreCategoryProvider(CategoryProvider):
             resolved_site == "CBT"
             or normalized_category_id.upper().startswith("CBT")
         )
-        access_token = self._access_token_and_scope()[0] if is_cbt else ""
-        http = self._scoped_http_client(deadline_at)
+        if is_cbt:
+            access_token, scope_key = self._access_token_and_scope()
+        else:
+            access_token, scope_key = "", "public"
+        http = self._scoped_http_client(deadline_at, scope_key=scope_key)
         raw_attributes = mercadolibre_category_attributes(
             normalized_category_id,
             access_token or None,
@@ -365,7 +456,11 @@ class MercadoLibreCategoryProvider(CategoryProvider):
                     if not value:
                         continue
                     candidates.append((value, str(row.get("id") or "").strip()))
-        if is_cbt and target_id == "BRAND" and target_exists:
+        if not target_exists:
+            raise ValueError(
+                f"Mercado Libre 类目 {normalized_category_id} 没有属性 {target_id}，请使用当前类目定义中的属性 ID。"
+            )
+        if is_cbt and target_id == "BRAND":
             detail = mercadolibre_category_detail(
                 normalized_category_id,
                 access_token,
@@ -404,6 +499,71 @@ class MercadoLibreCategoryProvider(CategoryProvider):
             limit=limit,
         )
 
+    def _enrich_discovery_paths(
+        self,
+        discoveries: list[dict[str, Any]],
+        *,
+        resolved_site: str,
+        deadline_at: float | None,
+    ) -> list[dict[str, Any]]:
+        """并发补全 domain_discovery 候选的真实完整类目路径（命中 SQLite 缓存时 0ms）。"""
+
+        if not discoveries:
+            return discoveries
+        targets = discoveries[:_ML_SEARCH_DETAIL_ENRICH_LIMIT]
+
+        def _fetch_one(item: dict[str, Any]) -> tuple[str, list[str] | None]:
+            cid = str(item.get("category_id") or "").strip()
+            if not cid:
+                return cid, None
+            try:
+                if deadline_at is not None:
+                    remaining = _remaining_timeout(deadline_at, 4.0)
+                    if remaining is not None and remaining < 0.3:
+                        return cid, None
+                    detail_timeout: float | None = min(float(remaining or 4.0), 4.0)
+                else:
+                    detail_timeout = None
+                detail = self.category_detail(
+                    cid,
+                    site=resolved_site,
+                    timeout_seconds=detail_timeout,
+                )
+                segments = [
+                    part.strip()
+                    for part in str(detail.path or "").split(" / ")
+                    if part.strip()
+                ]
+                return cid, segments or None
+            except Exception:
+                return cid, None
+
+        enriched_map: dict[str, list[str]] = {}
+        if len(targets) == 1:
+            cid, segments = _fetch_one(targets[0])
+            if cid and segments:
+                enriched_map[cid] = segments
+        else:
+            with ThreadPoolExecutor(max_workers=4, thread_name_prefix="ml-cat-path") as pool:
+                futures = [
+                    pool.submit(copy_context().run, _fetch_one, item)
+                    for item in targets
+                ]
+                for future in futures:
+                    try:
+                        cid, segments = future.result()
+                        if cid and segments:
+                            enriched_map[cid] = segments
+                    except Exception:
+                        continue
+
+        for item in discoveries:
+            cid = str(item.get("category_id") or "").strip()
+            if cid in enriched_map:
+                item["path_original"] = enriched_map[cid]
+                item["category_path"] = " / ".join(enriched_map[cid])
+        return discoveries
+
     def search_categories(
         self,
         query: str,
@@ -416,21 +576,18 @@ class MercadoLibreCategoryProvider(CategoryProvider):
         if not query:
             return []
         resolved_site = self.resolve_site(site)
+        deadline_at = _deadline_at(timeout_seconds)
         discovery_url = self._discovery_url(resolved_site, query, limit)
         access_token: str | None = None
         if resolved_site == "CBT":
             access_token = self._access_token_and_scope()[0]
-        if timeout_seconds is None:
+        if deadline_at is None:
             data = self._request_with_auth_refresh(discovery_url, access_token)
         else:
             data = self._request_with_auth_refresh(
                 discovery_url,
                 access_token,
-                timeout_seconds=_remaining_timeout(
-                    _deadline_at(timeout_seconds),
-                    8,
-                )
-                or 8,
+                timeout_seconds=_remaining_timeout(deadline_at, 8) or 8,
             )
         if not isinstance(data, list):
             raise RuntimeError(
@@ -474,7 +631,11 @@ class MercadoLibreCategoryProvider(CategoryProvider):
             raise RuntimeError(
                 "Mercado Libre domain discovery 未返回有效 category_id。"
             )
-        return discoveries
+        return self._enrich_discovery_paths(
+            discoveries,
+            resolved_site=resolved_site,
+            deadline_at=deadline_at,
+        )
 
 
 class OzonCategoryProvider(CategoryProvider):
@@ -501,8 +662,11 @@ class OzonCategoryProvider(CategoryProvider):
             platform=self.platform,
             site="global",
             category_id=str(record.get("type_id") or category_id),
+            description_category_id=str(record.get("description_category_id") or ""),
             name=str(record.get("name_original") or category_id),
+            name_zh=str(record.get("name_zh") or ""),
             path=str(record.get("category_path") or ""),
+            path_zh=str(record.get("path_zh") or ""),
             parent_id=str(record.get("parent_id") or ""),
             is_leaf=True,
             active=True,
@@ -514,14 +678,21 @@ class OzonCategoryProvider(CategoryProvider):
         *,
         site: str = "",
         timeout_seconds: float | None = None,
+        force_refresh: bool = False,
     ) -> CategoryDefinition:
         del site
         category_id = str(category_id or "").strip()
         if not category_id:
             raise RuntimeError("缺少 Ozon 商品类型 ID。")
         deadline_at = _deadline_at(timeout_seconds)
+        scope_hash = ozon_credential_scope_hash()
 
         def live_loader() -> CategoryDefinition:
+            if force_refresh:
+                _catalog_store().clear_cached_values(
+                    platform=self.platform,
+                    scope_key=scope_hash,
+                )
             record = fetch_ozon_category_record(
                 category_id,
                 include_attributes=True,
@@ -537,6 +708,7 @@ class OzonCategoryProvider(CategoryProvider):
                 site="global",
                 category_id=str(record.get("type_id") or category_id),
                 category_path=str(record.get("category_path") or ""),
+                category_path_zh=str(record.get("path_zh") or ""),
                 description_category_id=str(
                     record.get("description_category_id") or ""
                 ),
@@ -545,13 +717,15 @@ class OzonCategoryProvider(CategoryProvider):
             )
 
         # 凭据缺失时 scope 计算抛出确定性错误，stale 缓存不得掩盖。
-        return load_definition_through_cache(
-            cache_root=_cache_root(),
+        return _catalog_store().load_definition_through_cache(
             platform=self.platform,
-            credential_scope_hash=ozon_credential_scope_hash(),
+            credential_scope_hash=scope_hash,
             site="global",
             category_id=category_id,
             live_loader=live_loader,
+            is_transient_error=is_transient_category_api_error,
+            unavailable_error_factory=CategoryAttributesUnavailableError,
+            force_refresh=force_refresh,
             fresh_ttl=DEFINITION_CACHE_FRESH_TTL,
             max_age=DEFINITION_CACHE_MAX_AGE,
         )
@@ -581,6 +755,7 @@ class OzonCategoryProvider(CategoryProvider):
             CategoryAttributeValue(
                 value=str(row.get("value") or "").strip(),
                 dictionary_value_id=str(row.get("id") or "").strip(),
+                label_zh=str(row.get("label_zh") or "").strip(),
             )
             for row in (result.get("values") or [])
             if isinstance(row, dict) and str(row.get("value") or "").strip()
@@ -632,17 +807,34 @@ class OzonCategoryProvider(CategoryProvider):
             timeout_seconds=timeout_seconds,
         )
 
+    def sibling_leaves(
+        self,
+        category_ids: list[str],
+        *,
+        limit: int = 12,
+        timeout_seconds: float | None = None,
+    ) -> list[dict[str, Any]]:
+        return fetch_ozon_category_siblings(
+            category_ids,
+            limit=limit,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def list_leaf_records(
+        self,
+        *,
+        credentials: tuple[str, str] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> list[dict[str, Any]]:
+        records, _ = load_ozon_category_corpus(
+            credentials=credentials,
+            timeout_seconds=timeout_seconds,
+        )
+        return records
+
 
 def _yandex_parameter_definition(parameter: dict[str, Any]) -> dict[str, Any]:
-    """Yandex 类目参数 → legacy 共享属性字典的机械转换。
-
-    ``parameterId`` → 通用 ``id``；ENUM 按官方 ``allowCustomValues`` 区分
-    ``strict_enum``（只能选平台枚举值）与 ``open_enum``（允许自定义文本）；
-    ``multivalue`` → ``is_collection``；``unit.units[]``/``defaultUnitId``
-    → 共享 ``unit_options/default_unit`` 与发布期解析 ``unitId`` 所需的
-    ``unit_ids``；官方 ``constraints`` 原样带入草稿校验。平台 wire 字段
-    （parameter_type）保留给 platform_binding 归一化。
-    """
+    """Yandex 类目参数 → legacy 共享属性字典的机械转换。"""
 
     parameter_id = str(parameter.get("parameter_id") or "").strip()
     values = [
@@ -681,10 +873,8 @@ def _yandex_parameter_definition(parameter: dict[str, Any]) -> dict[str, Any]:
             if str(item or "").strip()
         ],
         "default_unit": str(parameter.get("default_unit") or "").strip(),
-        # 单位名称 → Yandex unitId；发布期把选中单位编译为 wire unitId。
         "unit_ids": unit_ids,
         "default_unit_id": str(parameter.get("default_unit_id") or "").strip(),
-        # 此字段的格式由平台回执明确要求；普通 TEXT 不套用此规则。
         "constraints": {
             **dict(parameter.get("constraints") or {}),
             **({"text_format": "name_value_lines"} if parameter_id == "57046341" else {}),
@@ -695,8 +885,6 @@ def _yandex_parameter_definition(parameter: dict[str, Any]) -> dict[str, Any]:
         "max_value_count": int(parameter.get("max_value_count") or 0),
         "category_dependent": False,
         "options": [str(item.get("value") or "").strip() for item in values],
-        # legacy 选项 shape：id 为字符串 dictionary_value_id；类型化定义只
-        # 保留有界预览，候选全集由 attribute_values 分页读取。
         "values": [
             {
                 "id": str(item.get("value_id") or "").strip(),
@@ -706,7 +894,7 @@ def _yandex_parameter_definition(parameter: dict[str, Any]) -> dict[str, Any]:
             for item in values
             if str(item.get("value") or "").strip()
         ],
-        "description": "",
+        "description": str(parameter.get("description") or "").strip(),
         "platform_type": parameter_type,
     }
 
@@ -714,7 +902,7 @@ def _yandex_parameter_definition(parameter: dict[str, Any]) -> dict[str, Any]:
 class YandexCategoryProvider(CategoryProvider):
     """Yandex 官方类目树/类目参数的通用 Provider。
 
-    只允许选择叶子类目；类目树使用本地缓存搜索，不为每次输入发远端请求。
+    只允许选择叶子类目；类目树使用本地 SQLite FTS5 搜索与导航，不为每次输入发远端请求。
     参数定义的新鲜窗口缩短到 6 小时，尊重 Yandex 的小时级配额。
     """
 
@@ -801,13 +989,14 @@ class YandexCategoryProvider(CategoryProvider):
             )
 
         # 凭据缺失时 scope 计算抛出确定性错误，stale 缓存不得掩盖。
-        return load_definition_through_cache(
-            cache_root=_cache_root(),
+        return _catalog_store().load_definition_through_cache(
             platform=self.platform,
             credential_scope_hash=yandex_credential_scope_hash(),
             site="global",
             category_id=category_id,
             live_loader=live_loader,
+            is_transient_error=is_transient_category_api_error,
+            unavailable_error_factory=CategoryAttributesUnavailableError,
             force_refresh=force_refresh,
             fresh_ttl=timedelta(seconds=self.definition_fresh_ttl_seconds),
             max_age=DEFINITION_CACHE_MAX_AGE,
@@ -871,6 +1060,37 @@ class YandexCategoryProvider(CategoryProvider):
             timeout_seconds=timeout_seconds,
         )
 
+    def root_categories(
+        self,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        return fetch_yandex_category_roots(timeout_seconds=timeout_seconds)
+
+    def browse_categories(
+        self,
+        parent_ids: list[str],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        return fetch_yandex_category_children(
+            parent_ids,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def sibling_leaves(
+        self,
+        category_ids: list[str],
+        *,
+        limit: int = 12,
+        timeout_seconds: float | None = None,
+    ) -> list[dict[str, Any]]:
+        return fetch_yandex_category_siblings(
+            category_ids,
+            limit=limit,
+            timeout_seconds=timeout_seconds,
+        )
+
     def cached_category_ancestor_map(
         self,
         *,
@@ -888,20 +1108,11 @@ class YandexCategoryProvider(CategoryProvider):
         api_token: str = "",
     ) -> tuple[str, ...]:
         del site
-        cid = str(category_id or "").strip()
-        if not cid:
-            return ()
-        if cid.isascii() and cid.isdigit():
-            cid = str(int(cid))
-        return self.cached_category_ancestor_map(api_token=api_token).get(cid, ())
+        return yandex_category_ancestor_ids(category_id, api_token=api_token)
 
 
 def build_category_provider_registry() -> dict[str, CategoryProvider]:
-    """构造 Provider 注册表并执行契约测试。
-
-    每个注册项必须继承 :class:`CategoryProvider`、平台键唯一，并与
-    marketplace capability 声明（CAP_CATEGORY_ATTRIBUTES）一致。
-    """
+    """构造 Provider 注册表并执行契约测试。"""
 
     providers: tuple[CategoryProvider, ...] = (
         MercadoLibreCategoryProvider(),

@@ -1,87 +1,9 @@
 from __future__ import annotations
 
-import json
-import os
-import re
 import urllib.parse
-import uuid
 from typing import Any
 
-from .common import CN_CATEGORY_TERMS, ML_CATEGORY_CN_HINTS, ML_CATEGORY_SHIPPING_CACHE_PATH, ML_CATEGORY_WORDS
 from .config_http import request_json, request_ozon_json
-
-
-def has_cjk(value: str) -> bool:
-    return any("\u4e00" <= char <= "\u9fff" for char in value)
-
-
-def expanded_category_keywords(keyword: str, mapping: dict[str, list[str]]) -> list[str]:
-    raw = " ".join(keyword.split())
-    terms: list[str] = []
-    ascii_term = re.sub(r"[^\w\s-]", " ", raw, flags=re.ASCII)
-    ascii_term = " ".join(ascii_term.split())
-    if ascii_term:
-        terms.append(ascii_term)
-    for cn, mapped in mapping.items():
-        if cn in raw:
-            terms.extend(mapped)
-    if not terms and has_cjk(raw):
-        for char in raw:
-            terms.extend(mapping.get(char, []))
-    unique: list[str] = []
-    for term in terms:
-        term = term.strip()
-        if term and term.lower() not in [item.lower() for item in unique]:
-            unique.append(term)
-    return unique
-
-
-def localize_mercadolibre_category_path(path: str) -> str:
-    cn_parts: list[str] = []
-    for part in [item.strip() for item in path.split("/") if item.strip()]:
-        hit = ""
-        for en, cn in sorted(ML_CATEGORY_WORDS.items(), key=lambda item: len(item[0]), reverse=True):
-            if re.search(rf"\b{re.escape(en)}\b", part, flags=re.I):
-                hit = re.sub(rf"\b{re.escape(en)}\b", cn, part, flags=re.I)
-                break
-        for en, cn in ML_CATEGORY_CN_HINTS.items():
-            if not hit and en.casefold() in part.casefold():
-                hit = cn
-                break
-        cn_parts.append(hit or part)
-    cn_path = " / ".join(cn_parts)
-    return f"{cn_path}  |  {path}" if cn_path and cn_path != path else path
-
-
-def search_mercadolibre_categories(keyword: str, token: str = "") -> list[tuple[str, str]]:
-    if not keyword.strip():
-        raise RuntimeError("请先填写产品名或品类。")
-    results = []
-    seen = set()
-    terms = expanded_category_keywords(keyword, CN_CATEGORY_TERMS)
-    if not terms:
-        raise RuntimeError("没有识别到可查询的分类关键词，请换一个中文品类词或输入英文/西语关键词。")
-    for term in terms[:8]:
-        if token:
-            url = "https://api.mercadolibre.com/marketplace/domain_discovery/search?" f"q={urllib.parse.quote(term)}"
-            data = request_json("GET", url, token)
-        else:
-            url = (
-                "https://api.mercadolibre.com/sites/MLM/domain_discovery/search?"
-                f"limit=8&q={urllib.parse.quote(term)}"
-            )
-            data = request_json("GET", url)
-        for item in data if isinstance(data, list) else []:
-            category_id = str(item.get("category_id") or "")
-            name = item.get("category_name") or item.get("domain_name") or ""
-            path = mercadolibre_category_path(category_id, token) if category_id else ""
-            if category_id and category_id not in seen:
-                seen.add(category_id)
-                label = localize_mercadolibre_category_path(path or name)
-                results.append((category_id, f"{label}  |  关键词: {term}"))
-    if results:
-        results = filter_mercadolibre_remote_categories(results, token)
-    return results[:50]
 
 
 def mercadolibre_category_path(category_id: str, token: str = "") -> str:
@@ -97,12 +19,7 @@ def mercadolibre_category_path(category_id: str, token: str = "") -> str:
 
 
 def mercadolibre_category_allowed_currencies(category_id: str, token: str = "") -> list[str]:
-    """读取类目级允许发布币种（``settings.currencies``）。
-
-    类目允许集是类目级约束（迁移方案 §7/§12）：它只用于在发布预检时校验店铺
-    币种，绝不反向修改全局店铺币种。读取失败或类目未返回允许集时返回空列表，
-    调用方把空视为“无约束”。
-    """
+    """读取类目级允许发布币种（``settings.currencies``）。"""
 
     category = str(category_id or "").strip()
     if not category:
@@ -130,138 +47,6 @@ def mercadolibre_category_allowed_currencies(category_id: str, token: str = "") 
     return currencies
 
 
-def load_ml_category_shipping_cache() -> dict[str, dict[str, Any]]:
-    try:
-        if ML_CATEGORY_SHIPPING_CACHE_PATH.exists():
-            data = json.loads(ML_CATEGORY_SHIPPING_CACHE_PATH.read_text(encoding="utf-8-sig"))
-            return data if isinstance(data, dict) else {}
-    except Exception:
-        pass
-    return {}
-
-
-def save_ml_category_shipping_cache(cache: dict[str, dict[str, Any]]) -> None:
-    try:
-        ML_CATEGORY_SHIPPING_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic write (same-directory temp file + os.replace) so a crash cannot
-        # leave a truncated cache file behind.
-        tmp_path = ML_CATEGORY_SHIPPING_CACHE_PATH.with_name(
-            f".{ML_CATEGORY_SHIPPING_CACHE_PATH.name}.tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-        )
-        try:
-            tmp_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
-            os.replace(tmp_path, ML_CATEGORY_SHIPPING_CACHE_PATH)
-        except BaseException:
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass
-            raise
-    except Exception:
-        pass
-
-
-def collect_shipping_modes(value: Any) -> set[str]:
-    modes: set[str] = set()
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if str(key).lower() in {"mode", "modes", "shipping_mode", "shipping_modes", "logistic_type", "logistic_types"}:
-                if isinstance(item, str):
-                    modes.add(item.lower())
-                elif isinstance(item, list):
-                    for element in item:
-                        if isinstance(element, str):
-                            modes.add(element.lower())
-                        elif isinstance(element, dict):
-                            modes.update(collect_shipping_modes(element))
-            modes.update(collect_shipping_modes(item))
-    elif isinstance(value, list):
-        for item in value:
-            modes.update(collect_shipping_modes(item))
-    return modes
-
-
-def mercadolibre_category_remote_status(category_id: str, token: str = "") -> tuple[bool, str]:
-    cache = load_ml_category_shipping_cache()
-    cached = cache.get(category_id)
-    if isinstance(cached, dict) and "supported" in cached:
-        return bool(cached.get("supported")), str(cached.get("reason") or "")
-    urls = [
-        f"https://api.mercadolibre.com/categories/{category_id}/shipping_preferences",
-        f"https://api.mercadolibre.com/catalog_categories/{category_id}/shipping_preferences",
-    ]
-    last_error = ""
-    for url in urls:
-        try:
-            data = request_json("GET", url, token)
-        except Exception as exc:
-            last_error = str(exc)
-            continue
-        modes = collect_shipping_modes(data)
-        supported = "me1" in modes or "remote" in modes
-        reason = "支持 remote/me1" if supported else f"不支持 remote/me1，平台返回模式: {', '.join(sorted(modes)) or '空'}"
-        cache[category_id] = {"supported": supported, "reason": reason, "modes": sorted(modes)}
-        save_ml_category_shipping_cache(cache)
-        return supported, reason
-    cache[category_id] = {"supported": False, "reason": f"无法校验物流偏好: {last_error}"}
-    save_ml_category_shipping_cache(cache)
-    return False, f"无法校验物流偏好: {last_error}"
-
-
-def filter_mercadolibre_remote_categories(options: list[tuple[str, str]], token: str = "") -> list[tuple[str, str]]:
-    if not token:
-        return options
-    filtered: list[tuple[str, str]] = []
-    rejected: list[str] = []
-    for category_id, label in options:
-        supported, reason = mercadolibre_category_remote_status(category_id, token)
-        if supported:
-            filtered.append((category_id, f"[可发墨西哥] {label}"))
-        else:
-            rejected.append(f"{category_id}: {reason}")
-    if filtered:
-        return filtered
-    return [(category_id, f"[未通过发货校验] {label}") for category_id, label in options]
-
-
-def estimate_mercadolibre_shipping(
-    token: str,
-    zip_from: str,
-    zip_to: str,
-    length_cm: str,
-    width_cm: str,
-    height_cm: str,
-    weight_kg: str,
-    price: str,
-) -> float:
-    if not token.strip():
-        raise RuntimeError("缺少美客多 Access Token。")
-    def num(value: str) -> float:
-        return float((value or "0").replace(",", "."))
-    length = max(1, int(round(num(length_cm))))
-    width = max(1, int(round(num(width_cm))))
-    height = max(1, int(round(num(height_cm))))
-    grams = max(1, int(round(num(weight_kg) * 1000)))
-    params = urllib.parse.urlencode(
-        {
-            "zip_code_from": zip_from or "01000",
-            "zip_code_to": zip_to or "05000",
-            "dimensions": f"{length}x{width}x{height},{grams}",
-            "item_price": str(num(price)),
-        }
-    )
-    data = request_json("GET", f"https://api.mercadolibre.com/sites/MLM/shipping_options?{params}", token)
-    options = data.get("options", []) if isinstance(data, dict) else []
-    costs = []
-    for option in options:
-        cost = option.get("cost") if isinstance(option, dict) else None
-        if isinstance(cost, (int, float)):
-            costs.append(float(cost))
-    if not costs:
-        raise RuntimeError(f"未返回美客多运费选项: {data}")
-    return round(min(costs), 2)
-
-
 def fetch_ozon_seller_info(client_id: str, api_key: str) -> dict[str, Any]:
     """Return Ozon seller account metadata used by publishing capabilities."""
 
@@ -279,22 +64,6 @@ def fetch_ozon_seller_info(client_id: str, api_key: str) -> dict[str, Any]:
     if not currency:
         raise RuntimeError("Ozon seller/info 未返回店铺合同币种")
     return data
-
-
-def required_mercadolibre_attributes(category_id: str, token: str) -> list[dict[str, Any]]:
-    attrs = mercadolibre_category_attributes_for_publish(category_id, token)
-    required = []
-    for attr in attrs if isinstance(attrs, list) else []:
-        if attr.get("required"):
-            required.append(
-                {
-                    "id": attr.get("id"),
-                    "name": attr.get("name"),
-                    "value_type": attr.get("value_type"),
-                    "values": attr.get("values", [])[:20],
-                }
-            )
-    return required
 
 
 def mercadolibre_category_attributes_for_publish(category_id: str, token: str) -> list[dict[str, Any]]:
@@ -324,3 +93,11 @@ def mercadolibre_category_attributes_for_publish(category_id: str, token: str) -
         )
     normalized.sort(key=lambda item: (not item.get("required"), str(item.get("name") or "")))
     return normalized
+
+
+__all__ = [
+    "fetch_ozon_seller_info",
+    "mercadolibre_category_allowed_currencies",
+    "mercadolibre_category_attributes_for_publish",
+    "mercadolibre_category_path",
+]

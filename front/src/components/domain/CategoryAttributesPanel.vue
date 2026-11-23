@@ -1,16 +1,43 @@
 <script setup lang="ts">
+import { computed, nextTick, ref, watch } from 'vue'
+import type { ComponentPublicInstance } from 'vue'
+import {
+  PhArrowRight,
+  PhArrowsClockwise,
+  PhCaretDown,
+  PhCaretUp,
+  PhCheck,
+  PhCheckCircle,
+  PhLightning,
+  PhMagnifyingGlass,
+  PhPencilSimple,
+  PhShieldCheck,
+  PhWarningCircle,
+  PhX,
+} from '@phosphor-icons/vue'
 import { vDesktop } from '@/utils/desktopHandoffDirective'
 import { modelOperationReason } from '@/utils/desktop'
-import { attributeConstraintError, attributeConstraintHint } from '@/utils/categoryConstraints'
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import type { ComponentPublicInstance } from 'vue'
+import CategoryAttributeField from './CategoryAttributeField.vue'
 import DraftBarcodeFields from './DraftBarcodeFields.vue'
 import CategoryPrecheckPanel from '@/components/domain/CategoryPrecheckPanel.vue'
-import { fetchCategoryAttributeValues } from '@/api/workflow/publishing'
-import { isCategoryDictionaryAttribute } from '@/api/workflow/normalizers'
 import { isMercadoLibreCbtTarget } from '@/utils/mercadolibreGlobalSelling'
 import { isBarcodeIdentifier } from '@/utils/barcodePolicy'
-import type { CategoryAttributeDefinition, CategoryAttributeOption, CategoryAttributeTranslations, CategoryDictionaryValue, CategoryPrecheckResult, CategoryResultTranslations, CategorySearchResult, CategorySelection, DraftDetail, DraftProductContext, MarketplaceOption, MarketplaceTargetSite, PrecheckIssue, PublishPrecheck, UnknownRecord } from '@/types/workflow'
+import type {
+  CategoryAttributeDefinition,
+  CategoryAttributeTranslations,
+  CategoryAttributeValue,
+  CategoryPrecheckResult,
+  CategoryResultTranslations,
+  CategorySearchResult,
+  CategorySelection,
+  DraftDetail,
+  DraftProductContext,
+  MarketplaceOption,
+  MarketplaceTargetSite,
+  PrecheckIssue,
+  PublishPrecheck,
+  UnknownRecord,
+} from '@/types/workflow'
 
 const props = withDefaults(defineProps<{
   draft: DraftDetail
@@ -19,29 +46,41 @@ const props = withDefaults(defineProps<{
   platformOptions: MarketplaceOption[]
   category: CategorySelection | null
   categoryQuery: string
+  categoryTranslatedQuery?: string
   categoryResults: CategorySearchResult[]
-  columnLayout?: boolean
   skuScope?: boolean
+  /** SKU 编辑模式下显式传入继承的公共属性，彻底消除 Proxy。 */
+  inheritedAttributes?: Record<string, CategoryAttributeValue>
+  /** SKU 编辑模式下显式传入当前 SKU 单独覆盖的属性切片。 */
+  overrideAttributes?: Record<string, CategoryAttributeValue>
   categoryAutoMatchProductName?: string
   categoryAutoMatchTargetError?: string
-  categoryAttributeTranslations: CategoryAttributeTranslations
-  categoryAttributeTranslationsSource: string
-  categoryAttributeTranslating: boolean
+  categoryAttributeTranslations?: CategoryAttributeTranslations
+  categoryAttributeTranslationsSource?: string
+  categoryAttributeTranslating?: boolean
   categoryAttributeLoading?: boolean
   categoryAttributeError?: string
-  categoryResultTranslations: CategoryResultTranslations
-  categoryResultTranslationsSource: string
-  categoryResultTranslating: boolean
+  categoryResultTranslations?: CategoryResultTranslations
+  categoryResultTranslationsSource?: string
+  categoryResultTranslating?: boolean
   categoryPrecheck: CategoryPrecheckResult | null
   precheck: PublishPrecheck | null
   loading: boolean
 }>(), {
   categoryAutoMatchProductName: '',
-  columnLayout: false,
+  categoryTranslatedQuery: '',
   skuScope: false,
+  inheritedAttributes: undefined,
+  overrideAttributes: undefined,
   categoryAutoMatchTargetError: '',
+  categoryAttributeTranslations: () => ({}),
+  categoryAttributeTranslationsSource: '',
+  categoryAttributeTranslating: false,
   categoryAttributeLoading: false,
   categoryAttributeError: '',
+  categoryResultTranslations: () => ({}),
+  categoryResultTranslationsSource: '',
+  categoryResultTranslating: false,
 })
 
 const emit = defineEmits<{
@@ -49,18 +88,16 @@ const emit = defineEmits<{
   searchCategory: []
   suggestCategory: []
   selectCategory: [item: CategorySearchResult]
-  applyCategory: []
-  translateCategoryResults: []
-  translateCategoryAttributes: []
+  applyCategory: [forceRefresh?: boolean]
+  updateAttribute: [attrId: string, value: CategoryAttributeValue | undefined]
+  clearAttributeOverride: [attrId: string]
   invalidateCategoryPrecheck: []
   categoryPrecheck: []
+  openSkuTab: []
 }>()
 
 const targetIdentityKey = computed(() => targetKey(props.target))
-const panelElement = ref<HTMLElement | null>(null)
-const usesSharedMercadoLibreCbtCategory = computed(() => (
-  isMercadoLibreCbtTarget(props.target)
-))
+const usesSharedMercadoLibreCbtCategory = computed(() => isMercadoLibreCbtTarget(props.target))
 const sharedMercadoLibreMarketLabels = computed(() => {
   if (!usesSharedMercadoLibreCbtCategory.value) return []
   const platform = props.platformOptions.find((item) => item.key === 'mercadolibre')
@@ -81,50 +118,14 @@ const sharedMercadoLibreMarketSummary = computed(() => (
     : '当前 CBT 草稿的全部销售市场'
 ))
 
-const showRequiredAttributes = ref(props.skuScope)
-const showOptionalAttributes = ref(props.skuScope)
-const attributeInputRefs = ref<Record<string, HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null>>({})
-const MERCADO_COMPILER_MANAGED_ATTRIBUTE_IDS = new Set([
-  'PACKAGE_LENGTH', 'PACKAGE_WIDTH', 'PACKAGE_HEIGHT', 'PACKAGE_WEIGHT',
-  'SELLER_SKU',
-  'GTIN',
-  'UPC',
-  'UNIVERSAL_PRODUCT_CODE',
-  'ITEM_CONDITION',
-  'SELLER_PACKAGE_LENGTH',
-  'SELLER_PACKAGE_WIDTH',
-  'SELLER_PACKAGE_HEIGHT',
-  'SELLER_PACKAGE_WEIGHT',
-])
-
-interface DictionaryFieldState {
-  query: string
-  loadedQuery: string | null
-  options: CategoryAttributeOption[]
-  loading: boolean
-  loadingMore: boolean
-  error: string
-  open: boolean
-  requestId: number
-  nextCursor: string
-  hasMore: boolean
-}
-const dictionaryFieldStates = ref<Record<string, DictionaryFieldState>>({})
-const dictionarySearchTimers = new Map<string, ReturnType<typeof setTimeout>>()
-
 const hasCurrentDraft = computed(() => Boolean(props.draft.draftId))
-
-const activeDraft = computed(() => {
-  const draft = props.draft
-  if (!Array.isArray(draft.validationErrors)) {
-    draft.validationErrors = []
-  }
-  return draft
-})
-const hasSelectedCategory = computed(() => Boolean(activeDraft.value.categoryId.trim()))
+const draftValidationErrors = computed(() => (
+  Array.isArray(props.draft.validationErrors) ? props.draft.validationErrors : []
+))
+const hasSelectedCategory = computed(() => Boolean(String(props.draft.categoryId || '').trim()))
 const hasLoadedCategoryDefinition = computed(() => Boolean(
   props.category
-  && props.category.categoryId === activeDraft.value.categoryId.trim()
+  && props.category.categoryId === String(props.draft.categoryId || '').trim()
   && props.category.platform === props.target.platform
   && props.category.fetchedAt,
 ))
@@ -134,10 +135,78 @@ const categoryAttributeState = computed<'empty' | 'idle' | 'loading' | 'ready' |
   if (hasLoadedCategoryDefinition.value) return 'ready'
   return props.categoryAttributeError ? 'error' : 'idle'
 })
+
+// 方案 A 状态自适应：未选类目默认展开检索面板；已选类目默认收起，把 100% 宽度留给属性表单。
+const pickerOpen = ref(Boolean(
+  !hasSelectedCategory.value
+  || props.categoryResults.length
+  || props.categoryTranslatedQuery
+  || props.categoryAutoMatchTargetError,
+))
+const manualEditOpen = ref(false)
+const categorySearchInputRef = ref<HTMLInputElement | null>(null)
+const showCategoryPicker = computed(() => !props.skuScope && (!hasSelectedCategory.value || pickerOpen.value))
+
+// 当新候选/翻译词/报错返回时自动展开检索面板，便于立即核对与点选。
+watch(
+  () => [props.categoryResults, props.categoryTranslatedQuery, props.categoryAutoMatchTargetError] as const,
+  ([results, translated, err], [prevResults, prevTranslated, prevErr]) => {
+    if (
+      (results !== prevResults && results.length > 0)
+      || (translated && translated !== prevTranslated)
+      || (err && err !== prevErr)
+    ) {
+      pickerOpen.value = true
+    }
+  },
+)
+
+async function toggleCategoryPicker() {
+  pickerOpen.value = !pickerOpen.value
+  if (pickerOpen.value) {
+    await nextTick()
+    categorySearchInputRef.value?.focus()
+  }
+}
+
+function handleSelectCategory(item: CategorySearchResult) {
+  if (isCategoryForbidden(item)) return
+  emit('selectCategory', item)
+  pickerOpen.value = false
+  manualEditOpen.value = false
+}
+
+const effectiveAttributesMap = computed<Record<string, CategoryAttributeValue>>(() => {
+  if (props.skuScope && (props.inheritedAttributes || props.overrideAttributes)) {
+    return {
+      ...(props.inheritedAttributes || {}),
+      ...(props.overrideAttributes || {}),
+    }
+  }
+  return props.draft.attributes || {}
+})
+
+function hasAttributeValue(value: CategoryAttributeValue | undefined): boolean {
+  if (value == null) return false
+  if (typeof value === 'string') return Boolean(value.trim())
+  if ('values' in value) return Array.isArray(value.values) && value.values.length > 0
+  return Boolean(String(value.value ?? '').trim())
+}
+
+function isAttributeOverridden(attrId: string): boolean {
+  if (!props.skuScope || !props.overrideAttributes) return false
+  return Object.prototype.hasOwnProperty.call(props.overrideAttributes, attrId)
+}
+
+function isAttributeInherited(attrId: string): boolean {
+  if (!props.skuScope || isAttributeOverridden(attrId) || !props.inheritedAttributes) return false
+  return hasAttributeValue(props.inheritedAttributes[attrId])
+}
+
 const filledAttributes = computed(() => {
   if (props.skuScope || categoryAttributeState.value === 'ready' || !hasSelectedCategory.value) return []
-  if (props.category && props.category.categoryId !== activeDraft.value.categoryId.trim()) return []
-  return Object.entries(activeDraft.value.attributes).flatMap(([id, value]) => {
+  if (props.category && props.category.categoryId !== String(props.draft.categoryId || '').trim()) return []
+  return Object.entries(effectiveAttributesMap.value).flatMap(([id, value]) => {
     let text: string
     if (typeof value === 'string') text = value
     else if ('values' in value) text = value.values.map(option => option.value).join('、')
@@ -146,23 +215,6 @@ const filledAttributes = computed(() => {
   })
 })
 
-const blockingIssues = computed(() => props.precheck?.errorItems || [])
-const warningIssues = computed(() => props.precheck?.warningItems || [])
-const pendingReviewAttributeIds = computed(() => {
-  const ids = new Set<string>()
-  const requiredIds = new Set(
-    (props.category?.requiredAttributes || [])
-      .map((attr) => attr.id)
-      .filter((attrId) => Boolean(attrId) && !isCompilerManagedAttribute(attrId)),
-  )
-  for (const item of activeDraft.value.validationErrors) {
-    collectReviewAttributeId(item, ids)
-  }
-  for (const issue of [...blockingIssues.value, ...warningIssues.value]) {
-    collectReviewAttributeId(issue, ids)
-  }
-  return [...ids].filter((attrId) => requiredIds.has(attrId)).sort()
-})
 const attributeFields = computed(() => {
   const fields = new Map<string, CategoryAttributeDefinition>()
   for (const attr of props.category?.requiredAttributes || []) {
@@ -173,12 +225,11 @@ const attributeFields = computed(() => {
   }
   return [...fields.values()]
 })
-function isCompilerManagedAttribute(attrId: string) {
-  return (props.target.platform === 'mercadolibre'
-    && MERCADO_COMPILER_MANAGED_ATTRIBUTE_IDS.has(attrId))
-    || [...(props.category?.requiredAttributes || []), ...(props.category?.optionalAttributes || [])]
-      .some(attr => attr.id === attrId && attr.managedBy === 'listing_grouping')
+
+function isManagedAttribute(attr: CategoryAttributeDefinition): boolean {
+  return attr.managedBy === 'listing_grouping' || attr.managedBy === 'draft_derived'
 }
+
 const systemGroupingAttributes = computed(() => attributeFields.value.filter(attr => attr.managedBy === 'listing_grouping'))
 const systemGroupingDisplay = computed(() => {
   if (props.draft.grouping.mode === 'separate') {
@@ -189,427 +240,150 @@ const systemGroupingDisplay = computed(() => {
   const name = (props.draft.grouping.name || props.draft.title).trim()
   return name ? `组合展示：${name}` : '尚未设置组合名称，请到 SKU 页填写平台组名。'
 })
-const skuVariantCount = computed(() => props.skuScope || props.draft.skuItems.filter(row => row.selected).length < 2 ? 0 : attributeFields.value.filter(attr => attr.variationRole === 'variant').length)
+const skuVariantCount = computed(() => (
+  props.skuScope || props.draft.skuItems.filter(row => row.selected).length < 2
+    ? 0
+    : attributeFields.value.filter(attr => attr.variationRole === 'variant').length
+))
 const belongsToSku = (attr: CategoryAttributeDefinition) => skuVariantCount.value > 0 && attr.variationRole === 'variant'
+
 const requiredAttributeFields = computed(() => attributeFields.value.filter(
-  (attr) => !(props.target.platform === 'mercadolibre' && attr.id === 'EMPTY_GTIN_REASON') && attr.required && !belongsToSku(attr) && !attr.readOnly && !isCompilerManagedAttribute(attr.id),
+  (attr) => !(props.target.platform === 'mercadolibre' && attr.id === 'EMPTY_GTIN_REASON')
+    && attr.required && !belongsToSku(attr) && !attr.readOnly && !isManagedAttribute(attr),
 ))
 const optionalAttributeFields = computed(() => attributeFields.value.filter(
   (attr) => !(props.target.platform === 'mercadolibre' && attr.id === 'EMPTY_GTIN_REASON')
-    && !isBarcodeIdentifier(attr.id) && !attr.required && !belongsToSku(attr) && !attr.readOnly && !isCompilerManagedAttribute(attr.id),
+    && !isBarcodeIdentifier(attr.id) && !attr.required && !belongsToSku(attr) && !attr.readOnly && !isManagedAttribute(attr),
 ))
 const attributeFieldById = computed(() => new Map(attributeFields.value.map((attr) => [attr.id, attr])))
-const translationCount = computed(() => Object.values(props.categoryAttributeTranslations || {}).filter((item) => item.label).length)
-const translationSourceLabel = computed(() => props.categoryAttributeTranslationsSource === 'cache' ? '缓存' : props.categoryAttributeTranslationsSource === 'ai' ? 'AI' : '')
-const categoryResultTranslationCount = computed(() => Object.values(props.categoryResultTranslations || {}).filter(Boolean).length)
+
+// 聚焦优先：有必填时默认展开必填、折叠选填；当必填为 0 时自动展开可选属性，避免首屏留空。
+const showRequiredAttributes = ref(true)
+const showOptionalAttributes = ref(props.skuScope || requiredAttributeFields.value.length === 0)
+type AttributeFilterMode = 'all' | 'pending' | 'required' | 'optional'
+const attributeFilter = ref<AttributeFilterMode>('all')
+const attributeSearchQuery = ref('')
+const attributeInputRefs = ref<Record<string, HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null>>({})
+
+const blockingIssues = computed(() => props.precheck?.errorItems || [])
+const warningIssues = computed(() => props.precheck?.warningItems || [])
+const pendingReviewAttributeIds = computed(() => {
+  const ids = new Set<string>()
+  const requiredIds = new Set(requiredAttributeFields.value.map((attr) => attr.id))
+  for (const item of draftValidationErrors.value) {
+    collectReviewAttributeId(item, ids)
+  }
+  for (const issue of [...blockingIssues.value, ...warningIssues.value]) {
+    collectReviewAttributeId(issue, ids)
+  }
+  return [...ids].filter((attrId) => requiredIds.has(attrId)).sort()
+})
+
+const completedRequiredCount = computed(() => (
+  requiredAttributeFields.value.filter((attr) => hasAttributeValue(effectiveAttributesMap.value[attr.id])).length
+))
+const completedOptionalCount = computed(() => (
+  optionalAttributeFields.value.filter((attr) => hasAttributeValue(effectiveAttributesMap.value[attr.id])).length
+))
+const pendingAttributeCount = computed(() => (
+  [...requiredAttributeFields.value, ...optionalAttributeFields.value].filter((attr) => isPendingAttribute(attr)).length
+))
+const totalEditableAttributeCount = computed(() => (
+  requiredAttributeFields.value.length + optionalAttributeFields.value.length
+))
+
+function matchesAttributeQuery(attr: CategoryAttributeDefinition): boolean {
+  const needle = attributeSearchQuery.value.trim().toLocaleLowerCase()
+  if (!needle) return true
+  const zh = String(attr.nameZh || props.categoryAttributeTranslations?.[attr.id]?.label || '').toLocaleLowerCase()
+  return attr.name.toLocaleLowerCase().includes(needle)
+    || attr.id.toLocaleLowerCase().includes(needle)
+    || zh.includes(needle)
+}
+
+function isPendingAttribute(attr: CategoryAttributeDefinition): boolean {
+  return isMissingAttribute(attr.id)
+    || pendingReviewAttributeIds.value.includes(attr.id)
+    || (attr.required && !hasAttributeValue(effectiveAttributesMap.value[attr.id]))
+}
+
+const filteredRequiredFields = computed(() => {
+  if (attributeFilter.value === 'optional') return []
+  return requiredAttributeFields.value.filter((attr) => (
+    matchesAttributeQuery(attr)
+    && (attributeFilter.value !== 'pending' || isPendingAttribute(attr))
+  ))
+})
+
+const filteredOptionalFields = computed(() => {
+  if (attributeFilter.value === 'required') return []
+  return optionalAttributeFields.value.filter((attr) => (
+    matchesAttributeQuery(attr)
+    && (attributeFilter.value !== 'pending' || isPendingAttribute(attr))
+  ))
+})
+
+const cacheSourceBadge = computed(() => {
+  const src = String(props.category?.cacheSource || '').trim()
+  if (src === 'cache') return '本地缓存'
+  if (src === 'stale') return '离线缓存'
+  if (src === 'live') return '实时刷新'
+  return ''
+})
+
+// 路径拆分：高亮叶子节点，中俄/中西双语完整呈现。
+function splitPathDisplay(rawPath: string): { parent: string; leaf: string } {
+  const normalized = String(rawPath || '').trim()
+  if (!normalized) return { parent: '', leaf: '' }
+  const parts = normalized.split(/\s*\/\s*/).filter(Boolean)
+  if (parts.length <= 1) return { parent: '', leaf: normalized }
+  return {
+    parent: `${parts.slice(0, -1).join(' / ')} / `,
+    leaf: parts[parts.length - 1],
+  }
+}
+
+const originalCategoryPath = computed(() => (
+  String(props.draft.categoryPath || props.category?.categoryPath || '').trim()
+))
+const primaryCategoryPath = computed(() => (
+  String(props.category?.categoryPathZh || originalCategoryPath.value || '').trim()
+))
+const primaryCategoryParts = computed(() => splitPathDisplay(primaryCategoryPath.value))
+const showOriginalPathSubline = computed(() => (
+  Boolean(originalCategoryPath.value && originalCategoryPath.value !== primaryCategoryPath.value)
+))
+
+const targetPlatformInfo = computed(() => {
+  const platform = props.platformOptions.find((item) => item.key === props.target.platform)
+  const site = platform?.sites.find((item) => item.code.toLowerCase() === String(props.target.site || '').toLowerCase())
+  const platformLabel = platform?.label || props.target.platform || '目标平台'
+  const siteLabel = site?.label || props.target.site || ''
+  const language = props.target.language || site?.language || ''
+  const currency = props.target.listingCurrency || ''
+  const metaParts = [props.target.site || site?.code, language, currency].filter(Boolean)
+  return {
+    title: siteLabel ? `${platformLabel} · ${siteLabel}` : platformLabel,
+    meta: metaParts.join(' · '),
+  }
+})
 
 function attributeTranslation(attrId: string) {
   return props.categoryAttributeTranslations?.[attrId] || null
 }
 
-function attributeLabel(attr: { id: string; name: string }) {
-  const translation = attributeTranslation(attr.id)
-  return translation?.label || attr.name || attr.id
+function attributeDisplayLabel(attr: CategoryAttributeDefinition) {
+  return attr.nameZh || attributeTranslation(attr.id)?.label || attr.name || attr.id
 }
 
-function attributeOriginalLabel(attr: { id: string; name: string }) {
-  return [attr.name || attr.id, attr.id].filter((item, index, items) => item && items.indexOf(item) === index).join(' · ')
-}
-
-function attributeOptionLabel(attrId: string, option: string) {
-  const translation = attributeTranslation(attrId)
-  const translated = translation?.values?.[option]
-  return translated ? `${translated} / ${option}` : option
-}
-
-function attributePlaceholder(attr: CategoryAttributeDefinition) {
-  if (attr.textFormat === 'name_value_lines') return '属性名:属性值（每行一项）'
-  if (isStrictEnumAttribute(attr)) return attr.isCollection ? '请选择一个或多个平台值' : '请选择平台允许的值'
-  if (isOpenEnumAttribute(attr)) return attr.isCollection ? '选择建议值或添加自定义值' : '选择建议值或输入自定义值'
-  if (attr.isCollection) return '添加一个或多个属性值'
-  return attr.options?.length ? '请选择平台允许的选项' : '请输入属性值'
-}
-
-function isStrictEnumAttribute(attr: CategoryAttributeDefinition) {
-  // 字典提供候选值，不代表禁止自定义；优先遵循平台声明的取值模式。
-  if (attr.valueMode) return attr.valueMode === 'strict_enum'
-  return isCategoryDictionaryAttribute(attr.dictionaryId, attr.isDictionary)
-}
-
-function isOpenEnumAttribute(attr: CategoryAttributeDefinition) {
-  if (attr.valueMode === 'open_enum') return true
-  return props.target.platform === 'mercadolibre'
-    && !isStrictEnumAttribute(attr)
-    && Boolean(attr.options?.length || attr.hasMoreValues)
-}
-
-function allowsCustomAttributeValue(attr: CategoryAttributeDefinition) {
-  return Boolean(
-    attr.allowCustomValues
-    || attr.valueMode === 'open_enum'
-    || attr.valueMode === 'free_text'
-    || (props.target.platform === 'mercadolibre' && !isStrictEnumAttribute(attr)),
-  )
-}
-
-function usesAttributeOptionPicker(attr: CategoryAttributeDefinition) {
-  return Boolean(
-    attr.isCollection
-    || isStrictEnumAttribute(attr)
-    || isOpenEnumAttribute(attr)
-    || attr.options?.length
-    || attr.hasMoreValues,
-  )
-}
-
-function usesRemoteAttributeOptions(attr: CategoryAttributeDefinition) {
-  return isCategoryDictionaryAttribute(attr.dictionaryId, attr.isDictionary)
-    || Boolean(attr.hasMoreValues)
-}
-
-function selectedDictionaryValues(attrId: string): CategoryDictionaryValue[] {
-  const raw = activeDraft.value.attributes[attrId]
-  if (!raw || typeof raw === 'string' || !('values' in raw) || !Array.isArray(raw.values)) return []
-  return raw.values
-}
-
-function selectedDictionarySummary(attr: CategoryAttributeDefinition) {
-  const values = selectedDictionaryValues(attr.id)
-  if (!values.length) return legacyDictionaryValue(attr.id)
-  return attr.isCollection
-    ? `已选 ${values.length} 项`
-    : values[0]?.value || ''
-}
-
-function pickerLegacyValue(attr: CategoryAttributeDefinition) {
-  return legacyDictionaryValue(attr.id)
-}
-
-function pickerHasValue(attr: CategoryAttributeDefinition) {
-  return Boolean(selectedDictionaryValues(attr.id).length || legacyDictionaryValue(attr.id))
-}
-
-function unitAttributeValue(attrId: string): { value: string; unit: string } {
-  const raw = activeDraft.value.attributes[attrId]
-  if (!raw || typeof raw === 'string') {
-    return { value: typeof raw === 'string' ? raw : '', unit: '' }
+function categoryResultDisplay(item: CategorySearchResult) {
+  const zhFull = String(props.categoryResultTranslations?.[item.id] || item.pathZh || item.nameZh || item.name || item.id).trim()
+  const { parent, leaf } = splitPathDisplay(zhFull)
+  return {
+    leaf: leaf || zhFull,
+    parent: parent.replace(/\s*\/\s*$/, ''),
+    orig: String(item.path || item.name || item.id).trim(),
   }
-  if ('values' in raw) return { value: '', unit: '' }
-  return { value: String(raw.value ?? ''), unit: String(raw.unit ?? '') }
-}
-
-function setFormattedAttributeValue(attr: CategoryAttributeDefinition, value: string) {
-  activeDraft.value.attributes[attr.id] = value
-  invalidateEditedAttribute(attr.id)
-}
-
-function attributeTextFormatError(attr: CategoryAttributeDefinition) {
-  const constraintError = attributeConstraintError(attr, activeDraft.value.attributes[attr.id])
-  if (constraintError) return constraintError
-  if (attr.textFormat !== 'name_value_lines') return ''
-  const lines = unitAttributeValue(attr.id).value.split(/\r\n|\r|\n/)
-  for (const [index, line] of lines.entries()) {
-    if (!line.trim()) continue
-    const colon = line.indexOf(':')
-    if (colon < 0) return `第 ${index + 1} 行缺少英文冒号，请按“属性名:属性值”填写`
-    if (!line.slice(0, colon).trim() || !line.slice(colon + 1).trim()) return `第 ${index + 1} 行的属性名和属性值均不能为空`
-  }
-  return ''
-}
-
-function unitAttributeSelectedUnit(attr: CategoryAttributeDefinition) {
-  const raw = activeDraft.value.attributes[attr.id]
-  if (typeof raw === 'string' && raw.trim()) return ''
-  const current = unitAttributeValue(attr.id).unit
-  return current || attr.defaultUnit || attr.unitOptions?.[0] || ''
-}
-
-function setUnitAttributeValue(attr: CategoryAttributeDefinition, patch: { value?: string; unit?: string }) {
-  const current = unitAttributeValue(attr.id)
-  const value = (patch.value ?? current.value).trim()
-  const unit = (patch.unit ?? unitAttributeSelectedUnit(attr)).trim()
-  if (!value) {
-    delete activeDraft.value.attributes[attr.id]
-  } else {
-    activeDraft.value.attributes[attr.id] = { value, unit }
-  }
-  invalidateEditedAttribute(attr.id)
-}
-
-function dictionaryState(attr: CategoryAttributeDefinition): DictionaryFieldState {
-  const existing = dictionaryFieldStates.value[attr.id]
-  if (existing) return existing
-  const state: DictionaryFieldState = {
-    query: '',
-    loadedQuery: null,
-    options: [],
-    loading: false,
-    loadingMore: false,
-    error: '',
-    open: false,
-    requestId: 0,
-    nextCursor: '',
-    hasMore: false,
-  }
-  dictionaryFieldStates.value[attr.id] = state
-  return state
-}
-
-function legacyDictionaryValue(attrId: string) {
-  const value = activeDraft.value.attributes[attrId]
-  return typeof value === 'string' && value.trim() ? value.trim() : ''
-}
-
-function localAttributeOptions(attr: CategoryAttributeDefinition, query = ''): CategoryAttributeOption[] {
-  const needle = query.trim().toLocaleLowerCase()
-  return (attr.options || []).flatMap((value, index) => {
-    const normalized = String(value || '').trim()
-    if (!normalized || (needle && !normalized.toLocaleLowerCase().includes(needle))) return []
-    return [{ id: `__local__:${index}`, value: normalized }]
-  })
-}
-
-function populateLocalAttributeOptions(attr: CategoryAttributeDefinition) {
-  const state = dictionaryState(attr)
-  state.options = localAttributeOptions(attr, state.query)
-  state.loadedQuery = state.query.trim()
-  state.nextCursor = ''
-  state.hasMore = false
-  state.loading = false
-  state.loadingMore = false
-  state.error = ''
-}
-
-function mergeDictionaryOptions(
-  current: CategoryAttributeOption[],
-  incoming: CategoryAttributeOption[],
-) {
-  const options = new Map(current.map((option) => [String(option.id), option]))
-  for (const option of incoming) options.set(String(option.id), option)
-  return [...options.values()]
-}
-
-async function loadDictionaryOptions(attr: CategoryAttributeDefinition, append = false) {
-  const state = dictionaryState(attr)
-  if (append && (!state.hasMore || !state.nextCursor || state.loading || state.loadingMore)) return
-  const query = state.query.trim()
-  const cursor = append ? state.nextCursor : ''
-  const requestId = ++state.requestId
-  state.loading = !append
-  state.loadingMore = append
-  state.error = ''
-  if (!append) {
-    state.options = []
-    state.nextCursor = ''
-    state.hasMore = false
-  }
-  try {
-    const page = await fetchCategoryAttributeValues(
-      props.target.platform,
-      activeDraft.value.categoryId,
-      attr.id,
-      props.target.site,
-      query,
-      50,
-      cursor,
-    )
-    if (requestId !== state.requestId) return
-    state.options = append
-      ? mergeDictionaryOptions(state.options, page.values)
-      : page.values
-    state.loadedQuery = query
-    state.nextCursor = page.nextCursor
-    state.hasMore = page.hasMore && Boolean(page.nextCursor)
-  } catch (error) {
-    if (requestId !== state.requestId) return
-    if (!append) state.options = []
-    state.error = error instanceof Error ? error.message : '读取平台枚举值失败'
-  } finally {
-    if (requestId === state.requestId) {
-      state.loading = false
-      state.loadingMore = false
-    }
-  }
-}
-
-function openDictionary(attr: CategoryAttributeDefinition) {
-  const state = dictionaryState(attr)
-  state.open = true
-  if (!usesRemoteAttributeOptions(attr)) {
-    populateLocalAttributeOptions(attr)
-    return
-  }
-  if (
-    state.loadedQuery !== state.query.trim()
-    && !state.loading
-    && !state.loadingMore
-  ) void loadDictionaryOptions(attr)
-}
-
-function scheduleDictionarySearch(attr: CategoryAttributeDefinition, value: string) {
-  const state = dictionaryState(attr)
-  state.query = value
-  state.open = true
-  state.requestId += 1
-  state.nextCursor = ''
-  state.hasMore = false
-  state.loadingMore = false
-  state.error = ''
-  const previous = dictionarySearchTimers.get(attr.id)
-  if (previous) clearTimeout(previous)
-  if (!usesRemoteAttributeOptions(attr)) {
-    populateLocalAttributeOptions(attr)
-    return
-  }
-  const query = value.trim()
-  if (props.target.platform === 'ozon' && query.length === 1) {
-    state.options = []
-    state.loadedQuery = query
-    state.loading = false
-    state.error = 'Ozon 平台枚举搜索至少需要 2 个字符'
-    return
-  }
-  dictionarySearchTimers.set(attr.id, setTimeout(() => {
-    void loadDictionaryOptions(attr)
-  }, 250))
-}
-
-function selectDictionaryOption(attr: CategoryAttributeDefinition, option: CategoryAttributeOption) {
-  // 按字符串保存枚举值 ID：Yandex 等平台的 dictionary_value_id 可能超出
-  // Number 安全整数范围，Number() 会造成精度丢失并选错枚举值。
-  const dictionaryValueId = String(option.id ?? '').trim()
-  if (!dictionaryValueId || dictionaryValueId === '0') return
-  const persistedValueId = dictionaryValueId.startsWith('__local__:') ? '' : dictionaryValueId
-  const selectedValue: CategoryDictionaryValue = {
-    ...(persistedValueId ? { dictionaryValueId: persistedValueId } : {}),
-    value: option.value,
-  }
-  if (attr.isCollection) {
-    const existing = selectedDictionaryValues(attr.id)
-    const selected = [
-      ...existing.filter((item) => {
-        const itemId = String(item.dictionaryValueId ?? '').trim()
-        return persistedValueId
-          ? itemId !== persistedValueId
-          : item.value.trim().toLocaleLowerCase() !== option.value.trim().toLocaleLowerCase()
-      }),
-      selectedValue,
-    ]
-    const maximum = attr.maxValueCount && attr.maxValueCount > 0 ? attr.maxValueCount : null
-    if (maximum !== null && selected.length > maximum) {
-      dictionaryState(attr).error = `该属性最多可选择 ${maximum} 项`
-      return
-    }
-    activeDraft.value.attributes[attr.id] = { values: selected }
-  } else if (persistedValueId) {
-    activeDraft.value.attributes[attr.id] = { values: [selectedValue] }
-  } else {
-    activeDraft.value.attributes[attr.id] = option.value
-  }
-  const state = dictionaryState(attr)
-  state.query = ''
-  state.loadedQuery = null
-  state.options = []
-  state.nextCursor = ''
-  state.hasMore = false
-  state.open = Boolean(attr.isCollection)
-  state.error = ''
-  if (attr.isCollection) openDictionary(attr)
-  invalidateEditedAttribute(attr.id)
-}
-
-function commitCustomAttributeValue(attr: CategoryAttributeDefinition) {
-  if (!allowsCustomAttributeValue(attr)) return
-  const state = dictionaryState(attr)
-  const value = state.query.trim()
-  if (!value) return
-  if (attr.isCollection) {
-    const existing = selectedDictionaryValues(attr.id)
-    const selected = [
-      ...existing.filter((item) => item.value.trim().toLocaleLowerCase() !== value.toLocaleLowerCase()),
-      { value },
-    ]
-    const maximum = attr.maxValueCount && attr.maxValueCount > 0 ? attr.maxValueCount : null
-    if (maximum !== null && selected.length > maximum) {
-      state.error = `该属性最多可填写 ${maximum} 项`
-      return
-    }
-    activeDraft.value.attributes[attr.id] = { values: selected }
-  } else {
-    activeDraft.value.attributes[attr.id] = value
-  }
-  state.query = ''
-  state.loadedQuery = null
-  state.options = []
-  state.nextCursor = ''
-  state.hasMore = false
-  state.open = Boolean(attr.isCollection)
-  state.error = ''
-  if (state.open) openDictionary(attr)
-  invalidateEditedAttribute(attr.id)
-}
-
-function removeDictionaryOption(attr: CategoryAttributeDefinition, index: number) {
-  const values = selectedDictionaryValues(attr.id).filter((_, itemIndex) => itemIndex !== index)
-  if (values.length) {
-    activeDraft.value.attributes[attr.id] = { values }
-  } else {
-    delete activeDraft.value.attributes[attr.id]
-  }
-  invalidateEditedAttribute(attr.id)
-}
-
-function clearDictionaryValue(attr: CategoryAttributeDefinition) {
-  delete activeDraft.value.attributes[attr.id]
-  const state = dictionaryState(attr)
-  state.query = ''
-  state.loadedQuery = null
-  state.options = []
-  state.nextCursor = ''
-  state.hasMore = false
-  state.open = false
-  invalidateEditedAttribute(attr.id)
-}
-
-function clearDictionarySearch(attr: CategoryAttributeDefinition) {
-  const state = dictionaryState(attr)
-  state.query = ''
-  state.loadedQuery = null
-  state.options = []
-  state.nextCursor = ''
-  state.hasMore = false
-  state.error = ''
-  state.open = true
-  openDictionary(attr)
-}
-
-function loadMoreDictionaryOptions(attr: CategoryAttributeDefinition) {
-  void loadDictionaryOptions(attr, true)
-}
-
-function closeDictionary(attr: CategoryAttributeDefinition) {
-  setTimeout(() => {
-    const state = dictionaryFieldStates.value[attr.id]
-    const active = document.activeElement
-    if (
-      active instanceof HTMLElement
-      && panelElement.value?.contains(active)
-      && (active.dataset.attributeId === attr.id || active.dataset.dictionarySearchId === attr.id)
-    ) return
-    if (state) state.open = false
-  }, 150)
-}
-
-function categoryResultTranslation(item: CategorySearchResult) {
-  return props.categoryResultTranslations?.[item.id] || ''
-}
-
-function categoryResultTitle(item: CategorySearchResult) {
-  return categoryResultTranslation(item) || item.name || item.id
-}
-
-function categoryResultSubtitle(item: CategorySearchResult) {
-  return item.path || item.id
 }
 
 function isMissingAttribute(attrId: string) {
@@ -640,22 +414,42 @@ function collectReviewAttributeId(item: PrecheckIssue | UnknownRecord | string, 
 }
 
 function invalidateEditedAttribute(attrId: string) {
-  activeDraft.value.validationErrors = activeDraft.value.validationErrors.filter((item) => {
-    const ids = new Set<string>()
-    collectReviewAttributeId(item, ids)
-    return !ids.has(attrId)
-  })
+  if (Array.isArray(props.draft.validationErrors)) {
+    props.draft.validationErrors = props.draft.validationErrors.filter((item) => {
+      const ids = new Set<string>()
+      collectReviewAttributeId(item, ids)
+      return !ids.has(attrId)
+    })
+  }
   emit('invalidateCategoryPrecheck')
 }
 
-function setAttributeInputRef(attrId: string, el: Element | ComponentPublicInstance | null) {
+function handleAttributeUpdate(attrId: string, value: CategoryAttributeValue | undefined) {
+  if (props.skuScope && (props.inheritedAttributes || props.overrideAttributes)) {
+    emit('updateAttribute', attrId, value)
+    return
+  }
+  if (!props.draft.attributes) props.draft.attributes = {}
+  if (value === undefined) {
+    delete props.draft.attributes[attrId]
+  } else {
+    props.draft.attributes[attrId] = value
+  }
+  invalidateEditedAttribute(attrId)
+}
+
+function handleClearOverride(attrId: string) {
+  emit('clearAttributeOverride', attrId)
+}
+
+function registerAttributeInputRef(attrId: string, el: Element | ComponentPublicInstance | null) {
   const node = el && '$el' in el ? el.$el : el
   attributeInputRefs.value[attrId] = node instanceof HTMLInputElement || node instanceof HTMLSelectElement || node instanceof HTMLTextAreaElement ? node : null
 }
 
 function reviewAttributeLabel(attrId: string) {
   const attr = attributeFieldById.value.get(attrId)
-  return attr ? attributeLabel(attr) : attrId
+  return attr ? attributeDisplayLabel(attr) : attrId
 }
 
 function reviewAttributeSection(attrId: string) {
@@ -667,6 +461,8 @@ function reviewAttributeSection(attrId: string) {
 async function focusAttribute(attrId: string) {
   const section = reviewAttributeSection(attrId)
   if (!section) return
+  attributeFilter.value = 'all'
+  attributeSearchQuery.value = ''
   if (section === 'required') {
     showRequiredAttributes.value = true
   } else {
@@ -679,37 +475,36 @@ async function focusAttribute(attrId: string) {
   if (input instanceof HTMLInputElement) input.select()
 }
 
+function resetAttributeFilters() {
+  attributeFilter.value = 'all'
+  attributeSearchQuery.value = ''
+}
+
 watch(
-  () => [targetIdentityKey.value, props.category?.categoryId || ''],
+  () => [targetIdentityKey.value, props.category?.categoryId || '', props.category?.fetchedAt || ''],
   () => {
-    showRequiredAttributes.value = props.skuScope
-    showOptionalAttributes.value = props.skuScope
+    showRequiredAttributes.value = true
+    showOptionalAttributes.value = props.skuScope || requiredAttributeFields.value.length === 0
+    attributeFilter.value = 'all'
+    attributeSearchQuery.value = ''
     attributeInputRefs.value = {}
-    for (const timer of dictionarySearchTimers.values()) clearTimeout(timer)
-    dictionarySearchTimers.clear()
-    dictionaryFieldStates.value = {}
   },
 )
 
-onBeforeUnmount(() => {
-  for (const timer of dictionarySearchTimers.values()) clearTimeout(timer)
-  dictionarySearchTimers.clear()
+watch(attributeSearchQuery, (query) => {
+  if (query.trim()) {
+    showRequiredAttributes.value = true
+    showOptionalAttributes.value = true
+  }
+})
+
+watch(attributeFilter, (mode) => {
+  if (mode === 'optional') showOptionalAttributes.value = true
+  if (mode === 'required' || mode === 'pending') showRequiredAttributes.value = true
 })
 
 function targetKey(target: MarketplaceTargetSite) {
   return `${String(target.platform || '').trim().toLowerCase()}:${String(target.site || '').trim().toLowerCase()}`
-}
-
-function targetLabel(target: MarketplaceTargetSite) {
-  if (!target.platform || !target.site) return '尚未选择目标站点'
-  const platform = props.platformOptions.find((item) => item.key === target.platform)
-  const site = platform?.sites.find((item) => item.code.toLowerCase() === String(target.site || '').toLowerCase())
-  const platformLabel = platform?.label || target.platform || '目标平台'
-  const siteLabel = site?.label || target.site || '默认站点'
-  const language = target.language || site?.language || ''
-  // 发布币种只展示店铺配置快照；未就绪统一提示待配置，不回退站点币种。
-  const currency = target.listingCurrency || '店铺发布货币待配置'
-  return `${platformLabel} - ${siteLabel}（${target.site || site?.code || '-'} / ${language || '-'} / ${currency || '-'}）`
 }
 
 function isCategoryForbidden(item: CategorySearchResult) {
@@ -719,410 +514,634 @@ function isCategoryForbidden(item: CategorySearchResult) {
 function categoryForbiddenReason(item: CategorySearchResult) {
   return String(item.forbiddenReason || item.raw.forbidden_reason || '').trim()
 }
-
 </script>
 
 <template>
-  <section ref="panelElement" class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
-    <div v-if="!props.skuScope" class="flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <h2 class="card-title">{{ targetLabel(props.target) }}</h2>
-        <p v-if="usesSharedMercadoLibreCbtCategory" class="muted mt-1">为当前草稿维护一个共享 CBT 类目和对应属性。</p>
-        <p v-else class="muted mt-1">在此直接搜索、匹配并确认该平台的类目，填写平台属性。</p>
-        <p v-if="props.categoryAutoMatchProductName" class="mt-1 text-xs font-semibold text-brand-700 dark:text-brand-300">AI 识别商品主体：{{ props.categoryAutoMatchProductName }}。{{ usesSharedMercadoLibreCbtCategory ? '请检查候选 CBT 类目是否兼容全部已选销售市场后再确认。' : '请检查本平台的候选类目后再确认。' }}</p>
-        <p v-if="categoryResultTranslationCount || translationCount" class="mt-1 text-xs text-accent-500 dark:text-accent-400">已翻译候选类目 {{ categoryResultTranslationCount }} 项 / 属性 {{ translationCount }} 项</p>
+  <section class="min-w-0 space-y-3.5">
+    <!-- ========== 1. 紧凑类目状态条（常规模式） ========== -->
+    <div
+      v-if="!props.skuScope"
+      class="rounded-2xl border border-accent-200/90 bg-accent-50/70 px-4 py-3 dark:border-dark-700 dark:bg-dark-950/60"
+    >
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <!-- 左侧：平台上下文 + 双语类目路径 -->
+        <div class="min-w-0 flex-1 space-y-1">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-xs font-semibold text-accent-800 dark:text-accent-100">
+              {{ targetPlatformInfo.title }}
+            </span>
+            <span v-if="targetPlatformInfo.meta" class="text-[11px] text-accent-400 dark:text-accent-500">
+              {{ targetPlatformInfo.meta }}
+            </span>
+            <span
+              v-if="hasSelectedCategory"
+              class="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-500/30"
+            >
+              <PhCheck :size="11" weight="bold" aria-hidden="true" />已选类目
+            </span>
+            <span
+              v-else
+              class="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:ring-amber-500/30"
+            >
+              待选类目
+            </span>
+            <span
+              v-if="hasSelectedCategory"
+              class="inline-flex items-center rounded-md border border-accent-200 bg-white px-1.5 py-0.5 font-mono text-[11px] text-accent-600 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-300"
+              data-testid="selected-category-id"
+            >
+              ID {{ props.draft.categoryId }}
+            </span>
+            <button
+              type="button"
+              class="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-accent-500 transition hover:bg-accent-200/60 hover:text-accent-800 dark:text-accent-400 dark:hover:bg-dark-800 dark:hover:text-accent-100"
+              data-testid="toggle-manual-category-edit"
+              @click="manualEditOpen = !manualEditOpen"
+            >
+              <PhPencilSimple :size="11" aria-hidden="true" />
+              {{ manualEditOpen ? '收起改 ID' : (hasSelectedCategory ? '改 ID' : '手动填 ID') }}
+            </button>
+            <span
+              v-if="cacheSourceBadge"
+              class="rounded-full bg-accent-100 px-2 py-0.5 text-[10.5px] font-medium text-accent-500 dark:bg-dark-800 dark:text-accent-400"
+            >
+              {{ cacheSourceBadge }}
+            </span>
+            <span
+              v-if="props.categoryAttributeTranslating || props.categoryResultTranslating"
+              class="text-[11px] text-primary-600 dark:text-primary-400"
+            >
+              正在补全中文参考…
+            </span>
+          </div>
+
+          <div v-if="hasSelectedCategory" class="space-y-0.5">
+            <div class="text-sm font-semibold leading-snug text-accent-950 dark:text-white" data-testid="selected-category-path">
+              <span v-if="primaryCategoryParts.parent" class="font-medium text-accent-700 dark:text-accent-200">{{ primaryCategoryParts.parent }}</span>
+              <span class="text-primary-700 dark:text-primary-400">{{ primaryCategoryParts.leaf || props.draft.categoryId }}</span>
+            </div>
+            <p v-if="showOriginalPathSubline" class="text-xs text-accent-500 dark:text-accent-400">
+              {{ originalCategoryPath }}
+            </p>
+          </div>
+          <p v-else class="text-xs text-accent-500 dark:text-accent-400">
+            {{ usesSharedMercadoLibreCbtCategory
+              ? '请检索或使用 AI 匹配兼容全部已选销售市场的共享 CBT 类目。'
+              : '请在下方输入中文、原文或 ID 搜索类目，或点击右侧「AI 匹配类目」。' }}
+          </p>
+        </div>
+
+        <!-- 右侧：高频快捷动作 -->
+        <div class="flex shrink-0 flex-wrap items-center gap-1.5">
+          <button
+            v-if="hasSelectedCategory"
+            type="button"
+            class="btn btn-outline !rounded-lg !px-2.5 !py-1.5 text-xs"
+            :class="pickerOpen ? '!border-primary-500/50 !bg-primary-50/70 !text-primary-700 dark:!bg-primary-950/30 dark:!text-primary-300' : ''"
+            data-testid="toggle-category-picker"
+            @click="toggleCategoryPicker"
+          >
+            <PhMagnifyingGlass :size="13" aria-hidden="true" />
+            {{ pickerOpen ? '收起选类目' : '更换类目' }}
+          </button>
+          <button
+            v-desktop="'category.product_match'"
+            type="button"
+            class="btn !rounded-lg !px-2.5 !py-1.5 text-xs"
+            :class="hasSelectedCategory ? 'btn-outline' : 'btn-primary'"
+            :disabled="!!modelOperationReason('category.product_match') || props.loading || !hasCurrentDraft"
+            @click="emit('suggestCategory')"
+          >
+            <PhLightning :size="13" aria-hidden="true" />
+            {{ hasSelectedCategory ? 'AI 重匹配' : 'AI 匹配类目' }}
+          </button>
+          <button
+            v-if="hasSelectedCategory"
+            type="button"
+            class="btn btn-outline !rounded-lg !px-2.5 !py-1.5 text-xs"
+            :disabled="props.loading || props.categoryAttributeLoading || !hasCurrentDraft"
+            @click="emit('applyCategory', hasLoadedCategoryDefinition)"
+          >
+            <PhArrowsClockwise :size="13" :class="{ 'animate-spin': props.categoryAttributeLoading }" aria-hidden="true" />
+            {{ hasLoadedCategoryDefinition ? '刷新属性' : '加载属性' }}
+          </button>
+          <button
+            v-if="hasSelectedCategory"
+            type="button"
+            class="btn btn-outline !rounded-lg !px-2.5 !py-1.5 text-xs"
+            :disabled="props.loading || props.category?.categoryId !== String(props.draft.categoryId || '').trim()"
+            @click="emit('categoryPrecheck')"
+          >
+            <PhShieldCheck :size="13" aria-hidden="true" />
+            类目预检
+          </button>
+        </div>
+      </div>
+
+      <p
+        v-if="modelOperationReason('category.product_match')"
+        role="status"
+        class="mt-2 text-xs text-accent-500 dark:text-accent-400"
+      >
+        {{ modelOperationReason('category.product_match') }}
+      </p>
+
+      <!-- 按需展开的手动编辑类目 ID / 路径表单 -->
+      <div
+        v-if="manualEditOpen"
+        data-testid="manual-category-edit-form"
+        class="mt-3 grid gap-2.5 border-t border-accent-200/80 pt-3 dark:border-dark-700 sm:grid-cols-[minmax(0,220px)_minmax(0,1fr)_auto]"
+      >
+        <label class="block">
+          <span class="text-[11px] font-semibold text-accent-500 dark:text-accent-400">
+            {{ usesSharedMercadoLibreCbtCategory ? '共享 CBT 类目 ID' : '类目 ID' }}
+          </span>
+          <input
+            v-model="props.draft.categoryId"
+            class="input mt-1 !rounded-lg !py-1.5 text-xs"
+            :placeholder="usesSharedMercadoLibreCbtCategory ? '请输入 CBT 类目 ID' : '例如 MLM12345'"
+            @input="emit('invalidateCategoryPrecheck')"
+          />
+        </label>
+        <label class="block">
+          <span class="text-[11px] font-semibold text-accent-500 dark:text-accent-400">
+            {{ usesSharedMercadoLibreCbtCategory ? '共享 CBT 类目路径' : '类目路径' }}
+          </span>
+          <input
+            v-model="props.draft.categoryPath"
+            class="input mt-1 !rounded-lg !py-1.5 text-xs"
+          />
+        </label>
+        <div class="flex items-end gap-1.5">
+          <button
+            type="button"
+            class="btn btn-primary !rounded-lg !px-3 !py-1.5 text-xs"
+            :disabled="props.loading || props.categoryAttributeLoading || !hasCurrentDraft || !hasSelectedCategory"
+            @click="emit('applyCategory', false); manualEditOpen = false"
+          >
+            读取该类目属性
+          </button>
+        </div>
       </div>
     </div>
+
+    <!-- SKU 模式精简头部 -->
+    <div
+      v-else
+      class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-accent-200/80 bg-accent-50/60 px-3.5 py-2.5 dark:border-dark-700 dark:bg-dark-950/50"
+    >
+      <div class="min-w-0">
+        <div class="text-xs font-semibold text-accent-900 dark:text-white">此 SKU 的平台差异属性</div>
+        <p class="mt-0.5 truncate text-xs text-accent-500 dark:text-accent-400">
+          {{ props.category?.categoryPathZh || props.draft.categoryPath }}（{{ props.draft.categoryId }}）
+        </p>
+      </div>
+      <div class="flex shrink-0 items-center gap-2">
+        <span v-if="props.categoryAttributeTranslating" class="text-[11px] text-primary-600 dark:text-primary-400">正在补全中文参考…</span>
+        <button
+          type="button"
+          class="btn btn-outline !rounded-lg !px-2.5 !py-1.5 text-xs"
+          :disabled="props.loading || props.categoryAttributeLoading || !hasCurrentDraft || !hasSelectedCategory"
+          @click="emit('applyCategory', hasLoadedCategoryDefinition)"
+        >
+          <PhArrowsClockwise :size="13" :class="{ 'animate-spin': props.categoryAttributeLoading }" aria-hidden="true" />
+          {{ hasLoadedCategoryDefinition ? '刷新平台属性' : '加载平台属性' }}
+        </button>
+      </div>
+    </div>
+
+    <!-- Mercado CBT 共享类目提醒 -->
     <div
       v-if="!props.skuScope && usesSharedMercadoLibreCbtCategory"
       data-testid="mercadolibre-shared-category-notice"
-      class="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800 dark:border-blue-900/70 dark:bg-blue-950/30 dark:text-blue-200"
+      class="rounded-xl border border-blue-200/90 bg-blue-50/80 px-3.5 py-2.5 text-xs text-blue-800 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200"
     >
-      <p class="font-semibold">所有已选销售市场共用一个 CBT 类目</p>
-      <p class="mt-1">适用市场：{{ sharedMercadoLibreMarketSummary }}。Mercado Libre 会自动映射各市场的本地类目，不能为每个市场分别设置类目 ID。</p>
+      <span class="font-semibold">所有已选销售市场共用一个 CBT 类目</span>
+      <span class="mx-1.5 opacity-50">·</span>
+      <span>适用市场：{{ sharedMercadoLibreMarketSummary }}。Mercado Libre 会自动映射各市场的本地类目，不能为每个市场分别设置类目 ID。</span>
     </div>
-    <div class="mt-5 grid min-w-0 items-start gap-6" :class="props.columnLayout || props.skuScope ? '' : 'xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]'">
-      <article v-if="!props.skuScope" class="min-w-0 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h3 class="font-semibold text-accent-950 dark:text-white">类目候选与手动搜索</h3>
-            <p v-if="usesSharedMercadoLibreCbtCategory" class="mt-1 text-sm text-accent-500 dark:text-accent-400">搜索与商品真实属性相符、并兼容全部已选销售市场的 CBT 全局类目。</p>
-            <p v-else class="mt-1 text-sm text-accent-500 dark:text-accent-400">可手动输入关键词搜索当前目标站点，或按需使用 AI 识别商品主体并生成候选。</p>
-          </div>
-          <span v-if="modelOperationReason('text.translate')" role="status" class="muted">{{ modelOperationReason('text.translate') }}</span>
-          <button v-desktop="'text.translate'" class="btn btn-outline" :disabled="!!modelOperationReason('text.translate') || props.loading || props.categoryResultTranslating || !props.categoryResults.length" @click="emit('translateCategoryResults')">翻译候选类目</button>
-        </div>
-        <p class="mt-3 text-xs text-accent-500 dark:text-accent-400">{{ props.loading ? '正在请求当前平台实时类目接口...' : '候选类目来自当前平台实时搜索。' }}</p>
-        <p v-if="props.categoryAutoMatchTargetError" class="mt-2 text-xs text-amber-700 dark:text-amber-300">本目标站点自动匹配未完成：{{ props.categoryAutoMatchTargetError }}</p>
-        <div class="mt-4 flex gap-2">
-          <input :value="props.categoryQuery" class="input" placeholder="类目关键词" @input="emit('updateCategoryQuery', ($event.target as HTMLInputElement).value)" @keyup.enter="emit('searchCategory')" />
-          <span v-if="modelOperationReason('category.product_match')" role="status" class="muted">{{ modelOperationReason('category.product_match') }}</span>
-          <button v-desktop="'category.product_match'" class="btn btn-outline shrink-0" :disabled="!!modelOperationReason('category.product_match') || props.loading || !hasCurrentDraft" @click="emit('suggestCategory')">AI 匹配类目</button>
-          <button class="btn btn-primary shrink-0" :disabled="props.loading || !hasCurrentDraft" @click="emit('searchCategory')">搜索</button>
-        </div>
-        <div class="mt-4 max-h-80 space-y-2 overflow-y-auto">
-          <button
-            v-for="item in props.categoryResults"
-            :key="item.id"
-            type="button"
-            :disabled="isCategoryForbidden(item)"
-            :data-forbidden="isCategoryForbidden(item) ? 'true' : undefined"
-            class="w-full rounded-lg border p-3 text-left"
-            :class="isCategoryForbidden(item)
-              ? 'cursor-not-allowed border-red-200 bg-red-50/70 opacity-85 dark:border-red-900/70 dark:bg-red-950/30'
-              : 'border-accent-200 bg-white hover:border-brand-300 hover:bg-brand-50 dark:border-dark-700 dark:bg-dark-900 dark:hover:border-primary-500/60 dark:hover:bg-dark-800'"
-            @click="!isCategoryForbidden(item) && emit('selectCategory', item)"
+
+    <!-- ========== 2. 按需展开的类目检索与候选面板（融入方案 B 卡片质感） ========== -->
+    <div
+      v-if="showCategoryPicker"
+      data-testid="category-picker-panel"
+      class="rounded-2xl border border-accent-200/90 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-900/80"
+    >
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="flex flex-wrap items-center gap-2">
+          <h3 class="text-sm font-semibold text-accent-950 dark:text-white">
+            类目检索与候选
+            <span v-if="props.categoryResults.length" class="ml-1 text-xs font-normal text-accent-400">({{ props.categoryResults.length }})</span>
+          </h3>
+          <span class="rounded-full bg-primary-50 px-2 py-0.5 text-[11px] font-medium text-primary-700 dark:bg-primary-950/40 dark:text-primary-300">
+            支持中文 / 平台原文 / 类目 ID
+          </span>
+          <span
+            v-if="props.categoryAutoMatchProductName"
+            class="rounded-full bg-accent-100 px-2 py-0.5 text-[11px] text-accent-600 dark:bg-dark-800 dark:text-accent-300"
           >
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <div class="font-semibold text-accent-950 dark:text-white">{{ categoryResultTitle(item) }}</div>
-              <span v-if="isCategoryForbidden(item)" class="badge-danger">禁售</span>
-              <span v-else-if="item.raw.aiRecommended" class="badge-info">AI 推荐 · 请核对完整路径</span>
-            </div>
-            <div class="mt-1 text-xs text-accent-500 dark:text-accent-400">{{ categoryResultSubtitle(item) }}</div>
-            <p class="mt-1 text-xs text-accent-500">类目 ID：{{ item.id }}</p>
-            <p v-if="isCategoryForbidden(item)" class="mt-1 text-xs font-medium text-red-700 dark:text-red-300">{{ categoryForbiddenReason(item) || '该类目在禁售名单中，不能选择。' }}</p>
-            <p v-for="(reason, index) in (item.raw.matchEvidence as string[] || [])" :key="index" class="mt-1 text-xs text-accent-500">{{ reason }}</p>
-            <div v-if="item.raw.site || item.raw.source" class="mt-1 text-xs text-accent-400 dark:text-accent-500">{{ item.raw.site || '' }}{{ item.raw.source ? ` / ${item.raw.source}` : '' }}</div>
-          </button>
-          <div v-if="!props.categoryResults.length" class="rounded-lg border border-dashed border-accent-300 bg-white p-5 text-center text-sm text-accent-500 dark:border-dark-600 dark:bg-dark-900 dark:text-accent-300">暂无搜索结果。</div>
+            AI 识别主体：{{ props.categoryAutoMatchProductName }}
+          </span>
         </div>
-      </article>
+        <button
+          v-if="hasSelectedCategory"
+          type="button"
+          class="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-accent-500 transition hover:bg-accent-100 hover:text-accent-800 dark:text-accent-400 dark:hover:bg-dark-800 dark:hover:text-white"
+          @click="pickerOpen = false"
+        >
+          <PhX :size="13" aria-hidden="true" />收起
+        </button>
+      </div>
 
-      <article class="min-w-0 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
-        <div class="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h3 class="font-semibold text-accent-950 dark:text-white">{{ props.skuScope ? '此 SKU 的平台差异属性' : '当前类目 / 平台属性' }}</h3>
-            <p v-if="translationCount" class="mt-1 text-xs text-accent-500 dark:text-accent-400">属性翻译：{{ translationCount }} 项{{ translationSourceLabel ? ` / ${translationSourceLabel}` : '' }}</p>
-          </div>
+      <div class="mt-3 flex gap-2">
+        <div class="relative min-w-0 flex-1">
+          <input
+            ref="categorySearchInputRef"
+            :value="props.categoryQuery"
+            class="input !rounded-xl !py-2 text-sm"
+            placeholder="输入中文、平台原文关键词或类目 ID"
+            @input="emit('updateCategoryQuery', ($event.target as HTMLInputElement).value)"
+            @keyup.enter="emit('searchCategory')"
+          />
         </div>
-        <p v-if="props.skuScope" class="mt-3 text-sm">{{ activeDraft.categoryPath }}（{{ activeDraft.categoryId }}）</p>
-        <label v-if="!props.skuScope" class="mt-4 block">
-          <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">{{ usesSharedMercadoLibreCbtCategory ? '共享 CBT 类目 ID' : '类目 ID' }}</span>
-          <input v-model="activeDraft.categoryId" class="input mt-1" :placeholder="usesSharedMercadoLibreCbtCategory ? '请输入 CBT 类目 ID' : '例如 MLM12345'" @input="emit('invalidateCategoryPrecheck')" />
-        </label>
-        <label v-if="!props.skuScope" class="mt-3 block">
-          <span class="text-xs font-semibold text-accent-500 dark:text-accent-400">{{ usesSharedMercadoLibreCbtCategory ? '共享 CBT 类目路径' : '类目路径' }}</span>
-          <input v-model="activeDraft.categoryPath" class="input mt-1" />
-        </label>
-        <div class="mt-4 flex flex-wrap gap-2">
-          <button class="btn btn-outline" :disabled="props.loading || props.categoryAttributeLoading || !hasCurrentDraft || !hasSelectedCategory" @click="emit('applyCategory')">{{ hasLoadedCategoryDefinition ? '刷新平台属性' : '编辑平台属性' }}</button>
-          <span v-if="modelOperationReason('text.translate')" role="status" class="muted">{{ modelOperationReason('text.translate') }}</span>
-          <button v-desktop="'text.translate'" class="btn btn-outline" :disabled="!!modelOperationReason('text.translate') || props.loading || props.categoryAttributeTranslating || categoryAttributeState !== 'ready'" @click="emit('translateCategoryAttributes')">翻译平台属性</button>
-          <button v-if="!props.skuScope" class="btn btn-outline" :disabled="props.loading || !hasSelectedCategory || props.category?.categoryId !== activeDraft.categoryId.trim()" @click="emit('categoryPrecheck')">类目预检</button>
-        </div>
+        <button
+          type="button"
+          class="btn btn-primary shrink-0 !rounded-xl !px-4 !py-2 text-xs"
+          :disabled="props.loading || !hasCurrentDraft"
+          @click="emit('searchCategory')"
+        >
+          <PhMagnifyingGlass :size="14" aria-hidden="true" />搜索
+        </button>
+      </div>
 
-        <div v-if="categoryAttributeState === 'empty'" class="mt-4 rounded-lg border border-dashed border-accent-300 bg-white p-4 text-sm text-accent-500 dark:border-dark-600 dark:bg-dark-900 dark:text-accent-300">
-          请先从候选结果中选择类目。
-        </div>
-        <div v-else-if="categoryAttributeState === 'loading'" class="mt-4 rounded-lg border border-brand-200 bg-brand-50 p-4 text-sm text-brand-700 dark:border-primary-500/40 dark:bg-primary-950/20 dark:text-brand-300">
-          正在读取平台属性定义…
-        </div>
-        <div v-else-if="categoryAttributeState === 'error'" class="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-300">
-          <div class="font-semibold">平台属性定义未加载</div>
-          <p class="mt-1">{{ props.categoryAttributeError }}</p>
-          <button class="btn btn-outline mt-3" :disabled="props.loading || props.categoryAttributeLoading" type="button" @click="emit('applyCategory')">重新加载</button>
-        </div>
-        <div v-else-if="categoryAttributeState === 'ready'" class="mt-4 flex flex-wrap gap-2">
-          <span class="badge-muted">必填属性 {{ requiredAttributeFields.length }} 个</span>
-          <span class="badge-muted">可选属性 {{ optionalAttributeFields.length }} 个</span>
-        </div>
+      <!-- 动态检索提示（仅在触发时展示，无静态废话） -->
+      <div
+        v-if="props.categoryTranslatedQuery || props.categoryAutoMatchTargetError || props.loading"
+        class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs"
+      >
+        <span
+          v-if="props.categoryTranslatedQuery"
+          class="font-medium text-primary-700 dark:text-primary-300"
+          data-testid="category-translated-query-hint"
+        >
+          已自动转换为「{{ props.categoryTranslatedQuery }}」检索
+        </span>
+        <span v-if="props.loading" class="text-accent-500 dark:text-accent-400">
+          正在检索当前平台类目…
+        </span>
+        <span
+          v-if="props.categoryAutoMatchTargetError"
+          class="inline-flex items-center gap-1 text-amber-700 dark:text-amber-300"
+        >
+          <PhWarningCircle :size="13" aria-hidden="true" />
+          {{ props.categoryAutoMatchTargetError }}
+        </span>
+      </div>
 
-        <div v-if="filledAttributes.length" class="mt-4">
-          <h4 class="text-sm font-semibold">已填属性</h4>
-          <dl class="mt-2 grid gap-2 text-sm">
-            <div v-for="attribute in filledAttributes" :key="attribute.id" class="grid grid-cols-2 gap-3">
-              <dt class="break-words text-accent-500">{{ attribute.id }}</dt>
-              <dd class="whitespace-pre-wrap break-words">{{ attribute.text }}</dd>
-            </div>
-          </dl>
-        </div>
-
-        <p v-if="skuVariantCount" class="mt-3 text-sm text-brand-700">此类目还有 {{ skuVariantCount }} 个 SKU 差异字段，请在 SKU 页的“属性 / 详情”中按规格填写。</p>
-        <DraftBarcodeFields v-if="!skuScope && categoryAttributeState === 'ready'" :draft="activeDraft" :target="target" :category="category" :skus="productContext.skuItems" :loading="loading" @change="invalidateEditedAttribute('EMPTY_GTIN_REASON')" />
-        <div v-if="categoryAttributeState === 'ready' && systemGroupingAttributes.length" data-testid="system-grouping-attributes" class="mt-3 rounded-lg bg-accent-50 p-3 text-sm dark:bg-dark-800">
-          <p class="font-medium">刊登分组（系统填写）</p>
-          <p class="mt-1">{{ systemGroupingDisplay }}</p>
-          <p class="mt-1 text-accent-500">根据 SKU 页的发布组织方式和平台组名自动填写，无需 AI 或手动编辑此属性。</p>
-        </div>
-        <div v-if="categoryAttributeState === 'ready' && pendingReviewAttributeIds.length" class="mt-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-800 ring-1 ring-amber-200 dark:bg-amber-950/20 dark:text-amber-300 dark:ring-amber-900/60">
-          <div class="font-semibold">待复核属性</div>
-          <div class="mt-2 flex flex-wrap gap-2">
-            <button
-              v-for="attrId in pendingReviewAttributeIds"
-              :key="attrId"
-              class="rounded-full bg-white px-2.5 py-1 text-xs text-amber-800 ring-1 ring-amber-200 transition hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-dark-900 dark:text-amber-300 dark:ring-amber-900/60"
-              type="button"
-              :disabled="!reviewAttributeSection(attrId)"
-              :title="reviewAttributeSection(attrId) ? `定位到${reviewAttributeLabel(attrId)}` : '当前平台属性定义中不存在该属性'"
-              @click="focusAttribute(attrId)"
+      <!-- 候选网格：双列高密度卡片，标出当前已选 / AI 推荐 / 禁售拦截 -->
+      <div v-if="props.categoryResults.length" class="mt-3 grid max-h-80 gap-2.5 overflow-y-auto pr-0.5 md:grid-cols-2">
+        <button
+          v-for="item in props.categoryResults"
+          :key="item.id"
+          type="button"
+          :disabled="isCategoryForbidden(item)"
+          :data-forbidden="isCategoryForbidden(item) ? 'true' : undefined"
+          class="flex flex-col gap-1 rounded-xl border p-3 text-left transition"
+          :class="isCategoryForbidden(item)
+            ? 'cursor-not-allowed border-rose-200 bg-rose-50/70 opacity-80 dark:border-rose-900/60 dark:bg-rose-950/25'
+            : item.id === String(props.draft.categoryId || '').trim()
+              ? 'border-primary-500 bg-primary-50/60 dark:border-primary-500/80 dark:bg-primary-950/30'
+              : 'border-accent-200 bg-accent-50/50 hover:border-primary-400 hover:bg-primary-50/40 dark:border-dark-700 dark:bg-dark-950/60 dark:hover:border-primary-500/60 dark:hover:bg-dark-800/80'"
+          @click="handleSelectCategory(item)"
+        >
+          <div class="flex items-start justify-between gap-2">
+            <span class="text-[13px] font-semibold text-accent-950 dark:text-white">
+              {{ categoryResultDisplay(item).leaf }}
+            </span>
+            <span v-if="isCategoryForbidden(item)" class="badge-danger shrink-0 !py-0.5 text-[10.5px]">禁售</span>
+            <span
+              v-else-if="item.id === String(props.draft.categoryId || '').trim()"
+              class="badge-success shrink-0 !py-0.5 text-[10.5px]"
             >
-              {{ reviewAttributeLabel(attrId) }}
+              当前已选
+            </span>
+            <span v-else-if="item.raw.aiRecommended" class="badge-info shrink-0 !py-0.5 text-[10.5px]">AI 推荐</span>
+          </div>
+          <p v-if="categoryResultDisplay(item).parent" class="text-xs text-accent-600 dark:text-accent-300">
+            {{ categoryResultDisplay(item).parent }}
+          </p>
+          <p class="truncate text-[11px] text-accent-400 dark:text-accent-500" :title="categoryResultDisplay(item).orig">
+            {{ categoryResultDisplay(item).orig }}
+          </p>
+          <p v-if="isCategoryForbidden(item)" class="text-xs font-medium text-rose-700 dark:text-rose-300">
+            {{ categoryForbiddenReason(item) || '该类目在禁售名单中，不能选择。' }}
+          </p>
+          <p
+            v-for="(reason, index) in (item.raw.matchEvidence as string[] || [])"
+            :key="index"
+            class="text-[11px] text-accent-500 dark:text-accent-400"
+          >
+            {{ reason }}
+          </p>
+          <div class="mt-auto flex items-center justify-between pt-1 text-[11px] text-accent-400 dark:text-accent-500">
+            <span class="font-mono">ID {{ item.id }}</span>
+            <span v-if="item.raw.site || item.raw.source">{{ item.raw.site || '' }}{{ item.raw.source ? ` / ${item.raw.source}` : '' }}</span>
+          </div>
+        </button>
+      </div>
+      <p
+        v-else
+        class="mt-3 rounded-xl border border-dashed border-accent-200 px-3.5 py-2.5 text-center text-xs text-accent-500 dark:border-dark-700 dark:text-accent-400"
+      >
+        输入中文或平台原文关键词按回车搜索，或点击上方「{{ hasSelectedCategory ? 'AI 重匹配' : 'AI 匹配类目' }}」获取推荐。
+      </p>
+    </div>
+
+    <!-- ========== 3. 属性加载中 / 失败 / 未加载回退 ========== -->
+    <div
+      v-if="categoryAttributeState === 'empty' && props.skuScope"
+      class="rounded-xl border border-dashed border-accent-300 p-4 text-sm text-accent-500 dark:border-dark-600 dark:text-accent-400"
+    >
+      请先在「类目/属性」页选择类目。
+    </div>
+    <div
+      v-else-if="categoryAttributeState === 'loading'"
+      class="flex items-center gap-2.5 rounded-xl border border-primary-200 bg-primary-50/70 px-4 py-3 text-sm text-primary-700 dark:border-primary-500/30 dark:bg-primary-950/25 dark:text-primary-300"
+    >
+      <div class="size-4 animate-spin rounded-full border-2 border-primary-200 border-t-primary-600 dark:border-primary-800 dark:border-t-primary-400" />
+      正在读取平台属性定义…
+    </div>
+    <div
+      v-else-if="categoryAttributeState === 'error'"
+      class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/25 dark:text-amber-300"
+    >
+      <div class="font-semibold">平台属性定义未加载</div>
+      <p class="mt-1">{{ props.categoryAttributeError }}</p>
+      <button
+        class="btn btn-outline mt-3 !rounded-lg !px-3 !py-1.5 text-xs"
+        :disabled="props.loading || props.categoryAttributeLoading"
+        type="button"
+        @click="emit('applyCategory', false)"
+      >
+        重新加载
+      </button>
+    </div>
+
+    <!-- 未拿到 Schema 时的已填属性只读回显 -->
+    <div v-if="filledAttributes.length" class="rounded-xl border border-accent-200 bg-accent-50/50 p-3.5 dark:border-dark-700 dark:bg-dark-950/50">
+      <h4 class="text-xs font-semibold text-accent-700 dark:text-accent-200">已填属性（只读预览）</h4>
+      <dl class="mt-2 grid gap-1.5 text-xs sm:grid-cols-2">
+        <div v-for="attribute in filledAttributes" :key="attribute.id" class="flex gap-2">
+          <dt class="shrink-0 font-mono text-accent-500">{{ attribute.id }}:</dt>
+          <dd class="min-w-0 whitespace-pre-wrap break-words text-accent-800 dark:text-accent-200">{{ attribute.text }}</dd>
+        </div>
+      </dl>
+    </div>
+
+    <!-- ========== 4. 紧凑单行系统信息条（刊登分组 + SKU 差异字段跳转） ========== -->
+    <div
+      v-if="categoryAttributeState === 'ready' && (systemGroupingAttributes.length || skuVariantCount > 0)"
+      class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 rounded-xl border border-accent-200/80 bg-accent-50/60 px-3.5 py-2 text-xs text-accent-600 dark:border-dark-700/80 dark:bg-dark-950/40 dark:text-accent-300"
+    >
+      <div class="flex min-w-0 flex-wrap items-center gap-x-3.5 gap-y-1">
+        <span
+          v-if="systemGroupingAttributes.length"
+          data-testid="system-grouping-attributes"
+          class="inline-flex min-w-0 items-center gap-1"
+          title="根据 SKU 页的发布组织方式和平台组名自动填写，无需手动编辑"
+        >
+          <span class="shrink-0 text-accent-400 dark:text-accent-500">刊登分组（系统自动）：</span>
+          <strong class="truncate font-medium text-accent-800 dark:text-accent-100">{{ systemGroupingDisplay }}</strong>
+        </span>
+        <span v-if="systemGroupingAttributes.length && skuVariantCount > 0" class="hidden text-accent-300 dark:text-dark-600 sm:inline" aria-hidden="true">|</span>
+        <span v-if="skuVariantCount > 0" class="inline-flex items-center gap-1.5">
+          <span class="size-1.5 rounded-full bg-sky-500" aria-hidden="true" />
+          <span>另有 <strong class="font-semibold text-accent-900 dark:text-white">{{ skuVariantCount }}</strong> 个 SKU 差异字段（按规格填写）</span>
+          <button
+            type="button"
+            class="inline-flex items-center gap-0.5 font-medium text-primary-700 hover:underline dark:text-primary-400"
+            data-testid="jump-to-sku-tab"
+            @click="emit('openSkuTab')"
+          >
+            前往 SKU 页 <PhArrowRight :size="12" aria-hidden="true" />
+          </button>
+        </span>
+      </div>
+      <span class="hidden text-[11px] text-accent-400 dark:text-accent-500 lg:inline">
+        属性自动中文化展示 · 保存平台原文/ID
+      </span>
+    </div>
+
+    <!-- Mercado 条码规则（仅适用市场出现） -->
+    <DraftBarcodeFields
+      v-if="!props.skuScope && categoryAttributeState === 'ready'"
+      :draft="props.draft"
+      :target="props.target"
+      :category="props.category"
+      :skus="props.productContext.skuItems"
+      :loading="props.loading"
+      @change="invalidateEditedAttribute('EMPTY_GTIN_REASON')"
+    />
+
+    <!-- ========== 5. 属性工作区（单行工具栏 + 预检/待复核 + 全宽双列卡片） ========== -->
+    <template v-if="categoryAttributeState === 'ready'">
+      <!-- 单行属性进度与筛选工具栏 -->
+      <div class="flex flex-wrap items-center justify-between gap-2.5">
+        <div class="flex flex-wrap items-center gap-2">
+          <span
+            class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold"
+            :class="completedRequiredCount >= requiredAttributeFields.length
+              ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-500/30'
+              : 'bg-amber-50 text-amber-800 ring-1 ring-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:ring-amber-500/30'"
+            data-testid="required-progress-badge"
+          >
+            <PhCheckCircle v-if="completedRequiredCount >= requiredAttributeFields.length" :size="13" weight="fill" aria-hidden="true" />
+            必填已完成 {{ completedRequiredCount }} / {{ requiredAttributeFields.length }}
+          </span>
+          <span class="rounded-full bg-accent-100 px-2.5 py-1 text-xs font-medium text-accent-600 dark:bg-dark-800 dark:text-accent-300">
+            可选属性 {{ optionalAttributeFields.length }} 个{{ completedOptionalCount ? `（已填 ${completedOptionalCount}）` : '' }}
+          </span>
+          <div
+            v-if="totalEditableAttributeCount > 0"
+            class="inline-flex rounded-xl border border-accent-200 bg-accent-50 p-0.5 dark:border-dark-700 dark:bg-dark-950"
+            role="tablist"
+            aria-label="属性筛选"
+          >
+            <button
+              v-for="tab in ([
+                ['all', '全部', totalEditableAttributeCount],
+                ['pending', '待处理', pendingAttributeCount],
+                ['required', '必填', requiredAttributeFields.length],
+                ['optional', '选填', optionalAttributeFields.length],
+              ] as const)"
+              :key="tab[0]"
+              type="button"
+              role="tab"
+              :aria-selected="attributeFilter === tab[0]"
+              class="rounded-lg px-2.5 py-1 text-xs font-medium transition"
+              :class="attributeFilter === tab[0]
+                ? 'bg-primary-500 font-semibold text-white shadow-sm dark:text-dark-950'
+                : 'text-accent-600 hover:text-accent-950 dark:text-accent-300 dark:hover:text-white'"
+              @click="attributeFilter = tab[0]"
+            >
+              {{ tab[1] }}<span class="ml-1 opacity-75 tabular-nums">{{ tab[2] }}</span>
             </button>
           </div>
         </div>
 
-        <div v-if="categoryAttributeState === 'ready' && requiredAttributeFields.length" class="mt-4 rounded-lg border border-accent-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">
-          <button class="flex w-full items-center justify-between text-left text-sm font-semibold text-accent-700 dark:text-accent-200" type="button" @click="showRequiredAttributes = !showRequiredAttributes">
-            <span>必填属性 {{ requiredAttributeFields.length }} 个</span>
-            <span>{{ showRequiredAttributes ? '收起' : '展开' }}</span>
-          </button>
-          <div v-if="showRequiredAttributes" class="mt-3 grid gap-2" data-testid="required-attribute-fields">
-            <label v-for="attr in requiredAttributeFields" :key="attr.id" class="block">
-              <span class="text-xs font-semibold" :class="isMissingAttribute(attr.id) ? 'text-rose-700' : 'text-slate-500'">* {{ attributeLabel(attr) }}</span>
-              <span v-if="attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
-              <span v-if="attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
-              <span v-if="pendingReviewAttributeIds.includes(attr.id)" class="mt-0.5 block text-[11px] text-amber-600">该属性需要核对，请确认商品资料。</span>
-              <div v-if="usesAttributeOptionPicker(attr)" class="relative mt-1">
-                <div v-if="attr.isCollection && selectedDictionaryValues(attr.id).length" class="mb-2 flex flex-wrap gap-2">
-                  <span v-for="(item, index) in selectedDictionaryValues(attr.id)" :key="`${item.dictionaryValueId || 'custom'}:${item.value}:${index}`" class="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2.5 py-1 text-xs text-brand-800 ring-1 ring-brand-200 dark:bg-brand-950/30 dark:text-brand-200 dark:ring-brand-900/60">
-                    {{ item.value }}
-                    <button type="button" aria-label="移除选项" @click="removeDictionaryOption(attr, index)">×</button>
-                  </span>
-                </div>
-                <div class="flex gap-2">
-                  <input
-                    :ref="(el) => setAttributeInputRef(attr.id, el)"
-                    :value="selectedDictionarySummary(attr)"
-                    class="input"
-                    :class="isMissingAttribute(attr.id) ? 'border-rose-300 bg-rose-50' : ''"
-                    :data-attribute-id="attr.id"
-                    :placeholder="attributePlaceholder(attr)"
-                    readonly
-                    @focus="openDictionary(attr)"
-                    @blur="closeDictionary(attr)"
-                    @click="openDictionary(attr)"
-                  />
-                  <button v-if="pickerHasValue(attr)" class="btn btn-outline shrink-0" type="button" @click="clearDictionaryValue(attr)">清除已选</button>
-                </div>
-                <div v-if="dictionaryState(attr).open" class="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-accent-200 bg-white p-1 shadow-xl dark:border-dark-700 dark:bg-dark-900">
-                  <div class="sticky top-0 flex gap-2 bg-white p-2 dark:bg-dark-900">
-                    <input
-                      :value="dictionaryState(attr).query"
-                      class="input"
-                      :data-dictionary-search-id="attr.id"
-                      :placeholder="allowsCustomAttributeValue(attr) ? (attr.isCollection ? '搜索建议值，或输入后添加' : '搜索建议值，或输入后使用') : '仅搜索平台选项，不会作为属性值保存'"
-                      autocomplete="off"
-                      @focus="openDictionary(attr)"
-                      @blur="closeDictionary(attr)"
-                      @keydown.enter.prevent="commitCustomAttributeValue(attr)"
-                      @input="scheduleDictionarySearch(attr, ($event.target as HTMLInputElement).value)"
-                    />
-                    <button v-if="allowsCustomAttributeValue(attr) && dictionaryState(attr).query.trim()" class="btn btn-primary shrink-0" type="button" @mousedown.prevent @click="commitCustomAttributeValue(attr)">{{ attr.isCollection ? '添加' : '使用此值' }}</button>
-                    <button v-if="dictionaryState(attr).query" class="btn btn-outline shrink-0" type="button" @mousedown.prevent @click="clearDictionarySearch(attr)">清除搜索</button>
-                  </div>
-                  <p v-if="allowsCustomAttributeValue(attr) && dictionaryState(attr).query" class="px-3 text-xs text-slate-500">{{ attributeConstraintHint(attr, dictionaryState(attr).query) }}</p>
-                  <p v-if="allowsCustomAttributeValue(attr) && attributeConstraintError(attr, dictionaryState(attr).query)" role="alert" class="px-3 text-xs text-rose-600">{{ attributeConstraintError(attr, dictionaryState(attr).query) }}</p>
-                  <div v-if="dictionaryState(attr).loading" class="p-3 text-xs text-accent-500">正在读取平台选项…</div>
-                  <div v-else-if="dictionaryState(attr).error" class="p-3 text-xs text-rose-700">{{ dictionaryState(attr).error }}</div>
-                  <button
-                    v-for="option in dictionaryState(attr).options"
-                    :key="option.id"
-                    class="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-brand-50 dark:hover:bg-dark-800"
-                    type="button"
-                    @mousedown.prevent
-                    @click="selectDictionaryOption(attr, option)"
-                  >
-                    <span class="block font-medium text-accent-900 dark:text-white">{{ option.value }}</span>
-                    <span v-if="option.info" class="mt-0.5 block text-xs text-accent-500">{{ option.info }}</span>
-                  </button>
-                  <button
-                    v-if="dictionaryState(attr).hasMore"
-                    class="mt-1 block w-full rounded-md border border-dashed border-accent-300 px-3 py-2 text-center text-xs font-semibold text-brand-700 hover:bg-brand-50 disabled:cursor-wait disabled:opacity-60 dark:border-dark-600 dark:text-brand-300 dark:hover:bg-dark-800"
-                    type="button"
-                    :disabled="dictionaryState(attr).loadingMore"
-                    @mousedown.prevent
-                    @click="loadMoreDictionaryOptions(attr)"
-                  >
-                    {{ dictionaryState(attr).loadingMore ? '正在加载更多…' : '加载更多平台选项' }}
-                  </button>
-                  <div v-if="!dictionaryState(attr).loading && !dictionaryState(attr).error && !dictionaryState(attr).options.length" class="p-3 text-xs text-accent-500">{{ allowsCustomAttributeValue(attr) ? '没有匹配的建议值，可直接使用当前输入。' : '没有匹配的平台选项，请更换关键词或检查类目。' }}</div>
-                </div>
-                <p v-if="isStrictEnumAttribute(attr) && pickerLegacyValue(attr)" class="mt-1 text-xs text-rose-700">旧值“{{ pickerLegacyValue(attr) }}”不是平台选项，请重新选择。</p>
-                <p v-else class="mt-1 text-xs text-accent-500">{{ isStrictEnumAttribute(attr) ? '平台枚举字段，只会保存从列表选中的值。' : attr.isCollection ? '可选择多个建议值，也可逐项添加自定义值。' : '建议值可搜索；找不到时可直接使用自定义值。' }}</p>
-              </div>
-              <div v-else-if="attr.unitOptions?.length" class="mt-1 flex gap-2">
-                <input
-                  :ref="(el) => setAttributeInputRef(attr.id, el)"
-                  :value="unitAttributeValue(attr.id).value"
-                  class="input"
-                  :class="isMissingAttribute(attr.id) ? 'border-rose-300 bg-rose-50' : ''"
-                  :data-attribute-id="attr.id"
-                  :placeholder="attributePlaceholder(attr)"
-                  @input="setUnitAttributeValue(attr, { value: ($event.target as HTMLInputElement).value })"
-                />
-                <select
-                  :value="unitAttributeSelectedUnit(attr)"
-                  class="input w-28 shrink-0"
-                  :aria-label="`单位（${attributeLabel(attr)}）`"
-                  @change="setUnitAttributeValue(attr, { unit: ($event.target as HTMLSelectElement).value })"
-                >
-                  <option value="" disabled>请选择单位</option>
-                  <option v-for="unitOption in attr.unitOptions" :key="unitOption" :value="unitOption">{{ unitOption }}</option>
-                </select>
-              </div>
-              <textarea
-                v-else-if="attr.textFormat === 'name_value_lines'"
-                :ref="(el) => setAttributeInputRef(attr.id, el)"
-                :value="unitAttributeValue(attr.id).value"
-                class="input mt-1 min-h-24"
-                :data-attribute-id="attr.id"
-                :placeholder="attributePlaceholder(attr)"
-                :aria-invalid="Boolean(attributeTextFormatError(attr))"
-                :aria-describedby="`attribute-format-${targetIdentityKey}-${attr.id}`"
-                @input="setFormattedAttributeValue(attr, ($event.target as HTMLTextAreaElement).value)"
-              />
-              <select
-                v-else-if="attr.options?.length"
-                :ref="(el) => setAttributeInputRef(attr.id, el)"
-                v-model="activeDraft.attributes[attr.id]"
-                class="input mt-1"
-                :class="isMissingAttribute(attr.id) ? 'border-rose-300 bg-rose-50' : ''"
-                :data-attribute-id="attr.id"
-                @change="invalidateEditedAttribute(attr.id)"
-              >
-                <option value="">{{ attributePlaceholder(attr) }}</option>
-                <option v-for="option in attr.options" :key="option" :value="option">{{ attributeOptionLabel(attr.id, option) }}</option>
-              </select>
-              <input
-                v-else
-                :ref="(el) => setAttributeInputRef(attr.id, el)"
-                v-model="activeDraft.attributes[attr.id]"
-                class="input mt-1"
-                :class="isMissingAttribute(attr.id) ? 'border-rose-300 bg-rose-50' : ''"
-                :data-attribute-id="attr.id"
-                :placeholder="attributePlaceholder(attr)"
-                @input="invalidateEditedAttribute(attr.id)"
-              />
-              <span v-if="attributeConstraintHint(attr, activeDraft.attributes[attr.id])" class="mt-1 block text-xs text-slate-500">{{ attributeConstraintHint(attr, activeDraft.attributes[attr.id]) }}</span>
-              <span v-if="attr.textFormat" :id="`attribute-format-${targetIdentityKey}-${attr.id}`" class="mt-1 block text-xs text-slate-500">{{ attr.formatHint }}</span>
-              <span v-if="attributeTextFormatError(attr)" role="alert" class="mt-1 block text-xs text-rose-600">{{ attributeTextFormatError(attr) }}</span>
-            </label>
-          </div>
+        <div v-if="totalEditableAttributeCount > 0" class="w-full sm:w-64">
+          <input
+            v-model="attributeSearchQuery"
+            type="search"
+            class="input !rounded-xl !py-1.5 text-xs"
+            placeholder="搜索属性（中文 / 原文 / ID）"
+            data-testid="attribute-filter-search"
+          />
         </div>
-        <div v-else-if="categoryAttributeState === 'ready'" class="mt-4 rounded-lg border border-accent-200 bg-white p-3 text-sm text-accent-500 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-300">
-          当前没有需要手动或 AI 填写的必填属性。
-        </div>
+      </div>
 
-        <div v-if="categoryAttributeState === 'ready' && optionalAttributeFields.length" class="mt-4 rounded-lg border border-accent-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">
-          <button class="flex w-full items-center justify-between text-left text-sm font-semibold text-accent-700 dark:text-accent-200" type="button" @click="showOptionalAttributes = !showOptionalAttributes">
-            <span>可选属性 {{ optionalAttributeFields.length }} 个</span>
-            <span>{{ showOptionalAttributes ? '收起' : '展开' }}</span>
-          </button>
-          <div v-if="showOptionalAttributes" class="mt-3 grid gap-2" data-testid="optional-attribute-fields">
-            <label v-for="attr in optionalAttributeFields" :key="attr.id" class="block">
-              <span class="text-xs font-semibold text-slate-500">{{ attributeLabel(attr) }}</span>
-              <span v-if="attributeTranslation(attr.id)" class="mt-0.5 block text-[11px] text-slate-400">{{ attributeOriginalLabel(attr) }}</span>
-              <span v-if="attributeTranslation(attr.id)?.help" class="mt-0.5 block text-[11px] text-slate-500">{{ attributeTranslation(attr.id)?.help }}</span>
-              <div v-if="usesAttributeOptionPicker(attr)" class="relative mt-1">
-                <div v-if="attr.isCollection && selectedDictionaryValues(attr.id).length" class="mb-2 flex flex-wrap gap-2">
-                  <span v-for="(item, index) in selectedDictionaryValues(attr.id)" :key="`${item.dictionaryValueId || 'custom'}:${item.value}:${index}`" class="inline-flex items-center gap-1 rounded-full bg-brand-50 px-2.5 py-1 text-xs text-brand-800 ring-1 ring-brand-200 dark:bg-brand-950/30 dark:text-brand-200 dark:ring-brand-900/60">
-                    {{ item.value }}
-                    <button type="button" aria-label="移除选项" @click="removeDictionaryOption(attr, index)">×</button>
-                  </span>
-                </div>
-                <div class="flex gap-2">
-                  <input
-                    :ref="(el) => setAttributeInputRef(attr.id, el)"
-                    :value="selectedDictionarySummary(attr)"
-                    class="input"
-                    :data-attribute-id="attr.id"
-                    :placeholder="attributePlaceholder(attr)"
-                    readonly
-                    @focus="openDictionary(attr)"
-                    @blur="closeDictionary(attr)"
-                    @click="openDictionary(attr)"
-                  />
-                  <button v-if="pickerHasValue(attr)" class="btn btn-outline shrink-0" type="button" @click="clearDictionaryValue(attr)">清除已选</button>
-                </div>
-                <div v-if="dictionaryState(attr).open" class="absolute z-30 mt-1 max-h-64 w-full overflow-y-auto rounded-lg border border-accent-200 bg-white p-1 shadow-xl dark:border-dark-700 dark:bg-dark-900">
-                  <div class="sticky top-0 flex gap-2 bg-white p-2 dark:bg-dark-900">
-                    <input
-                      :value="dictionaryState(attr).query"
-                      class="input"
-                      :data-dictionary-search-id="attr.id"
-                      :placeholder="allowsCustomAttributeValue(attr) ? (attr.isCollection ? '搜索建议值，或输入后添加' : '搜索建议值，或输入后使用') : '仅搜索平台选项，不会作为属性值保存'"
-                      autocomplete="off"
-                      @focus="openDictionary(attr)"
-                      @blur="closeDictionary(attr)"
-                      @keydown.enter.prevent="commitCustomAttributeValue(attr)"
-                      @input="scheduleDictionarySearch(attr, ($event.target as HTMLInputElement).value)"
-                    />
-                    <button v-if="allowsCustomAttributeValue(attr) && dictionaryState(attr).query.trim()" class="btn btn-primary shrink-0" type="button" @mousedown.prevent @click="commitCustomAttributeValue(attr)">{{ attr.isCollection ? '添加' : '使用此值' }}</button>
-                    <button v-if="dictionaryState(attr).query" class="btn btn-outline shrink-0" type="button" @mousedown.prevent @click="clearDictionarySearch(attr)">清除搜索</button>
-                  </div>
-                  <p v-if="allowsCustomAttributeValue(attr) && dictionaryState(attr).query" class="px-3 text-xs text-slate-500">{{ attributeConstraintHint(attr, dictionaryState(attr).query) }}</p>
-                  <p v-if="allowsCustomAttributeValue(attr) && attributeConstraintError(attr, dictionaryState(attr).query)" role="alert" class="px-3 text-xs text-rose-600">{{ attributeConstraintError(attr, dictionaryState(attr).query) }}</p>
-                  <div v-if="dictionaryState(attr).loading" class="p-3 text-xs text-accent-500">正在读取平台选项…</div>
-                  <div v-else-if="dictionaryState(attr).error" class="p-3 text-xs text-rose-700">{{ dictionaryState(attr).error }}</div>
-                  <button
-                    v-for="option in dictionaryState(attr).options"
-                    :key="option.id"
-                    class="block w-full rounded-md px-3 py-2 text-left text-sm hover:bg-brand-50 dark:hover:bg-dark-800"
-                    type="button"
-                    @mousedown.prevent
-                    @click="selectDictionaryOption(attr, option)"
-                  >
-                    <span class="block font-medium text-accent-900 dark:text-white">{{ option.value }}</span>
-                    <span v-if="option.info" class="mt-0.5 block text-xs text-accent-500">{{ option.info }}</span>
-                  </button>
-                  <button
-                    v-if="dictionaryState(attr).hasMore"
-                    class="mt-1 block w-full rounded-md border border-dashed border-accent-300 px-3 py-2 text-center text-xs font-semibold text-brand-700 hover:bg-brand-50 disabled:cursor-wait disabled:opacity-60 dark:border-dark-600 dark:text-brand-300 dark:hover:bg-dark-800"
-                    type="button"
-                    :disabled="dictionaryState(attr).loadingMore"
-                    @mousedown.prevent
-                    @click="loadMoreDictionaryOptions(attr)"
-                  >
-                    {{ dictionaryState(attr).loadingMore ? '正在加载更多…' : '加载更多平台选项' }}
-                  </button>
-                  <div v-if="!dictionaryState(attr).loading && !dictionaryState(attr).error && !dictionaryState(attr).options.length" class="p-3 text-xs text-accent-500">{{ allowsCustomAttributeValue(attr) ? '没有匹配的建议值，可直接使用当前输入。' : '没有匹配的平台选项，请更换关键词或检查类目。' }}</div>
-                </div>
-                <p v-if="isStrictEnumAttribute(attr) && pickerLegacyValue(attr)" class="mt-1 text-xs text-rose-700">旧值“{{ pickerLegacyValue(attr) }}”不是平台选项，请重新选择。</p>
-                <p v-else class="mt-1 text-xs text-accent-500">{{ isStrictEnumAttribute(attr) ? '平台枚举字段，只会保存从列表选中的值。' : attr.isCollection ? '可选择多个建议值，也可逐项添加自定义值。' : '建议值可搜索；找不到时可直接使用自定义值。' }}</p>
-              </div>
-              <div v-else-if="attr.unitOptions?.length" class="mt-1 flex gap-2">
-                <input
-                  :ref="(el) => setAttributeInputRef(attr.id, el)"
-                  :value="unitAttributeValue(attr.id).value"
-                  class="input"
-                  :data-attribute-id="attr.id"
-                  :placeholder="attributePlaceholder(attr)"
-                  @input="setUnitAttributeValue(attr, { value: ($event.target as HTMLInputElement).value })"
-                />
-                <select
-                  :value="unitAttributeSelectedUnit(attr)"
-                  class="input w-28 shrink-0"
-                  :aria-label="`单位（${attributeLabel(attr)}）`"
-                  @change="setUnitAttributeValue(attr, { unit: ($event.target as HTMLSelectElement).value })"
-                >
-                  <option value="" disabled>请选择单位</option>
-                  <option v-for="unitOption in attr.unitOptions" :key="unitOption" :value="unitOption">{{ unitOption }}</option>
-                </select>
-              </div>
-              <textarea
-                v-else-if="attr.textFormat === 'name_value_lines'"
-                :ref="(el) => setAttributeInputRef(attr.id, el)"
-                :value="unitAttributeValue(attr.id).value"
-                class="input mt-1 min-h-24"
-                :data-attribute-id="attr.id"
-                :placeholder="attributePlaceholder(attr)"
-                :aria-invalid="Boolean(attributeTextFormatError(attr))"
-                :aria-describedby="`attribute-format-${targetIdentityKey}-${attr.id}`"
-                @input="setFormattedAttributeValue(attr, ($event.target as HTMLTextAreaElement).value)"
-              />
-              <select v-else-if="attr.options?.length" :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="activeDraft.attributes[attr.id]" class="input mt-1" :data-attribute-id="attr.id" @change="invalidateEditedAttribute(attr.id)">
-                <option value="">{{ attributePlaceholder(attr) }}</option>
-                <option v-for="option in attr.options" :key="option" :value="option">{{ attributeOptionLabel(attr.id, option) }}</option>
-              </select>
-              <input v-else :ref="(el) => setAttributeInputRef(attr.id, el)" v-model="activeDraft.attributes[attr.id]" class="input mt-1" :data-attribute-id="attr.id" :placeholder="attributePlaceholder(attr)" @input="invalidateEditedAttribute(attr.id)" />
-              <span v-if="attributeConstraintHint(attr, activeDraft.attributes[attr.id])" class="mt-1 block text-xs text-slate-500">{{ attributeConstraintHint(attr, activeDraft.attributes[attr.id]) }}</span>
-              <span v-if="attr.textFormat" :id="`attribute-format-${targetIdentityKey}-${attr.id}`" class="mt-1 block text-xs text-slate-500">{{ attr.formatHint }}</span>
-              <span v-if="attributeTextFormatError(attr)" role="alert" class="mt-1 block text-xs text-rose-600">{{ attributeTextFormatError(attr) }}</span>
-            </label>
-          </div>
+      <!-- 类目预检结果前置展示，无需滚动到底部查看 -->
+      <CategoryPrecheckPanel
+        :result="props.categoryPrecheck"
+        :can-locate-attribute="hasLoadedCategoryDefinition"
+        @locate-attribute="focusAttribute"
+      />
+
+      <!-- 待复核快捷跳转条 -->
+      <div
+        v-if="pendingReviewAttributeIds.length"
+        class="flex flex-wrap items-center gap-2 rounded-xl bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 ring-1 ring-amber-200 dark:bg-amber-950/25 dark:text-amber-300 dark:ring-amber-800/60"
+      >
+        <span class="font-semibold">待复核属性：</span>
+        <button
+          v-for="attrId in pendingReviewAttributeIds"
+          :key="attrId"
+          class="rounded-full bg-white px-2.5 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-amber-200 transition hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-dark-900 dark:text-amber-200 dark:ring-amber-800/60 dark:hover:bg-amber-950/50"
+          type="button"
+          :disabled="!reviewAttributeSection(attrId)"
+          :title="reviewAttributeSection(attrId) ? `定位到${reviewAttributeLabel(attrId)}` : '当前平台属性定义中不存在该属性'"
+          @click="focusAttribute(attrId)"
+        >
+          {{ reviewAttributeLabel(attrId) }}
+        </button>
+      </div>
+
+      <!-- 必填属性区（全宽双列卡片） -->
+      <div v-if="filteredRequiredFields.length" class="space-y-2.5">
+        <button
+          type="button"
+          class="flex w-full items-center justify-between rounded-lg px-1 py-0.5 text-left text-xs font-semibold text-accent-700 transition hover:text-accent-950 dark:text-accent-200 dark:hover:text-white"
+          @click="showRequiredAttributes = !showRequiredAttributes"
+        >
+          <span class="inline-flex items-center gap-1.5">
+            <span>必填属性 {{ filteredRequiredFields.length }} 个</span>
+            <span class="text-[11px] font-normal text-accent-400">已完成 {{ completedRequiredCount }} / {{ requiredAttributeFields.length }}</span>
+          </span>
+          <span class="inline-flex items-center gap-1 text-accent-500 dark:text-accent-400">
+            {{ showRequiredAttributes ? '收起' : '展开' }}
+            <PhCaretUp v-if="showRequiredAttributes" :size="13" aria-hidden="true" />
+            <PhCaretDown v-else :size="13" aria-hidden="true" />
+          </span>
+        </button>
+        <div
+          v-if="showRequiredAttributes"
+          class="grid gap-3"
+          :class="props.skuScope ? '' : 'md:grid-cols-2'"
+          data-testid="required-attribute-fields"
+        >
+          <CategoryAttributeField
+            v-for="attr in filteredRequiredFields"
+            :key="attr.id"
+            :attr="attr"
+            :model-value="effectiveAttributesMap[attr.id]"
+            :platform="props.target.platform"
+            :site="props.target.site"
+            :category-id="String(props.draft.categoryId || '')"
+            :target-identity-key="targetIdentityKey"
+            :sku-scope="props.skuScope"
+            :is-overridden="isAttributeOverridden(attr.id)"
+            :is-inherited="isAttributeInherited(attr.id)"
+            :missing="isMissingAttribute(attr.id)"
+            :pending-review="pendingReviewAttributeIds.includes(attr.id)"
+            :translation="attributeTranslation(attr.id)"
+            @update:model-value="handleAttributeUpdate(attr.id, $event)"
+            @clear-override="handleClearOverride(attr.id)"
+            @register-input-ref="registerAttributeInputRef"
+          />
         </div>
-        <CategoryPrecheckPanel :result="props.categoryPrecheck" :can-locate-attribute="hasLoadedCategoryDefinition" @locate-attribute="focusAttribute" />
-      </article>
-    </div>
+      </div>
+
+      <!-- 当无任何必填且无可选（或显式筛选“必填”为空）时提示 -->
+      <div
+        v-else-if="!requiredAttributeFields.length && (!optionalAttributeFields.length || attributeFilter === 'required')"
+        class="rounded-xl border border-accent-200/80 bg-accent-50/50 px-4 py-3 text-sm text-accent-500 dark:border-dark-700 dark:bg-dark-950/40 dark:text-accent-400"
+      >
+        当前没有需要手动填写的必填属性。
+      </div>
+
+      <!-- 选填属性区（必填为 0 时默认自动展开，首屏直出双列属性卡片） -->
+      <div v-if="filteredOptionalFields.length" class="space-y-2.5">
+        <button
+          type="button"
+          class="flex w-full items-center justify-between rounded-lg px-1 py-0.5 text-left text-xs font-semibold text-accent-700 transition hover:text-accent-950 dark:text-accent-200 dark:hover:text-white"
+          @click="showOptionalAttributes = !showOptionalAttributes"
+        >
+          <span class="inline-flex items-center gap-1.5">
+            <span>可选属性 {{ filteredOptionalFields.length }} 个</span>
+            <span v-if="completedOptionalCount" class="text-[11px] font-normal text-primary-600 dark:text-primary-400">已填 {{ completedOptionalCount }}</span>
+          </span>
+          <span class="inline-flex items-center gap-1 text-accent-500 dark:text-accent-400">
+            {{ showOptionalAttributes ? '收起' : '展开' }}
+            <PhCaretUp v-if="showOptionalAttributes" :size="13" aria-hidden="true" />
+            <PhCaretDown v-else :size="13" aria-hidden="true" />
+          </span>
+        </button>
+        <div
+          v-if="showOptionalAttributes"
+          class="grid gap-3"
+          :class="props.skuScope ? '' : 'md:grid-cols-2'"
+          data-testid="optional-attribute-fields"
+        >
+          <CategoryAttributeField
+            v-for="attr in filteredOptionalFields"
+            :key="attr.id"
+            :attr="attr"
+            :model-value="effectiveAttributesMap[attr.id]"
+            :platform="props.target.platform"
+            :site="props.target.site"
+            :category-id="String(props.draft.categoryId || '')"
+            :target-identity-key="targetIdentityKey"
+            :sku-scope="props.skuScope"
+            :is-overridden="isAttributeOverridden(attr.id)"
+            :is-inherited="isAttributeInherited(attr.id)"
+            :missing="isMissingAttribute(attr.id)"
+            :pending-review="pendingReviewAttributeIds.includes(attr.id)"
+            :translation="attributeTranslation(attr.id)"
+            @update:model-value="handleAttributeUpdate(attr.id, $event)"
+            @clear-override="handleClearOverride(attr.id)"
+            @register-input-ref="registerAttributeInputRef"
+          />
+        </div>
+      </div>
+
+      <!-- 筛选/搜索无命中时的兜底提示 -->
+      <div
+        v-if="totalEditableAttributeCount > 0 && !filteredRequiredFields.length && !filteredOptionalFields.length && !(attributeFilter === 'required' && !requiredAttributeFields.length)"
+        class="flex items-center justify-between rounded-xl border border-dashed border-accent-200 px-4 py-3 text-xs text-accent-500 dark:border-dark-700 dark:text-accent-400"
+      >
+        <span>
+          {{ attributeSearchQuery.trim()
+            ? `没有找到包含「${attributeSearchQuery.trim()}」的属性。`
+            : '当前筛选条件下没有需要处理的属性。' }}
+        </span>
+        <button
+          type="button"
+          class="font-medium text-primary-700 hover:underline dark:text-primary-400"
+          @click="resetAttributeFilters"
+        >
+          重置筛选
+        </button>
+      </div>
+    </template>
   </section>
 </template>

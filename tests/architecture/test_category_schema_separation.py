@@ -162,3 +162,58 @@ def test_save_boundaries_reject_retired_category_fields() -> None:
     assert "reject_retired_product_category_fields(data)" in save_product_body
     save_draft_body = source.split("def save_draft_detail(", 1)[1]
     assert "reject_retired_draft_schema_fields(draft_payload)" in save_draft_body
+
+
+def test_retired_legacy_category_cache_modules_stay_deleted() -> None:
+    for retired in (
+        "erp_web/runtime_units/ozon_category_cache.py",
+        "erp_web/runtime_units/category_http_cache.py",
+        "erp_web/runtime_units/category_definition_cache.py",
+    ):
+        assert not (ROOT / retired).exists(), f"已退役的旧缓存模块不得复活：{retired}"
+
+
+def test_fingerprint_excludes_chinese_display_fields() -> None:
+    from erp_web.schemas.category_definition import (
+        CategoryAttributeDefinition,
+        CategoryAttributeOptionPreview,
+    )
+
+    plain = CategoryDefinition(
+        platform="ozon",
+        site="global",
+        category_id="94765",
+        category_path="Шины / Шины для легковых автомобилей",
+        required=(
+            CategoryAttributeDefinition(
+                id="8229",
+                name="Цвет товара",
+                required=True,
+                options=(CategoryAttributeOptionPreview(value="Черный", dictionary_value_id="1"),),
+            ),
+        ),
+    )
+    localized = CategoryDefinition(
+        platform="ozon",
+        site="global",
+        category_id="94765",
+        category_path="Шины / Шины для легковых автомобилей",
+        category_path_zh="轮胎 / 轿车轮胎",
+        required=(
+            CategoryAttributeDefinition(
+                id="8229",
+                name="Цвет товара",
+                name_zh="商品颜色",
+                description_zh="选择颜色",
+                required=True,
+                options=(
+                    CategoryAttributeOptionPreview(
+                        value="Черный",
+                        dictionary_value_id="1",
+                        label_zh="黑色",
+                    ),
+                ),
+            ),
+        ),
+    )
+    assert definition_fingerprint(plain) == definition_fingerprint(localized)

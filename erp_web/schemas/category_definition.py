@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""统一类目定义契约与有界公共视图（类目 Schema 分离计划 Phase 0）。
+"""统一类目定义契约与有界公共视图（含展示/发布分离的双语字段）。
 
 平台类目规则的唯一所有权属于 CategoryProvider/Catalog；本模块冻结三类契约：
 
@@ -10,8 +10,8 @@
   有界分页公共视图，不含 ``platform_binding``。
 - ``CategoryDetail``：类目详情（不含属性定义）。
 
-``definition_fingerprint`` 是稳定语义指纹：相同语义定义跨进程产生相同指纹；
-``fetched_at``、缓存时间戳等易变元数据不参与计算。
+展示层中文字段（``name_zh`` / ``description_zh`` / ``label_zh`` / ``path_zh``）
+严格与发布值分离，不参与 ``definition_fingerprint`` 计算，也不得替代发布 payload 值。
 """
 
 from __future__ import annotations
@@ -23,10 +23,49 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 #: 定义序列化格式版本；归一化形状变化时必须递增，使旧缓存自动失效。
-DEFINITION_FORMAT_VERSION = 6
+DEFINITION_FORMAT_VERSION = 7
 
 #: options 有界预览上限；公共视图与内部定义共用该边界。
 ATTRIBUTE_OPTIONS_PREVIEW_LIMIT = 50
+
+#: 对外统一的标准值类型；平台原始类型仅保留在 platform_binding.platform_type。
+CANONICAL_VALUE_TYPES = frozenset(
+    {"string", "integer", "decimal", "boolean", "enum", "number_unit", "date", "url"}
+)
+
+_VALUE_TYPE_ALIASES: dict[str, str] = {
+    "string": "string",
+    "text": "string",
+    "multiline": "string",
+    "integer": "integer",
+    "int": "integer",
+    "int32": "integer",
+    "int64": "integer",
+    "decimal": "decimal",
+    "float": "decimal",
+    "double": "decimal",
+    "numeric": "decimal",
+    "number": "decimal",
+    "boolean": "boolean",
+    "bool": "boolean",
+    "enum": "enum",
+    "list": "enum",
+    "number_unit": "number_unit",
+    "date": "date",
+    "datetime": "date",
+    "url": "url",
+    "imageurl": "url",
+    "image_url": "url",
+}
+
+
+def normalize_canonical_value_type(raw_type: Any) -> str:
+    """将三平台原始值类型归一为统一小写标准枚举。"""
+
+    cleaned = str(raw_type or "").strip().casefold()
+    if not cleaned:
+        return ""
+    return _VALUE_TYPE_ALIASES.get(cleaned, cleaned)
 
 
 class CategoryCacheState(BaseModel):
@@ -73,6 +112,8 @@ class CategoryAttributeOptionPreview(BaseModel):
 
     value: str = ""
     dictionary_value_id: str = ""
+    #: 中文展示名（L1 官方中文 / L2 词典）；仅用于界面展示，不参与发布提交。
+    label_zh: str = ""
 
 
 class CategoryAttributeDefinition(BaseModel):
@@ -82,12 +123,16 @@ class CategoryAttributeDefinition(BaseModel):
 
     id: str
     name: str = ""
+    #: 中文展示名（仅用于展示，不参与指纹）。
+    name_zh: str = ""
+    description: str = ""
+    description_zh: str = ""
     required: bool = False
     #: variant 为变体维度，parent 为同组必须一致的属性。
     variation_role: str = ""
-    #: 归一化值类型：string/integer/float/boolean/enum/date/datetime 等。
+    #: 归一化值类型：string/integer/decimal/boolean/enum/number_unit/date/url。
     value_type: str = ""
-    #: 归一化取值模式：single/multiple。
+    #: 归一化取值模式：strict_enum/open_enum/free_text。
     value_mode: str = ""
     allow_custom_values: bool = False
     #: 平台声明只读/推导属性时，发布方不得提交。
@@ -122,6 +167,7 @@ class CategoryDefinition(BaseModel):
     site: str = ""
     category_id: str
     category_path: str = ""
+    category_path_zh: str = ""
     description_category_id: str = ""
     fingerprint: str = ""
     cache: CategoryCacheState = Field(default_factory=CategoryCacheState)
@@ -146,8 +192,11 @@ class CategoryDetail(BaseModel):
     platform: str
     site: str = ""
     category_id: str
+    description_category_id: str = ""
     name: str = ""
+    name_zh: str = ""
     path: str = ""
+    path_zh: str = ""
     parent_id: str = ""
     ancestor_ids: tuple[str, ...] = ()
     is_leaf: bool = False
@@ -164,9 +213,12 @@ class CategoryAttributeSummary(BaseModel):
 
     id: str
     name: str = ""
+    name_zh: str = ""
+    description: str = ""
+    description_zh: str = ""
     required: bool = False
     variation_role: str = ""
-    #: ERP 按刊登设置派生，供界面排除人工/AI 编辑；不改变平台必填事实。
+    #: ERP 按刊登设置或草稿事实派生（listing_grouping / draft_derived），供界面排除人工/AI 编辑。
     managed_by: str = ""
     value_type: str = ""
     value_mode: str = ""
@@ -181,12 +233,15 @@ class CategoryAttributeSummary(BaseModel):
     is_dictionary: bool = False
     is_collection: bool = False
     max_value_count: int | None = None
+    category_dependent: bool = False
     dictionary_id: str = ""
     default_unit: str = ""
     default_unit_id: str = ""
     unit_options: tuple[CategoryUnitOption, ...] = ()
     options: tuple[CategoryAttributeOptionPreview, ...] = ()
     has_more_values: bool = False
+    #: 品牌/型号等属性的值本身属于专有名词，大字典本地化自动跳过。
+    skip_value_localization: bool = False
 
 
 class CategoryAttributePage(BaseModel):
@@ -197,7 +252,10 @@ class CategoryAttributePage(BaseModel):
     platform: str
     site: str = ""
     category_id: str
+    description_category_id: str = ""
     category_path: str = ""
+    category_path_zh: str = ""
+    cache_source: str = ""
     limit: int = 50
     cursor: str = ""
     attributes: tuple[CategoryAttributeSummary, ...] = ()
@@ -212,6 +270,7 @@ class CategoryAttributeValue(BaseModel):
 
     value: str = ""
     dictionary_value_id: str = ""
+    label_zh: str = ""
 
 
 class CategoryAttributeValuePage(BaseModel):
@@ -247,7 +306,7 @@ def _canonical_json(value: Any) -> str:
 def _attribute_fingerprint_projection(
     attribute: CategoryAttributeDefinition,
 ) -> dict[str, Any]:
-    """参与指纹的稳定字段投影；排除时间戳等非语义元数据。"""
+    """参与指纹的稳定字段投影；排除时间戳与中文展示字段等非发布语义元数据。"""
 
     return {
         "id": attribute.id,
@@ -279,7 +338,7 @@ def _attribute_fingerprint_projection(
             "platform_type": attribute.platform_binding.platform_type,
         },
         # 发布编译器会使用预览中的 dictionary_value_id 将草稿文案编译成
-        # Mercado 等平台的枚举 wire 值，因此预览内容本身属于 payload 语义。
+        # Mercado 等平台的枚举 wire 值，因此预览原文与 ID 属于 payload 语义。
         "options": sorted(
             [
                 {
@@ -297,13 +356,7 @@ def _attribute_fingerprint_projection(
 def definition_fingerprint_projection(
     definition: CategoryDefinition,
 ) -> dict[str, Any]:
-    """指纹语义投影：全部影响校验与 payload 的稳定字段。
-
-    属性按 id 排序，保证跨进程、跨 Provider 的确定性；明确排除
-    ``fetched_at``、``retrieved_at``、``expires_at``、``stale_until``、
-    缓存 source 等易变元数据。枚举 options 虽是有界预览，但会影响 payload
-    编译，因此必须参与指纹。
-    """
+    """指纹语义投影：全部影响校验与 payload 的稳定字段。"""
 
     attributes = sorted(
         (*definition.required, *definition.optional),
@@ -332,6 +385,7 @@ def definition_fingerprint(definition: CategoryDefinition) -> str:
 
 __all__ = [
     "ATTRIBUTE_OPTIONS_PREVIEW_LIMIT",
+    "CANONICAL_VALUE_TYPES",
     "DEFINITION_FORMAT_VERSION",
     "CategoryAttributeDefinition",
     "CategoryAttributeOptionPreview",
@@ -346,4 +400,5 @@ __all__ = [
     "CategoryUnitOption",
     "definition_fingerprint",
     "definition_fingerprint_projection",
+    "normalize_canonical_value_type",
 ]

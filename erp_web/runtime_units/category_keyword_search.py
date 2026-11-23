@@ -124,7 +124,9 @@ class CategoryKeywordBatchSearch:
                 })
 
         merged: dict[str, CategoryCandidate] = {}
-        # 交错合并完整命中集合；只有序列化大小超过预算时才分页。
+        rrf_scores: dict[str, float] = {}
+        first_seen_order: dict[str, int] = {}
+        # RRF（Reciprocal Rank Fusion）+ 多词命中加权；单词时退化为严格原排序。
         for rank in range(max((len(result["candidates"]) for result in successes), default=0)):
             for result in successes:
                 rows = result["candidates"]
@@ -134,9 +136,22 @@ class CategoryKeywordBatchSearch:
                 category_id = str(row.get("category_id") or "").strip()
                 if not category_id:
                     continue
-                candidate = merged.setdefault(category_id, {**row, "matched_keywords": []})
+                if category_id not in merged:
+                    merged[category_id] = {**row, "matched_keywords": []}
+                    first_seen_order[category_id] = len(first_seen_order)
+                    rrf_scores[category_id] = 0.0
+                candidate = merged[category_id]
                 if result["keyword"] not in candidate["matched_keywords"]:
                     candidate["matched_keywords"].append(result["keyword"])
+                    rrf_scores[category_id] += 1.0 / (60.0 + rank)
+        for category_id, candidate in merged.items():
+            hits = len(candidate.get("matched_keywords") or ())
+            if hits > 1:
+                rrf_scores[category_id] += 0.005 * (hits - 1)
+        ordered_items = sorted(
+            merged.items(),
+            key=lambda item: (-rrf_scores[item[0]], first_seen_order[item[0]]),
+        )
 
         if offset < 0 or offset > len(merged):
             raise AiToolExecutionError("CATEGORY_SEARCH_OFFSET_INVALID", "分页位置超出本组关键词的候选范围，请使用相同关键词与返回的 next_offset。")
@@ -160,7 +175,7 @@ class CategoryKeywordBatchSearch:
         # 为分页计数预留足够空间；大小计算与 Tool Runtime 的 UTF-8 JSON 编码一致。
         used_bytes = self._json_size(output) + 128
         page_count = 0
-        for category_id, row in list(merged.items())[offset:]:
+        for category_id, row in ordered_items[offset:]:
             context.bounded_timeout_seconds()
             repeated = self.ledger.get(category_id) is not None
             candidate = {
@@ -169,6 +184,10 @@ class CategoryKeywordBatchSearch:
                 "path_segments": list(row.get("path_segments") or []),
                 "matched_keywords": row["matched_keywords"],
             }
+            if row.get("name_zh"):
+                candidate["name_zh"] = str(row["name_zh"])
+            if row.get("path_zh"):
+                candidate["path_zh"] = str(row["path_zh"])
             if row.get("forbidden"):
                 candidate["forbidden"] = True
                 reason = str(row.get("forbidden_reason") or "").strip()

@@ -173,8 +173,10 @@ def test_ancestor_id_upward_matching_picks_closest_ancestor_and_ignores_other_pl
     assert forbidden_category_issue("ozon", "60491375", categories, ancestor_ids=("13793701",)) is None
 
 
-def test_yandex_tree_records_ancestor_ids_and_annotates_search_results(monkeypatch):
+def test_yandex_tree_records_ancestor_ids_and_annotates_search_results(monkeypatch, tmp_path):
+    from datetime import datetime, timezone
     from erp_web.runtime_units import yandex_category_api
+    from erp_web.stores.category_catalog_store import CategoryCatalogStore
 
     save_list("13793701", "Удобрения и уход за растениями")
     tree = [{
@@ -196,10 +198,22 @@ def test_yandex_tree_records_ancestor_ids_and_annotates_search_results(monkeypat
     assert by_id["60491375"]["ancestor_ids"] == ["90401", "90719", "13793701", "6433382"]
     assert by_id["74873567"]["ancestor_ids"] == ["90401", "90800"]
 
-    monkeypatch.setattr(
-        yandex_category_api,
-        "load_yandex_category_corpus",
-        lambda **kwargs: (records, {"cache_source": "persistent_cache"}),
+    store = CategoryCatalogStore(tmp_path / "forbidden-yandex.sqlite3")
+    monkeypatch.setattr(yandex_category_api, "_catalog_store", lambda: store)
+    monkeypatch.setattr(yandex_category_api, "_yandex_credentials", lambda: ("test-token", "test-biz"))
+    nodes = yandex_category_api._build_taxonomy_nodes(tree)
+    scope = yandex_category_api.YANDEX_TAXONOMY_SCOPE
+    store.save_taxonomy(
+        "yandex",
+        scope,
+        "RU",
+        nodes,
+        corpus_hash=yandex_category_api._stable_corpus_hash(nodes),
+        taxonomy_version=None,
+        retrieved_at=datetime.now(timezone.utc),
+        fresh_ttl=yandex_category_api.YANDEX_CATEGORY_CACHE_FRESH_TTL,
+        max_age=yandex_category_api.YANDEX_CATEGORY_CACHE_MAX_AGE,
+        source="persistent_cache",
     )
     results = yandex_category_api.search_yandex_categories("отпугиватели", limit=10)
     assert [row["category_id"] for row in results] == ["74873567", "60491375"]
@@ -216,8 +230,8 @@ def test_category_precheck_uses_trusted_server_ancestors_not_client_record(monke
     monkeypatch.setattr(category_facade, "validate_category_precheck", lambda *args: [])
     monkeypatch.setattr(
         get_context().category_catalog.provider_for("yandex"),
-        "cached_category_ancestor_map",
-        lambda **kw: {"60491375": ("90401", "90719", "13793701", "6433382")},
+        "cached_category_ancestor_ids",
+        lambda category_id, **kw: ("90401", "90719", "13793701", "6433382") if str(category_id) == "60491375" else (),
     )
     saved = {}
     monkeypatch.setattr(category_facade, "save_draft_target_listing_result", lambda context, patch: saved.update(patch) or {})

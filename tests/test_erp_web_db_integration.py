@@ -1682,7 +1682,7 @@ class ErpWebDbIntegrationTests(unittest.TestCase):
             )
 
             self.assertEqual(results[0]["category_id"], "MLM999")
-            self.assertEqual(results[0]["path"], "Necklaces")
+            self.assertEqual(results[0]["path"], "Clothes, Bags and Shoes / Necklaces")
             self.assertEqual(record["attributes"]["required"][0]["id"], "BRAND")
             self.assertEqual(record["source"], "mercadolibre_live")
             self.assertEqual(summary["required_count"], 1)

@@ -3,14 +3,30 @@ import { createWorkflowCategoryActions, type WorkflowCategoryActionsPort } from 
 import { createWorkflowPublishPrecheckActions, type WorkflowPublishPrecheckActionsPort } from '../actions/publishPrecheck'
 import { normalizePublishPrecheck } from '@/api/workflow/normalizers'
 import type { WorkflowRuntime } from './runtime'
-import type { CategoryAttributeTranslations, CategoryPrecheckResult, CategoryResultTranslations, CategorySearchResult, CategorySelection, DraftDetail, DraftPublishOperation, MarketplaceTargetSite, PayloadPreviewState, PublishPreparationState, PublishPrecheck, UnknownRecord } from '@/types/workflow'
+import type {
+  CategoryAttributeTranslations,
+  CategoryPrecheckResult,
+  CategoryResultTranslations,
+  CategorySearchResult,
+  CategorySelection,
+  DraftDetail,
+  DraftPublishOperation,
+  MarketplaceTargetSite,
+  PayloadPreviewState,
+  PublishPreparationState,
+  PublishPrecheck,
+  UnknownRecord,
+} from '@/types/workflow'
 
 const listingDefaults = {
   categoryId: '', descriptionCategoryId: '', categoryPath: '', attributes: {},
   validationErrors: [], publishStatus: '', status: 'pending', lastPrecheck: {}, lastPrecheckTarget: {},
 } satisfies Partial<DraftDetail>
 
-/** 每个目标持有独立的界面状态；草稿字段直接投影到该目标，保存仍经过统一草稿入口。 */
+/**
+ * 方案 A：每个目标持有独立编辑状态与独立并发锁（state.busy），不再锁定全局 runtime.loading。
+ * 保留 editor.draft 视图以平稳支持发布预检工作区复用，同时为类目/属性区提供直接的 target 切片访问。
+ */
 export function createDraftTargetEditors(runtime: WorkflowRuntime) {
   const editors = new Map<string, ReturnType<typeof createEditor>>()
 
@@ -20,24 +36,38 @@ export function createDraftTargetEditors(runtime: WorkflowRuntime) {
     const key = runtime.targetSiteKey(identity)
     const state = reactive({
       category: null as CategorySelection | null,
-      categoryQuery: '', categoryResults: [] as CategorySearchResult[],
-      categoryRecommendations: {} as Record<string, { query: string; results: CategorySearchResult[]; error: string }>,
-      categoryAutoMatching: false, categoryAutoMatchMessage: '', categoryAutoMatchCurrent: 0,
-      categoryAutoMatchTotal: 0, categoryAutoMatchProductName: '',
+      categoryQuery: '',
+      categoryResults: [] as CategorySearchResult[],
+      categoryRecommendations: {} as Record<string, { query: string; translatedQuery?: string; results: CategorySearchResult[]; error: string }>,
+      categoryAutoMatching: false,
+      categoryAutoMatchMessage: '',
+      categoryAutoMatchCurrent: 0,
+      categoryAutoMatchTotal: 0,
+      categoryAutoMatchProductName: '',
       categoryAttributeTranslations: {} as CategoryAttributeTranslations,
-      categoryAttributeTranslationsSource: '', categoryAttributeTranslating: false,
-      categoryAttributeLoading: false, categoryAttributeError: '',
+      categoryAttributeTranslationsSource: '',
+      categoryAttributeTranslating: false,
+      categoryAttributeLoading: false,
+      categoryAttributeError: '',
       categoryResultTranslations: {} as CategoryResultTranslations,
-      categoryResultTranslationsSource: '', categoryResultTranslating: false,
+      categoryResultTranslationsSource: '',
+      categoryResultTranslating: false,
       categoryPrecheck: null as CategoryPrecheckResult | null,
-      precheck: null as PublishPrecheck | null, precheckResults: {} as UnknownRecord,
+      precheck: null as PublishPrecheck | null,
+      precheckResults: {} as UnknownRecord,
       payloadPreview: null as PayloadPreviewState | null,
       preparationProgress: null as PublishPreparationState | null,
       publishFailure: null as { operation: DraftPublishOperation; message: string } | null,
       queuedPublishJobId: '',
-      loading: false, error: '', busy: false,
+      loading: false,
+      error: '',
+      busy: false,
     })
-    const requestSequence = { ...runtime.requestSequence }
+    const requestSequence = {
+      categoryAttributeTranslation: 0,
+      categoryResultTranslation: 0,
+      categoryAttributeLoad: 0,
+    }
     const attached = () => !disposed && runtime.currentDraft.value.draftId === draftId
       && runtime.currentDraft.value.targetSites.some((item) => runtime.targetSiteKey(item) === key)
     function targetRecord() {
@@ -59,7 +89,7 @@ export function createDraftTargetEditors(runtime: WorkflowRuntime) {
       }
     }
 
-    // 只投影明确列出的平台字段；标题、品牌、包装尺寸等仍引用同一份共享草稿。
+    // 保留 editor.draft 投影视图供发布预检工作区平稳复用；属性编辑区优先直接面向 target 切片。
     const draft = computed<DraftDetail>({
       get: () => new Proxy(runtime.currentDraft.value, {
         get(root, field, receiver) {
@@ -91,8 +121,12 @@ export function createDraftTargetEditors(runtime: WorkflowRuntime) {
     state.categoryPrecheck = runtime.categoryPrecheckFromTarget(target.value.categoryPrecheck)
     if (target.value.categoryId) {
       state.category = {
-        platform: identity.platform, categoryId: target.value.categoryId,
-        categoryPath: target.value.categoryPath || '', requiredAttributes: [], optionalAttributes: [],
+        platform: identity.platform,
+        categoryId: target.value.categoryId,
+        descriptionCategoryId: target.value.descriptionCategoryId || undefined,
+        categoryPath: target.value.categoryPath || '',
+        requiredAttributes: [],
+        optionalAttributes: [],
       }
     }
     const port: WorkflowCategoryActionsPort & WorkflowPublishPrecheckActionsPort = {
@@ -117,8 +151,13 @@ export function createDraftTargetEditors(runtime: WorkflowRuntime) {
         state.categoryQuery = recommendation?.query || ''
         state.categoryResults = recommendation?.results || []
       },
-      setCategoryRecommendation: (_, query, results, error = '') => {
-        state.categoryRecommendations[key] = { query, results, error }
+      setCategoryRecommendation: (_, query, results, error = '', translatedQuery = '') => {
+        state.categoryRecommendations[key] = {
+          query,
+          ...(translatedQuery ? { translatedQuery } : {}),
+          results,
+          error,
+        }
         state.categoryQuery = query
         state.categoryResults = results
       },
@@ -150,7 +189,6 @@ export function createDraftTargetEditors(runtime: WorkflowRuntime) {
         expectedMarkets: target.value.sitesToSell,
       })
     }
-    // 结果只覆盖检查时的数据。平台资料变更清除本区结果，共享资料变更会清除各区结果。
     const stopWatching = watch(() => {
       if (!attached()) return ''
       const value = draft.value
@@ -171,6 +209,7 @@ export function createDraftTargetEditors(runtime: WorkflowRuntime) {
       state.payloadPreview = null
       if (!state.busy) state.preparationProgress = null
     }, { flush: 'sync' })
+
     async function execute<T>(operation: () => T | Promise<T>) {
       if (!attached()) return
       state.busy = true
@@ -183,22 +222,31 @@ export function createDraftTargetEditors(runtime: WorkflowRuntime) {
         state.busy = false
       }
     }
+
+    /** 仅锁定当前目标市场（state.busy），三平台可真正并行搜索、匹配、加载属性与预检。 */
     async function run<T>(operation: () => T | Promise<T>) {
-      if (runtime.loading.value || !attached()) return
-      runtime.loading.value = true
-      try {
-        return await execute(operation)
-      } finally {
-        runtime.loading.value = false
-      }
+      if (state.busy || !attached()) return
+      return await execute(operation)
     }
-    return reactive({ key, draft, target, state, actions, run, execute, attached, dispose: () => { disposed = true; stopWatching() } })
+
+    return reactive({
+      key,
+      draft,
+      target,
+      state,
+      actions,
+      run,
+      execute,
+      attached,
+      dispose: () => { disposed = true; stopWatching() },
+    })
   }
 
   watch(() => runtime.currentDraft.value.draftId, () => {
     editors.forEach((editor) => editor.dispose())
     editors.clear()
   }, { flush: 'sync' })
+
   return computed(() => {
     const targets = runtime.currentPublishTargets.value
     const keys = new Set(targets.map(runtime.targetSiteKey))
@@ -212,3 +260,5 @@ export function createDraftTargetEditors(runtime: WorkflowRuntime) {
     })
   })
 }
+
+export type DraftTargetEditorsRef = ReturnType<typeof createDraftTargetEditors>

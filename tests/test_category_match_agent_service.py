@@ -134,7 +134,7 @@ def test_agent_uses_native_tool_call_and_typed_output() -> None:
         turns += 1
         if turns == 1:
             assert "MLM-FAN" not in str(messages)
-            assert "首次调用前" in str(messages)
+            assert "product_identity" in str(messages)
             return ModelResponse(
                 parts=[
                     ToolCallPart(

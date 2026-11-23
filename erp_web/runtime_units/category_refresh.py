@@ -40,7 +40,13 @@ def http_json(
 
 def ml_attr_required(attr: dict[str, Any]) -> bool:
     tags = attr.get("tags") if isinstance(attr.get("tags"), dict) else {}
-    return bool(attr.get("required") or tags.get("required") or tags.get("catalog_required"))
+    return bool(
+        attr.get("required")
+        or tags.get("required")
+        or tags.get("catalog_required")
+        or tags.get("conditional_required")
+        or tags.get("new_required")
+    )
 
 
 def normalize_ml_attribute(

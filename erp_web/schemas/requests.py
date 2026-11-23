@@ -288,7 +288,10 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/category-attribute-values": _contract(
         required=("platform", "category_id", "attribute_id"),
     ),
-    "/api/category-attrs": _contract(required=("category_id",)),
+    "/api/category-attrs": _contract(
+        fields={"force_refresh": BOOLEAN},
+        required=("category_id",),
+    ),
     "/api/category-precheck": _contract(
         required_any=(
             ("product_id", "draft_id", "draftId"),
@@ -446,7 +449,15 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/test-ai-model": _contract(required_any=(("model", "config"),)),
     "/api/test-api-config": _contract(required=("kind",)),
     "/api/test-store-auth": _contract(required=("platform",)),
-    "/api/text-translate": _contract(required=("target_language", "content")),
+    "/api/text-translate": _contract(
+        fields={
+            "domain": STRING,
+            "cache_only": BOOLEAN,
+            "bypass_cache": BOOLEAN,
+            "silent": BOOLEAN,
+        },
+        required=("target_language", "content"),
+    ),
     "/api/upc-pool/import": _contract(required=("values",)),
     "/api/v1/ai-chat/runs": _contract(
         fields={

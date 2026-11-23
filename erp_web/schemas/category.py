@@ -477,7 +477,10 @@ class CategoryCorpusInfo(TypedDict, total=False):
 class CategoryCandidate(TypedDict, total=False):
     category_id: str
     name: str
+    name_zh: str
     path_segments: list[str]
+    path_segments_zh: list[str]
+    path_zh: str
     search_rank: int
     publishable: bool
     platform: str
@@ -527,10 +530,13 @@ class CategoryTreeNode(TypedDict, total=False):
 
     node_id: str
     name: str
+    name_zh: str
     level: CategoryTreeNodeLevel
     depth: int
     parent_id: str
     path_segments: list[str]
+    path_segments_zh: list[str]
+    path_zh: str
     child_count: int
     category_id: str
     description_category_id: str
@@ -555,13 +561,50 @@ class CategoryCandidateLedger:
     browses: list[CategoryBrowseResult] = field(default_factory=list)
     attempts: list[str] = field(default_factory=list)
     errors: list[Exception] = field(default_factory=list)
-    retrieval_mode: Literal["keyword_search", "tree_navigation"] = "keyword_search"
+    retrieval_mode: Literal["keyword_search", "tree_navigation", "hybrid"] = "keyword_search"
+    prefetched_count: int = 0
 
     def record_attempt(self, keyword: str) -> None:
         self.attempts.append(str(keyword or "").strip()[:300])
 
     def record_error(self, exc: Exception) -> None:
         self.errors.append(exc)
+
+    def mark_forbidden(self, category_id: str, reason: str) -> None:
+        cid = str(category_id or "").strip()
+        if not cid:
+            return
+        stored = self._candidates.get(cid)
+        if stored is not None:
+            stored["forbidden"] = True
+            cleaned = str(reason or "").strip()[:300]
+            if cleaned:
+                stored["forbidden_reason"] = cleaned
+
+    def record_prefetched(
+        self,
+        candidates: list[CategoryCandidate],
+        *,
+        keywords: list[str] | None = None,
+        source: str = "prefetched",
+    ) -> None:
+        """登记 Phase 1 确定性预召回的真实叶子类目，供单轮精排直接选用。"""
+
+        if not candidates:
+            return
+        label = ", ".join(
+            str(k).strip() for k in (keywords or []) if str(k).strip()
+        )[:300] or "prefetched"
+        if label not in self.attempts:
+            self.record_attempt(label)
+        self.add_result(
+            {
+                "keyword": label,
+                "candidates": candidates,
+                "source": source,
+            }
+        )
+        self.prefetched_count += len(candidates)
 
     def add_result(self, result: CategorySearchResult) -> None:
         stored_result: CategorySearchResult = {
@@ -612,10 +655,16 @@ class CategoryCandidateLedger:
                 "platform": str(node.get("platform") or "").strip(),
                 "site": str(node.get("site") or "").strip(),
             }
-            for field_name in ("description_category_id", "type_id"):
+            for field_name in ("description_category_id", "type_id", "name_zh", "path_zh"):
                 value = str(node.get(field_name) or "").strip()
                 if value:
                     candidate[field_name] = value
+            if node.get("path_segments_zh"):
+                candidate["path_segments_zh"] = [
+                    str(seg).strip()[:500]
+                    for seg in (node.get("path_segments_zh") or [])[:20]
+                    if str(seg).strip()
+                ]
             self._candidates.setdefault(category_id, candidate)
         self.browses.append(stored_result)
 

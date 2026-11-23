@@ -145,7 +145,7 @@ def batch_command(keywords, call_id="batch", *, ledger=None):
     return AiToolCommand(
         call_id=call_id,
         tool_name="search_categories",
-        tool_version="5",
+        tool_version="6",
         arguments={"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": keywords[0], "keywords": keywords},
         round=1,
     )
@@ -173,7 +173,7 @@ def test_product_name_and_complementary_names_execute_as_one_batch() -> None:
     ledger = CategoryCandidateLedger()
     runtime = batch_runtime(searcher, ledger)
     result = runtime.execute(AiToolCommand(
-        call_id="four-names", tool_name="search_categories", tool_version="5", round=1,
+        call_id="four-names", tool_name="search_categories", tool_version="6", round=1,
         arguments={
             "product_identity": "挂耳式纺织面罩，用于遮阳和防尘",
             "product_type": "mascarilla",
@@ -193,7 +193,7 @@ def test_wrong_language_in_any_merged_name_rejects_entire_batch() -> None:
     searcher = BoundSearcher()
     runtime = batch_runtime(searcher, CategoryCandidateLedger())
     result = runtime.execute(AiToolCommand(
-        call_id="wrong-alias", tool_name="search_categories", tool_version="5", round=1,
+        call_id="wrong-alias", tool_name="search_categories", tool_version="6", round=1,
         arguments={"product_identity": "风扇", "product_type": "ventilador",
                    "alternative_names": ["风扇"], "keywords": ["ventilador USB"]},
     ))
@@ -353,7 +353,7 @@ def test_followup_omits_repeated_details_and_reserves_slots_for_new_candidates()
 def test_batch_rejects_invalid_input_before_search(arguments) -> None:
     searcher = BoundSearcher()
     result = batch_runtime(searcher, CategoryCandidateLedger()).execute(AiToolCommand(
-        call_id="invalid", tool_name="search_categories", tool_version="5",
+        call_id="invalid", tool_name="search_categories", tool_version="6",
         arguments=arguments, round=1,
     ))
     assert not result.ok
@@ -374,7 +374,7 @@ def test_category_toolset_only_exposes_keyword_search() -> None:
     command = AiToolCommand(
         call_id="call-search",
         tool_name="search_categories",
-        tool_version="5",
+        tool_version="6",
         arguments={"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": "ventilador", "keywords": ["ventilador"]},
         round=1,
     )
@@ -413,7 +413,7 @@ def test_tool_output_hides_bound_scope_and_provider_metadata() -> None:
         AiToolCommand(
             call_id="call-search",
             tool_name="search_categories",
-            tool_version="5",
+            tool_version="6",
             arguments={"alternative_names": [], "product_identity": "桌面风扇，有电机和扇叶", "product_type": "ventilador", "keywords": ["ventilador"]},
             round=1,
         )
@@ -456,7 +456,7 @@ def test_tool_rejects_platform_or_site_arguments() -> None:
         AiToolCommand(
             call_id="call-search",
             tool_name="search_categories",
-            tool_version="5",
+            tool_version="6",
             arguments={
                 "keywords": ["ventilador"],
                 "platform": "ozon",
@@ -482,9 +482,9 @@ def test_ozon_navigation_exposes_roots_then_records_only_leaf_candidates() -> No
         max_output_bytes=128 * 1024,
     )
 
-    assert bundle.retrieval_mode == "tree_navigation"
+    assert bundle.retrieval_mode == "hybrid"
     assert bundle.initial_options[0]["node_id"] == "root-auto"
-    assert set(bundle.toolset.bindings) == {"browse_categories"}
+    assert set(bundle.toolset.bindings) == {"search_categories", "browse_categories"}
     assert [item.name for item in CATEGORY_NAVIGATION_TOOL_DEFINITIONS] == [
         "browse_categories"
     ]
@@ -493,20 +493,21 @@ def test_ozon_navigation_exposes_roots_then_records_only_leaf_candidates() -> No
         AiToolCommand(
             call_id="browse-root",
             tool_name="browse_categories",
-            tool_version="1",
+            tool_version="2",
             arguments={"parent_ids": ["root-auto"]},
             round=1,
         )
     )
     assert branch.ok is True
     assert branch.to_dict()["output"]["nodes"][0]["level"] == "branch"
+    assert branch.to_dict()["output"]["truncated"] is False
     assert ledger.candidates() == []
 
     leaf = runtime.execute(
         AiToolCommand(
             call_id="browse-group",
             tool_name="browse_categories",
-            tool_version="1",
+            tool_version="2",
             arguments={"parent_ids": ["group-radio"]},
             round=2,
         )

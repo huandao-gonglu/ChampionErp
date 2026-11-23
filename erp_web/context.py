@@ -28,6 +28,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycles
     from erp_web.services.image_delivery_service import ImageDeliveryService
     from erp_web.services.product_research_service import ProductResearchRunRegistry
     from erp_web.stores.ai_chat_turn_claim_store import AiChatTurnClaimStore
+    from erp_web.stores.category_catalog_store import CategoryCatalogStore
     from erp_web.stores.config_store import ConfigStore
     from erp_web.stores.draft_query_snapshot_store import DraftQuerySnapshotStore
     from erp_web.stores.product_store import ProductStore
@@ -155,6 +156,7 @@ class AppContext:
         self._publishing_bus: "PublishingBus | None" = None
         self._approval_session: "ApprovalSession | None" = None
         self._category_catalog: "CategoryCatalog | None" = None
+        self._category_catalog_store: "CategoryCatalogStore | None" = None
         self._online_products = None
         self._task_queue = None
         self._external_requests = None
@@ -616,6 +618,22 @@ class AppContext:
         return self._category_catalog
 
     @property
+    def category_catalog_store(self) -> "CategoryCatalogStore":
+        """统一类目元数据缓存与服务端翻译词典 SQLite 引擎（按共享库路径进程内共享）。"""
+
+        if self._category_catalog_store is None:
+            with self._lazy_lock:
+                if self._category_catalog_store is None:
+                    from erp_web.stores.category_catalog_store import (
+                        CategoryCatalogStore,
+                    )
+
+                    self._category_catalog_store = CategoryCatalogStore.acquire_shared(
+                        self.shared_paths.cache_dir / "category-catalog.sqlite3"
+                    )
+        return self._category_catalog_store
+
+    @property
     def approval_session(self) -> "ApprovalSession":
         """个人空间的可信审批凭据；仅随受信 UI bootstrap 下发，不进入模型上下文。"""
 
@@ -647,6 +665,7 @@ class AppContext:
             alibaba_self_purchases = self._alibaba_self_purchases
             alibaba_direct_purchases = self._alibaba_direct_purchases
             alibaba_read_cache = self._alibaba_read_cache
+            category_catalog_store = self._category_catalog_store
             wechat = self._wechat
         if self._desktop_connections is not None:
             self._desktop_connections.close()
@@ -654,6 +673,10 @@ class AppContext:
             wechat.close()
         if task_queue is not None:
             task_queue.close()
+        if category_catalog_store is not None:
+            from erp_web.stores.category_catalog_store import CategoryCatalogStore
+
+            CategoryCatalogStore.release_shared(category_catalog_store)
         if alibaba_read_cache is not None:
             alibaba_read_cache.close()
         if alibaba_direct_purchases is not None:

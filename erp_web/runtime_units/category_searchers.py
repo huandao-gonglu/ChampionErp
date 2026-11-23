@@ -1,8 +1,8 @@
 """绑定式平台类目检索对象。
 
 调用方只在任务入口按当前平台创建一次对象。Mercado Libre 使用关键字发现；
-Ozon 同一对象同时支持人工关键字搜索与自动匹配的树导航，后续调用均不再传递
-或判断 platform/site。
+Ozon 与 Yandex 同一对象同时支持本地 SQLite FTS5 搜索、同级叶子类目扩展与
+树导航，后续调用均不再传递或判断 platform/site。
 """
 
 from __future__ import annotations
@@ -30,10 +30,15 @@ class CategorySearchError(AiToolExecutionError):
 def _classified_error(exc: Exception) -> CategorySearchError:
     if isinstance(exc, CategorySearchError):
         return exc
-    if getattr(exc,"details",{}).get("auth_error_code") == "AUTH_NOT_CONFIGURED":
-        return CategorySearchError("CATEGORY_CREDENTIALS_MISSING",str(exc),retryable=False)
+    if getattr(exc, "details", {}).get("auth_error_code") == "AUTH_NOT_CONFIGURED":
+        return CategorySearchError("CATEGORY_CREDENTIALS_MISSING", str(exc), retryable=False)
     if hasattr(exc, "code") and hasattr(exc, "retryable"):
-        return CategorySearchError(exc.code, str(exc), retryable=exc.retryable, details=getattr(exc, "details", None))
+        return CategorySearchError(
+            exc.code,
+            str(exc),
+            retryable=exc.retryable,
+            details=getattr(exc, "details", None),
+        )
     message = str(exc) or exc.__class__.__name__
     lowered = message.casefold()
     if any(
@@ -110,6 +115,22 @@ def _path_segments(record: Mapping[str, Any]) -> list[str]:
     return [name[:500]] if name else []
 
 
+def _path_segments_zh(record: Mapping[str, Any]) -> list[str]:
+    raw = record.get("path_segments_zh") or record.get("path_cn")
+    if isinstance(raw, (list, tuple)):
+        segments = [str(item).strip()[:500] for item in raw[:20] if str(item).strip()]
+        if segments:
+            return segments
+    path_zh = str(record.get("path_zh") or "").strip()
+    if path_zh:
+        return [
+            item.strip()[:500]
+            for item in path_zh.replace(">", "/").split("/")[:20]
+            if item.strip()
+        ]
+    return []
+
+
 def _candidate(
     record: Mapping[str, Any],
     *,
@@ -141,6 +162,15 @@ def _candidate(
         "platform": platform,
         "site": str(record.get("site") or site),
     }
+    name_zh = str(record.get("name_zh") or record.get("name_cn") or "").strip()[:500]
+    if name_zh:
+        candidate["name_zh"] = name_zh
+    path_zh_segments = _path_segments_zh(record)
+    if path_zh_segments:
+        candidate["path_segments_zh"] = path_zh_segments
+        candidate["path_zh"] = " / ".join(path_zh_segments)
+    elif str(record.get("path_zh") or "").strip():
+        candidate["path_zh"] = str(record.get("path_zh") or "").strip()[:1000]
     for field_name in ("description_category_id", "type_id"):
         value = str(record.get(field_name) or "").strip()
         if value:
@@ -175,6 +205,78 @@ def _candidates(
         if limit is not None and len(normalized) >= limit:
             break
     return normalized
+
+
+def _normalize_browse_result(
+    result: Any,
+    *,
+    platform: str,
+    site: str,
+    default_source: str,
+) -> CategoryBrowseResult:
+    source = (
+        str(result.get("source") or default_source).strip()[:80]
+        if isinstance(result, Mapping)
+        else default_source
+    )
+    parent_ids = (
+        [
+            str(parent_id).strip()[:160]
+            for parent_id in result.get("parent_ids") or []
+            if str(parent_id).strip()
+        ]
+        if isinstance(result, Mapping)
+        else []
+    )
+    nodes: list[CategoryTreeNode] = []
+    raw_nodes = result.get("nodes") if isinstance(result, Mapping) else []
+    for row in raw_nodes if isinstance(raw_nodes, list) else []:
+        if not isinstance(row, Mapping):
+            continue
+        node_id = str(row.get("node_id") or "").strip()
+        name = str(row.get("name") or "").strip()
+        level = str(row.get("level") or "").strip()
+        if not node_id or not name or level not in {"branch", "product_type"}:
+            continue
+        node: CategoryTreeNode = {
+            "node_id": node_id[:160],
+            "name": name[:500],
+            "level": level,  # type: ignore[typeddict-item]
+            "depth": max(1, int(row.get("depth") or 1)),
+            "parent_id": str(row.get("parent_id") or "").strip()[:160],
+            "path_segments": [
+                str(segment).strip()[:500]
+                for segment in (row.get("path_segments") or [])[:20]
+                if str(segment).strip()
+            ],
+            "child_count": max(0, int(row.get("child_count") or 0)),
+            "publishable": bool(row.get("publishable")),
+            "platform": platform,
+            "site": site,
+        }
+        name_zh = str(row.get("name_zh") or "").strip()[:500]
+        if name_zh:
+            node["name_zh"] = name_zh
+        path_zh_segments = _path_segments_zh(row)
+        if path_zh_segments:
+            node["path_segments_zh"] = path_zh_segments
+            node["path_zh"] = " / ".join(path_zh_segments)
+        elif str(row.get("path_zh") or "").strip():
+            node["path_zh"] = str(row.get("path_zh") or "").strip()[:1000]
+        if level == "product_type":
+            category_id = str(
+                row.get("category_id") or row.get("node_id") or ""
+            ).strip()
+            node["category_id"] = category_id[:160]
+            if platform == "ozon":
+                node["type_id"] = str(
+                    row.get("type_id") or category_id
+                ).strip()[:160]
+                node["description_category_id"] = str(
+                    row.get("description_category_id") or ""
+                ).strip()[:160]
+        nodes.append(node)
+    return {"parent_ids": parent_ids, "nodes": nodes, "source": source}
 
 
 @dataclass(frozen=True)
@@ -241,7 +343,12 @@ class OzonCategorySearcher:
             result = self.provider.root_categories(timeout_seconds=self._timeout())
         except Exception as exc:
             raise _classified_error(exc) from exc
-        return self._browse_result(result)
+        return _normalize_browse_result(
+            result,
+            platform="ozon",
+            site=self.site,
+            default_source="ozon_cache",
+        )
 
     def browse_categories(self, parent_ids: list[str]) -> CategoryBrowseResult:
         normalized = list(
@@ -268,68 +375,33 @@ class OzonCategorySearcher:
             )
         except Exception as exc:
             raise _classified_error(exc) from exc
-        return self._browse_result(result)
+        return _normalize_browse_result(
+            result,
+            platform="ozon",
+            site=self.site,
+            default_source="ozon_cache",
+        )
 
-    def _browse_result(self, result: Any) -> CategoryBrowseResult:
-        source = (
-            str(result.get("source") or "ozon_cache").strip()[:80]
-            if isinstance(result, Mapping)
-            else "ozon_cache"
-        )
-        parent_ids = (
-            [
-                str(parent_id).strip()[:160]
-                for parent_id in result.get("parent_ids") or []
-                if str(parent_id).strip()
-            ]
-            if isinstance(result, Mapping)
-            else []
-        )
-        nodes: list[CategoryTreeNode] = []
-        raw_nodes = result.get("nodes") if isinstance(result, Mapping) else []
-        for row in raw_nodes if isinstance(raw_nodes, list) else []:
-            if not isinstance(row, Mapping):
-                continue
-            node_id = str(row.get("node_id") or "").strip()
-            name = str(row.get("name") or "").strip()
-            level = str(row.get("level") or "").strip()
-            if not node_id or not name or level not in {"branch", "product_type"}:
-                continue
-            node: CategoryTreeNode = {
-                "node_id": node_id[:160],
-                "name": name[:500],
-                "level": level,  # type: ignore[typeddict-item]
-                "depth": max(1, int(row.get("depth") or 1)),
-                "parent_id": str(row.get("parent_id") or "").strip()[:160],
-                "path_segments": [
-                    str(segment).strip()[:500]
-                    for segment in (row.get("path_segments") or [])[:20]
-                    if str(segment).strip()
-                ],
-                "child_count": max(0, int(row.get("child_count") or 0)),
-                "publishable": bool(row.get("publishable")),
-                "platform": "ozon",
-                "site": self.site,
-            }
-            if level == "product_type":
-                category_id = str(
-                    row.get("category_id") or row.get("node_id") or ""
-                ).strip()
-                node["category_id"] = category_id[:160]
-                node["type_id"] = str(
-                    row.get("type_id") or category_id
-                ).strip()[:160]
-                node["description_category_id"] = str(
-                    row.get("description_category_id") or ""
-                ).strip()[:160]
-            nodes.append(node)
-        return {"parent_ids": parent_ids, "nodes": nodes, "source": source}
+    def sibling_leaves(
+        self,
+        category_ids: list[str],
+        *,
+        limit: int = 12,
+    ) -> list[CategoryCandidate]:
+        fn = getattr(self.provider, "sibling_leaves", None)
+        if not callable(fn):
+            return []
+        try:
+            rows = fn(category_ids, limit=limit, timeout_seconds=self._timeout())
+        except Exception:
+            return []
+        return _candidates(rows, platform="ozon", site=self.site, limit=limit)
 
 
 @dataclass(frozen=True)
 class YandexCategorySearcher:
     shares_corpus = True
-    """Yandex 类目搜索：本地缓存树上的规范化匹配。"""
+    """Yandex 类目搜索与本地树导航。"""
 
     provider: Any
     site: str
@@ -386,6 +458,65 @@ class YandexCategorySearcher:
             "candidates": candidates,
             "source": cache_source,
         }
+
+    def root_categories(self) -> CategoryBrowseResult:
+        try:
+            result = self.provider.root_categories(timeout_seconds=self._timeout())
+        except Exception as exc:
+            raise _classified_error(exc) from exc
+        return _normalize_browse_result(
+            result,
+            platform="yandex",
+            site=self.site,
+            default_source="yandex_cache",
+        )
+
+    def browse_categories(self, parent_ids: list[str]) -> CategoryBrowseResult:
+        normalized = list(
+            dict.fromkeys(
+                str(parent_id or "").strip()[:160]
+                for parent_id in parent_ids
+                if str(parent_id or "").strip()
+            )
+        )
+        if not normalized:
+            raise CategorySearchError(
+                "CATEGORY_NAVIGATION_PARENT_REQUIRED",
+                "类目树导航至少需要一个 parent_id。",
+            )
+        if len(normalized) > 2:
+            raise CategorySearchError(
+                "CATEGORY_NAVIGATION_TOO_BROAD",
+                "类目树导航每次最多展开两个父节点。",
+            )
+        try:
+            result = self.provider.browse_categories(
+                normalized,
+                timeout_seconds=self._timeout(),
+            )
+        except Exception as exc:
+            raise _classified_error(exc) from exc
+        return _normalize_browse_result(
+            result,
+            platform="yandex",
+            site=self.site,
+            default_source="yandex_cache",
+        )
+
+    def sibling_leaves(
+        self,
+        category_ids: list[str],
+        *,
+        limit: int = 12,
+    ) -> list[CategoryCandidate]:
+        fn = getattr(self.provider, "sibling_leaves", None)
+        if not callable(fn):
+            return []
+        try:
+            rows = fn(category_ids, limit=limit, timeout_seconds=self._timeout())
+        except Exception:
+            return []
+        return _candidates(rows, platform="yandex", site=self.site, limit=limit)
 
 
 @dataclass(frozen=True)
@@ -524,5 +655,6 @@ __all__ = [
     "CategorySearchError",
     "MercadoLibreCategorySearcher",
     "OzonCategorySearcher",
+    "YandexCategorySearcher",
     "create_category_searcher",
 ]

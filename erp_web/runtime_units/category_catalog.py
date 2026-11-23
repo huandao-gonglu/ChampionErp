@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""统一类目读取入口 CategoryCatalog（类目 Schema 分离计划 Phase 1）。
+"""统一类目读取入口 CategoryCatalog（类目 Schema 分离与三级自动本地化）。
 
 业务模块不得自行解析注册表，也不得直接调用平台 API；一律通过注入的
 CategoryCatalog / CategoryDefinitionLoader 读取类目事实：
@@ -13,17 +13,21 @@ require_category_provider(platform)
     ↓
 MercadoLibre / Ozon / Yandex CategoryProvider
     ↓
-平台 API 与 Provider 所有的缓存
+平台 API + 统一 SQLite CategoryCatalogStore（树 / 定义 / 枚举 / 词典）
 ```
 """
 
 from __future__ import annotations
 
-from typing import Callable, Mapping, Protocol
+from typing import Any, Mapping, Protocol
 
 from erp_web.marketplaces.category_provider import CategoryProvider
 from erp_web.runtime_units.category_definition_support import (
     project_attribute_page,
+)
+from erp_web.runtime_units.category_localization import (
+    enrich_attribute_page_l2,
+    enrich_attribute_value_page_l2,
 )
 from erp_web.schemas.category_definition import (
     CategoryAttributePage,
@@ -48,7 +52,7 @@ class CategoryDefinitionLoader(Protocol):
 
 
 class CategoryCatalog:
-    """Provider 解析、统一读取、指纹和有界公共视图。"""
+    """Provider 解析、统一读取、指纹、L2 零耗时中文化与有界公共视图。"""
 
     def __init__(self, providers: Mapping[str, CategoryProvider]) -> None:
         if not providers:
@@ -130,8 +134,17 @@ class CategoryCatalog:
         *,
         site: str = "",
         timeout_seconds: float | None = None,
+        force_refresh: bool = False,
     ) -> CategoryDefinition:
-        return self.provider_for(platform).attribute_definitions(
+        provider = self.provider_for(platform)
+        if force_refresh:
+            return provider.attribute_definitions(
+                category_id,
+                site=site,
+                timeout_seconds=timeout_seconds,
+                force_refresh=True,
+            )
+        return provider.attribute_definitions(
             category_id,
             site=site,
             timeout_seconds=timeout_seconds,
@@ -146,7 +159,25 @@ class CategoryCatalog:
         provider = self.provider_for("yandex")
         if not isinstance(provider, YandexCategoryProvider):
             raise ValueError("当前 Yandex 类目来源不支持实时核对变体设置。")
-        return provider.attribute_definitions(category_id, site=site, timeout_seconds=timeout_seconds, force_refresh=True)
+        return provider.attribute_definitions(
+            category_id,
+            site=site,
+            timeout_seconds=timeout_seconds,
+            force_refresh=True,
+        )
+
+    def ozon_leaf_records(
+        self,
+        *,
+        credentials: tuple[str, str] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """供佣金核价等模块经 Catalog 读取 Ozon 叶子语料，避免直连平台 API。"""
+        provider = self.provider_for("ozon")
+        loader = getattr(provider, "list_leaf_records", None)
+        if not callable(loader):
+            raise RuntimeError("当前 Ozon 类目 Provider 不支持读取叶子类目列表。")
+        return list(loader(credentials=credentials, timeout_seconds=timeout_seconds))
 
     def attribute_values(
         self,
@@ -160,7 +191,7 @@ class CategoryCatalog:
         limit: int = 50,
         timeout_seconds: float | None = None,
     ) -> CategoryAttributeValuePage:
-        return self.provider_for(platform).attribute_values(
+        page = self.provider_for(platform).attribute_values(
             category_id,
             attribute_id,
             site=site,
@@ -169,6 +200,7 @@ class CategoryCatalog:
             limit=limit,
             timeout_seconds=timeout_seconds,
         )
+        return enrich_attribute_value_page_l2(page)
 
     def public_attribute_page(
         self,
@@ -179,16 +211,19 @@ class CategoryCatalog:
         cursor: str = "",
         limit: int = 50,
         timeout_seconds: float | None = None,
+        force_refresh: bool = False,
     ) -> CategoryAttributePage:
-        """前端/Agent 的有界属性页；内部定义不外泄 platform_binding。"""
+        """前端/Agent 的有界属性页；不含 platform_binding，并自动回填 L2 中文词典。"""
 
         definition = self.attribute_definitions(
             platform,
             category_id,
             site=site,
             timeout_seconds=timeout_seconds,
+            force_refresh=force_refresh,
         )
-        return project_attribute_page(definition, cursor=cursor, limit=limit)
+        page = project_attribute_page(definition, cursor=cursor, limit=limit)
+        return enrich_attribute_page_l2(page)
 
     def definition_loader(self) -> "CategoryDefinitionLoader":
         """返回可注入业务编排的定义加载 callable。"""

@@ -318,7 +318,11 @@ def test_mercadolibre_definition_shape(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_mercadolibre_definition_merges_restricted_brand_top_values(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    from erp_web.stores.category_catalog_store import CategoryCatalogStore
+
+    store = CategoryCatalogStore(tmp_path / "ml-brand.sqlite3")
     calls: list[tuple[str, str | None, str, Any]] = []
     top_values = [
         {"id": str(index), "name": f"Brand {index}", "metric": 100 - index}
@@ -378,6 +382,7 @@ def test_mercadolibre_definition_merges_restricted_brand_top_values(
         raise AssertionError(f"未预期的 Mercado 请求：{url}")
 
     provider = category_providers.MercadoLibreCategoryProvider()
+    monkeypatch.setattr(category_providers, "_catalog_store", lambda: store)
     monkeypatch.setattr(
         provider,
         "_store_config",
@@ -389,11 +394,6 @@ def test_mercadolibre_definition_merges_restricted_brand_top_values(
         lambda: "saved-token",
     )
     monkeypatch.setattr(category_providers, "http_json", fake_http_json)
-    monkeypatch.setattr(
-        category_providers,
-        "load_definition_through_cache",
-        lambda **kwargs: kwargs["live_loader"](),
-    )
 
     definition = provider.attribute_definitions("CBT455865", site="CBT")
 
@@ -512,8 +512,8 @@ def test_mercadolibre_definition_rejects_missing_token_before_cache(
     )
     monkeypatch.setattr(
         category_providers,
-        "load_definition_through_cache",
-        lambda **_kwargs: pytest.fail("缺少 Token 时不得读取定义缓存"),
+        "_catalog_store",
+        lambda: pytest.fail("缺少 Token 时不得读取定义缓存"),
     )
 
     with pytest.raises(RuntimeError, match="Access Token"):
@@ -522,7 +522,12 @@ def test_mercadolibre_definition_rejects_missing_token_before_cache(
 
 def test_mercadolibre_definition_without_brand_skips_top_values(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    from erp_web.stores.category_catalog_store import CategoryCatalogStore
+
+    store = CategoryCatalogStore(tmp_path / "ml-no-brand.sqlite3")
+
     def fake_http_json(
         url: str,
         access_token: str | None = None,
@@ -551,6 +556,7 @@ def test_mercadolibre_definition_without_brand_skips_top_values(
         raise AssertionError(f"未预期的 Mercado 请求：{url}")
 
     provider = category_providers.MercadoLibreCategoryProvider()
+    monkeypatch.setattr(category_providers, "_catalog_store", lambda: store)
     monkeypatch.setattr(
         provider,
         "_store_config",
@@ -562,11 +568,6 @@ def test_mercadolibre_definition_without_brand_skips_top_values(
         lambda: "saved-token",
     )
     monkeypatch.setattr(category_providers, "http_json", fake_http_json)
-    monkeypatch.setattr(
-        category_providers,
-        "load_definition_through_cache",
-        lambda **kwargs: kwargs["live_loader"](),
-    )
 
     definition = provider.attribute_definitions("CBT-NO-BRAND", site="CBT")
 
@@ -830,13 +831,26 @@ def test_yandex_distinguishes_unknown_parameter_from_empty_search(monkeypatch):
 
 
 def test_yandex_variant_settings_refresh_bypasses_both_caches_and_updates_normal_reads(monkeypatch, tmp_path):
+    from datetime import datetime, timezone
     from erp_web.runtime_units import yandex_category_api as api
     from erp_web.runtime_units.category_catalog import CategoryCatalog
     from erp_web.runtime_units.category_definition_support import CategoryAttributesUnavailableError
+    from erp_web.stores.category_catalog_store import CategoryCatalogStore
 
-    monkeypatch.setattr(category_providers, "_cache_root", lambda: tmp_path)
+    store = CategoryCatalogStore(tmp_path / "yandex-variant.sqlite3")
+    monkeypatch.setattr(category_providers, "_catalog_store", lambda: store)
+    monkeypatch.setattr(api, "_catalog_store", lambda: store)
     monkeypatch.setattr(api, "_yandex_credentials", lambda: ("settings-test-token", "fake-store"))
-    monkeypatch.setattr(api, "load_yandex_category_corpus", lambda **kw: ([{"category_id": "shoes"}], {}))
+    scope = api.YANDEX_TAXONOMY_SCOPE
+    nodes = api._build_taxonomy_nodes([{"id": 1, "name": "Обувь", "children": [{"id": 999001, "name": "Кроссовки"}]}])
+    store.save_taxonomy(
+        "yandex", scope, "RU", nodes,
+        corpus_hash=api._stable_corpus_hash(nodes),
+        taxonomy_version=None,
+        retrieved_at=datetime.now(timezone.utc),
+        fresh_ttl=api.YANDEX_CATEGORY_CACHE_FRESH_TTL,
+        max_age=api.YANDEX_CATEGORY_CACHE_MAX_AGE,
+    )
     enabled = False
     offline = False
     calls = []
@@ -844,19 +858,35 @@ def test_yandex_variant_settings_refresh_bypasses_both_caches_and_updates_normal
         calls.append((category_id, business_id))
         if offline:
             raise TimeoutError("平台查询超时")
-        return [{"id": 5678, "name": "Размер", "type": "TEXT", "distinctive": enabled}]
+        return [{"id": 5678, "name": "Размер", "description": "Размер обуви", "type": "TEXT", "distinctive": enabled}]
     monkeypatch.setattr(api, "fetch_yandex_category_parameters", parameters)
     catalog = CategoryCatalog({"yandex": category_providers.YandexCategoryProvider()})
     def read():
-        return catalog.attribute_definitions("yandex", "shoes").attribute_by_id("5678").variation_role
+        return catalog.attribute_definitions("yandex", "999001").attribute_by_id("5678")
     def refresh():
-        return catalog.refresh_yandex_variant_settings("shoes", site="global", timeout_seconds=10)
-    assert read() != "variant"
+        return catalog.refresh_yandex_variant_settings("999001", site="global", timeout_seconds=10)
+    assert read().variation_role != "variant"
+    assert read().description == "Размер обуви"
     enabled = True
-    assert read() != "variant"
+    assert read().variation_role != "variant"
     assert refresh().attribute_by_id("5678").variation_role == "variant"
-    assert read() == "variant" and len(calls) == 2
+    assert read().variation_role == "variant" and len(calls) == 2
     offline = True
     with pytest.raises(CategoryAttributesUnavailableError, match="平台查询超时"):
         refresh()
-    assert len(calls) == 3 and read() == "variant"
+    assert len(calls) == 3 and read().variation_role == "variant"
+
+
+def test_mercadolibre_unknown_attribute_values_raises_value_error(monkeypatch, tmp_path):
+    from erp_web.stores.category_catalog_store import CategoryCatalogStore
+
+    store = CategoryCatalogStore(tmp_path / "ml-unknown-attr.sqlite3")
+    provider = category_providers.MercadoLibreCategoryProvider()
+    monkeypatch.setattr(category_providers, "_catalog_store", lambda: store)
+    monkeypatch.setattr(
+        category_providers,
+        "http_json",
+        lambda url, *a, **kw: [{"id": "COLOR", "name": "Color", "value_type": "list", "values": [{"id": "1", "name": "Red"}]}],
+    )
+    with pytest.raises(ValueError, match="没有属性 NON_EXISTENT"):
+        provider.attribute_values("MLM123", "NON_EXISTENT", site="MLM")

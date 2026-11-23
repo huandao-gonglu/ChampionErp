@@ -6,6 +6,15 @@ export interface AttributeLimits {
   valueType?: string
 }
 
+const NUMERIC_VALUE_TYPES = new Set([
+  'numeric',
+  'number',
+  'integer',
+  'float',
+  'decimal',
+  'number_unit',
+])
+
 function texts(value: unknown): string[] {
   if (value == null) return []
   if (Array.isArray(value)) return value.flatMap(texts)
@@ -18,6 +27,7 @@ function texts(value: unknown): string[] {
 
 export function attributeConstraintError(limits: AttributeLimits, value: unknown): string {
   const values = texts(value)
+  const normalizedType = String(limits.valueType || '').trim().toLowerCase()
   for (const [index, text] of values.entries()) {
     if (!text) continue
     const prefix = values.length > 1 ? `第 ${index + 1} 个值：` : ''
@@ -25,13 +35,22 @@ export function attributeConstraintError(limits: AttributeLimits, value: unknown
     if (limits.maxLength != null && length > limits.maxLength) {
       return `${prefix}当前 ${length} 个字符，超过上限 ${limits.maxLength}，需减少 ${length - limits.maxLength} 个字符`
     }
-    if (['numeric', 'number', 'integer', 'float'].includes(limits.valueType || '')) {
+    if (NUMERIC_VALUE_TYPES.has(normalizedType)) {
       const normalized = text.replace(',', '.')
       const number = Number(normalized)
-      if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(normalized)
-        || !Number.isFinite(number) || (limits.valueType === 'integer' && !Number.isInteger(number))) return `${prefix}请填写有效的有限${limits.valueType === 'integer' ? '整数' : '数字'}`
-      if (limits.minValue != null && number < Number(limits.minValue)) return `${prefix}当前值 ${text} 不能小于 ${limits.minValue}`
-      if (limits.maxValue != null && number > Number(limits.maxValue)) return `${prefix}当前值 ${text} 不能大于 ${limits.maxValue}`
+      if (
+        !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(normalized)
+        || !Number.isFinite(number)
+        || (normalizedType === 'integer' && !Number.isInteger(number))
+      ) {
+        return `${prefix}请填写有效的有限${normalizedType === 'integer' ? '整数' : '数字'}`
+      }
+      if (limits.minValue != null && number < Number(limits.minValue)) {
+        return `${prefix}当前值 ${text} 不能小于 ${limits.minValue}`
+      }
+      if (limits.maxValue != null && number > Number(limits.maxValue)) {
+        return `${prefix}当前值 ${text} 不能大于 ${limits.maxValue}`
+      }
     }
   }
   return ''

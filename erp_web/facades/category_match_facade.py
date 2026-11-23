@@ -1,40 +1,38 @@
-"""``category.match`` 的稳定业务能力入口。
+"""``category.match`` 的稳定业务能力入口（1+N 多模态标准化 + 预召回 + 单轮精排）。
 
-任务入口按当前平台创建绑定式类目检索对象。拥有完整树的 Ozon 将真实顶层节点
-放入首轮输入，再通过工具逐层展开；Mercado Libre 继续使用远端关键字发现。
-最终选择必须来自工具真实返回的商品类型；详情和属性只在服务端终检。
-
-同步入口（Global Task 等 child 场景）与 focused 流式根运行共享同一套输入
-校验、检索装配和业务终检（``finalize_category_match``），保证两条路径的
-类型化 ``CategoryMatchResult`` 语义一致。
+执行管线：
+1. Phase 1（1× 跨平台共享）：提取分类优先的商品事实，并在模型支持识图时自动附带主图，
+   一次结构化调用输出商品实物身份与各平台检索语言的规范品名；
+2. 确定性预召回（Ozon / Yandex 本地 SQLite FTS5 + 同父兄弟叶扩展；Mercado Libre 并发发现 + 路径补全）；
+3. Phase 2（Pydantic AI 单轮精排 + 原生工具回退）：把预召回候选注入首轮上下文，
+   命中即 0 工具调用直接输出；存在缺口时自主调用 ``search_categories`` / ``browse_categories``；
+4. 终检（复用校验期详情缓存，避免重复查详情）+ L2 词典零耗时补全候选中文名。
 """
 
 from __future__ import annotations
 
-from html import unescape
-import re
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 import time
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol, Sequence
+
+from pydantic_ai.messages import BinaryContent
 
 from erp_web.context import get_context
 from erp_web.marketplaces.category_provider import CategorySearcher
-from erp_web.services.forbidden_category_service import (
-    forbidden_category_issue,
-    forbidden_category_reason,
-)
+from erp_web.runtime_units.category_keyword_search import CategoryKeywordBatchSearch
+from erp_web.runtime_units.category_localization import enrich_category_candidates_l2
 from erp_web.runtime_units.category_searchers import (
     CategorySearchError,
     create_category_searcher,
 )
-from erp_web.runtime_units.category_store import (
-    fetch_category_record,
-)
+from erp_web.runtime_units.category_store import fetch_category_record
 from erp_web.runtime_units.category_tools import (
     CategoryCandidateLedger,
     build_category_match_toolset,
 )
-from erp_web.schemas.category_search_language import category_search_language
 from erp_web.schemas.ai_tools import AiToolExecutionError
+from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.category import (
     CategoryCandidate,
     CategoryMatchDecision,
@@ -43,7 +41,10 @@ from erp_web.schemas.category import (
     CategoryMatchStatus,
     CategoryMatchTrace,
 )
+from erp_web.schemas.category_search_language import category_search_language
 from erp_web.services.ai_agent_factory import AiAgentExecutionError
+from erp_web.services.ai_run_cancellation import check_cancellation
+from erp_web.services.ai_tool_registry import AiToolSet
 from erp_web.services.category_match_agent_service import (
     CATEGORY_MATCH_BUDGET_PROFILE,
     CATEGORY_MATCH_DEADLINE_SECONDS,
@@ -51,41 +52,21 @@ from erp_web.services.category_match_agent_service import (
     CategoryMatchAgentRun,
     run_category_match_agent,
 )
-from erp_web.services.ai_tool_registry import AiToolSet
-from erp_web.stores.product_store import normalize_product_fields
-
-
-_HTML_TAG_RE = re.compile(r"<[^>]+>")
-_SPACE_RE = re.compile(r"\s+")
-_NOISY_ATTRIBUTE_MARKERS = (
-    "price",
-    "payment",
-    "shipping",
-    "delivery",
-    "logistics",
-    "promotion",
-    "discount",
-    "coupon",
-    "warranty policy",
-    "disclaimer",
-    "价格",
-    "付款",
-    "支付",
-    "运费",
-    "物流",
-    "发货",
-    "促销",
-    "优惠",
-    "免责声明",
-    "цена",
-    "доставка",
-    "скидка",
-    "оплата",
-    "envío",
-    "precio",
-    "descuento",
-    "pago",
+from erp_web.services.category_product_canonicalizer import (
+    ProductCanonicalIdentity,
+    build_product_facts,
+    canonicalize_product_for_category_match,
+    resolve_product_main_image,
 )
+from erp_web.services.forbidden_category_service import (
+    forbidden_category_issue,
+    forbidden_category_reason,
+)
+
+_PREFETCH_SEARCH_LIMIT = 28
+_PREFETCH_SIBLING_SEED_LIMIT = 3
+_PREFETCH_SIBLING_MAX_EXTRA = 10
+_PREFETCH_PAYLOAD_MAX_CANDIDATES = 35
 
 CategorySearcherFactory = Callable[..., CategorySearcher]
 
@@ -132,123 +113,14 @@ def _text(value: Any, limit: int) -> str:
     return str(value or "").strip()[:limit]
 
 
-def _clean_description(value: Any, limit: int = 1600) -> str:
-    text = unescape(_HTML_TAG_RE.sub(" ", str(value or "")))
-    return _SPACE_RE.sub(" ", text).strip()[:limit]
-
-
-def _first_mapping(*values: Any) -> Mapping[str, Any]:
-    for value in values:
-        if isinstance(value, Mapping):
-            return value
-    return {}
-
-
-def _attribute_value(value: Any) -> str | int | float | bool | list[str] | None:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value
-    if isinstance(value, str):
-        text = _clean_description(value, 240)
-        return text or None
-    if isinstance(value, (list, tuple)):
-        rows = [_clean_description(item, 120) for item in value[:8]]
-        rows = [item for item in rows if item]
-        return rows or None
-    return None
-
-
-def _key_attributes(*values: Any, limit: int = 12) -> dict[str, Any]:
-    attributes: dict[str, Any] = {}
-    for value in values:
-        if not isinstance(value, Mapping):
-            continue
-        for key, item in value.items():
-            name = _text(key, 100)
-            normalized_name = name.casefold()
-            if (
-                not name
-                or name.isdigit()
-                or any(marker in normalized_name for marker in _NOISY_ATTRIBUTE_MARKERS)
-                or name in attributes
-            ):
-                continue
-            normalized_value = _attribute_value(item)
-            if normalized_value is None:
-                continue
-            attributes[name] = normalized_value
-            if len(attributes) >= limit:
-                return attributes
-    return attributes
-
-
 def category_product_facts(
     product: Mapping[str, Any],
     draft: Mapping[str, Any],
     target: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """生成首次模型请求；只保留能帮助识别商品的事实。"""
+    """生成首次模型请求；只保留能帮助识别商品的结构化事实。"""
 
-    normalized = normalize_product_fields(dict(product))
-    source = _first_mapping(normalized.get("source"), product.get("source"))
-    draft_data = draft if isinstance(draft, Mapping) else {}
-    target_data = target if isinstance(target, Mapping) else {}
-
-    source_title = _text(
-        source.get("title") or normalized.get("name") or product.get("name"),
-        500,
-    )
-    target_title = _text(draft_data.get("title"), 500)
-    target_description = _clean_description(
-        draft_data.get("description")
-        or draft_data.get("description_html")
-        or draft_data.get("body")
-    )
-    return {
-        "source": {
-            "language": _text(
-                source.get("language")
-                or source.get("locale")
-                or normalized.get("source_language"),
-                80,
-            ),
-            "title": source_title,
-        },
-        "target": {
-            "language": _text(
-                draft_data.get("language")
-                or target_data.get("language")
-                or target_data.get("locale"),
-                80,
-            ),
-            "title": target_title,
-            "description": target_description,
-        },
-        "facts": {
-            "source_category": _text(
-                normalized.get("category") or source.get("category"),
-                240,
-            ),
-            "brand": _text(
-                draft_data.get("brand")
-                or source.get("brand")
-                or normalized.get("brand"),
-                160,
-            ),
-            "model": _text(
-                draft_data.get("model")
-                or source.get("model")
-                or normalized.get("model"),
-                160,
-            ),
-            "attributes": _key_attributes(
-                draft_data.get("attributes"),
-                source.get("attributes"),
-                normalized.get("attributes"),
-            ),
-        },
-    }
+    return build_product_facts(product, draft, target)
 
 
 def _empty_decision() -> CategoryMatchDecision:
@@ -303,6 +175,58 @@ def failure_from_exception(exc: Exception, *, stage: str) -> CategoryMatchFailur
     }
 
 
+_MAX_PUBLIC_CANDIDATES = 20
+
+
+def _curate_public_candidates(
+    ledger: CategoryCandidateLedger,
+    selected_category_id: str | None,
+    *,
+    limit: int = _MAX_PUBLIC_CANDIDATES,
+) -> list[CategoryCandidate]:
+    """裁剪并排序返回给页面的候选：AI 首选置顶 → 同父级近义兄弟 → 合规高相关 → 禁售兜底。"""
+
+    all_candidates = ledger.candidates()
+    if not all_candidates:
+        return []
+    selected_id = str(selected_category_id or "").strip()
+    selected_candidate = ledger.get(selected_id) if selected_id else None
+    selected_parent: tuple[str, ...] = ()
+    if selected_candidate is not None:
+        segs = [str(s).strip() for s in (selected_candidate.get("path_segments") or []) if str(s).strip()]
+        if len(segs) >= 2:
+            selected_parent = tuple(segs[:-1])
+
+    selected_bucket: list[CategoryCandidate] = []
+    sibling_bucket: list[CategoryCandidate] = []
+    compliant_bucket: list[CategoryCandidate] = []
+    forbidden_bucket: list[CategoryCandidate] = []
+    seen: set[str] = set()
+
+    if selected_candidate is not None:
+        cid = str(selected_candidate.get("category_id") or "").strip()
+        if cid:
+            selected_bucket.append(selected_candidate)
+            seen.add(cid)
+
+    for row in all_candidates:
+        cid = str(row.get("category_id") or "").strip()
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        if row.get("forbidden"):
+            forbidden_bucket.append(row)
+            continue
+        segs = [str(s).strip() for s in (row.get("path_segments") or []) if str(s).strip()]
+        if selected_parent and len(segs) >= 2 and tuple(segs[:-1]) == selected_parent:
+            sibling_bucket.append(row)
+        else:
+            compliant_bucket.append(row)
+
+    ordered = selected_bucket + sibling_bucket + compliant_bucket + forbidden_bucket
+    return ordered[: max(1, int(limit))]
+
+
 def _result(
     *,
     ok: bool,
@@ -314,17 +238,21 @@ def _result(
     failure: CategoryMatchFailure | None = None,
     trace: CategoryMatchTrace | None = None,
 ) -> CategoryMatchResult:
+    platform = _text(target.get("platform"), 80).lower()
     public_candidates: list[CategoryCandidate] = []
-    candidates = ledger.candidates()
-    selected_candidate = ledger.get(selected_category_id) if selected_category_id else None
-    if selected_candidate and not any(row["category_id"] == selected_category_id for row in candidates):
-        candidates = [selected_candidate, *candidates[:-1]]
+    candidates = _curate_public_candidates(ledger, selected_category_id)
     for candidate in candidates:
         public_candidate: CategoryCandidate = {
             "category_id": str(candidate.get("category_id") or ""),
             "name": str(candidate.get("name") or ""),
             "path_segments": list(candidate.get("path_segments") or []),
         }
+        if candidate.get("name_zh"):
+            public_candidate["name_zh"] = str(candidate["name_zh"])
+        if candidate.get("path_zh"):
+            public_candidate["path_zh"] = str(candidate["path_zh"])
+        elif candidate.get("path_segments_zh"):
+            public_candidate["path_zh"] = " / ".join(candidate["path_segments_zh"])
         if "description_category_id" in candidate:
             public_candidate["description_category_id"] = str(
                 candidate.get("description_category_id") or ""
@@ -337,11 +265,26 @@ def _result(
             if reason:
                 public_candidate["forbidden_reason"] = reason
         public_candidates.append(public_candidate)
+
+    if platform and public_candidates:
+        enriched = enrich_category_candidates_l2(
+            platform,
+            [dict(item) for item in public_candidates],
+        )
+        public_candidates = [
+            {
+                **orig,
+                **({"name_zh": row["name_zh"]} if row.get("name_zh") else {}),
+                **({"path_zh": row["path_zh"]} if row.get("path_zh") else {}),
+            }
+            for orig, row in zip(public_candidates, enriched, strict=True)
+        ]
+
     return {
         "ok": ok,
         "status": status,
         "target": {
-            "platform": _text(target.get("platform"), 80).lower(),
+            "platform": platform,
             "site": _text(target.get("site") or target.get("site_id"), 80),
         },
         "selected_category_id": selected_category_id,
@@ -424,6 +367,7 @@ def _validate_selected_category(
     ledger: CategoryCandidateLedger,
     detail_loader: Callable[..., dict[str, Any]],
     ensure_deadline: Callable[[], float],
+    verified_details: Mapping[str, dict[str, Any]] | None = None,
 ) -> CategoryCandidate:
     candidate = ledger.get(selected_category_id)
     if candidate is None:
@@ -445,23 +389,30 @@ def _validate_selected_category(
             f"所选类目 {selected_category_id} 属于禁售范围（{reason}），不能选择。",
         )
 
-    try:
-        detail = detail_loader(
-            platform,
-            selected_category_id,
-            site=site,
-            # 匹配只核验类目身份；属性加载属于用户选定类目后的独立步骤。
-            include_attributes=False,
-            timeout_seconds=ensure_deadline(),
-        )
-    except (TimeoutError, CategoryMatchError):
-        raise
-    except Exception as exc:
-        raise _validation_error(
-            "CATEGORY_NOT_FOUND",
-            str(exc) or "类目详情不可读取。",
-            retryable=True,
-        ) from exc
+    cached_detail = (
+        verified_details.get(selected_category_id)
+        if isinstance(verified_details, Mapping)
+        else None
+    )
+    if isinstance(cached_detail, dict):
+        detail = cached_detail
+    else:
+        try:
+            detail = detail_loader(
+                platform,
+                selected_category_id,
+                site=site,
+                include_attributes=False,
+                timeout_seconds=ensure_deadline(),
+            )
+        except (TimeoutError, CategoryMatchError):
+            raise
+        except Exception as exc:
+            raise _validation_error(
+                "CATEGORY_NOT_FOUND",
+                str(exc) or "类目详情不可读取。",
+                retryable=True,
+            ) from exc
     resolved_id = str(detail.get("category_id") or selected_category_id).strip()
     if resolved_id != selected_category_id or bool(detail.get("disabled")):
         raise _validation_error(
@@ -494,6 +445,110 @@ def _validate_selected_category(
     return candidate
 
 
+# -- 确定性预召回 ------------------------------------------------------------
+
+
+def _prefetch_candidates_for_target(
+    *,
+    searcher: CategorySearcher,
+    ledger: CategoryCandidateLedger,
+    platform: str,
+    site: str,
+    canonical_identity: ProductCanonicalIdentity | None,
+    deadline_at: float,
+) -> list[dict[str, Any]]:
+    """根据标准化检索词执行确定性预召回（FTS5/API + 同父兄弟叶扩展）。"""
+
+    if canonical_identity is None:
+        return []
+    if not callable(getattr(searcher, "search_categories", None)):
+        return []
+    try:
+        language = category_search_language(platform, site)
+    except Exception:
+        return []
+    terms = list(canonical_identity.search_terms_by_language.get(language) or [])
+    if not terms:
+        return []
+
+    temp_ledger = CategoryCandidateLedger()
+    batch = CategoryKeywordBatchSearch(
+        searcher=searcher,
+        ledger=temp_ledger,
+        search_language=language,
+        limit=_PREFETCH_SEARCH_LIMIT,
+    )
+    remaining = max(1.0, min(20.0, deadline_at - time.monotonic()))
+    exec_ctx = AiExecutionContext.create(
+        timeout_seconds=remaining,
+        budget_profile="category_prefetch",
+    )
+    try:
+        result = batch.execute({"keywords": terms, "offset": 0}, exec_ctx)
+    except Exception:
+        return []
+
+    recalled: list[CategoryCandidate] = []
+    seen_ids: set[str] = set()
+    for row in result.get("candidates") or []:
+        cid = str(row.get("category_id") or "").strip()
+        if not cid or cid in seen_ids:
+            continue
+        full = temp_ledger.get(cid)
+        if full is None:
+            continue
+        recalled.append(full)
+        seen_ids.add(cid)
+
+    # 对本地完整树（Ozon / Yandex），扩展前几名命中的同父级兄弟叶子类目，补齐近义叶子。
+    sibling_fn = getattr(searcher, "sibling_leaves", None)
+    if recalled and callable(sibling_fn):
+        seed_ids = [
+            str(item.get("category_id") or "")
+            for item in recalled[:_PREFETCH_SIBLING_SEED_LIMIT]
+            if item.get("category_id")
+        ]
+        if seed_ids:
+            try:
+                siblings = sibling_fn(seed_ids, limit=_PREFETCH_SIBLING_MAX_EXTRA)
+            except Exception:
+                siblings = []
+            for sib in siblings:
+                cid = str(sib.get("category_id") or "").strip()
+                if not cid or cid in seen_ids:
+                    continue
+                recalled.append(sib)
+                seen_ids.add(cid)
+
+    if not recalled:
+        return []
+
+    ledger.record_prefetched(
+        recalled,
+        keywords=terms,
+        source=f"{platform}_prefetched",
+    )
+    compact: list[dict[str, Any]] = []
+    for item in recalled[:_PREFETCH_PAYLOAD_MAX_CANDIDATES]:
+        entry: dict[str, Any] = {
+            "category_id": str(item.get("category_id") or ""),
+            "name": str(item.get("name") or ""),
+            "path_segments": list(item.get("path_segments") or []),
+        }
+        if item.get("name_zh"):
+            entry["name_zh"] = str(item["name_zh"])
+        if item.get("path_zh"):
+            entry["path_zh"] = str(item["path_zh"])
+        if item.get("matched_keywords"):
+            entry["matched_keywords"] = list(item["matched_keywords"])
+        if item.get("forbidden"):
+            entry["forbidden"] = True
+            if item.get("forbidden_reason"):
+                entry["forbidden_reason"] = str(item["forbidden_reason"])
+        compact.append(entry)
+    return compact
+
+
 # -- 同步/流式共享阶段 ------------------------------------------------------
 
 
@@ -502,11 +557,7 @@ def prepare_category_match_input(
     draft: Mapping[str, Any],
     target: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any], CategoryMatchFailure | None]:
-    """归一化目标与商品事实；输入不合法时返回失败描述。
-
-    返回 ``(normalized_target, facts, failure)``；``failure`` 非空时不得继续
-    启动 Agent。手动业务请求和对话工具共用同一校验。
-    """
+    """归一化目标与商品事实；输入不合法时返回失败描述。"""
 
     platform = _text(target.get("platform"), 80).lower()
     site = _text(target.get("site") or target.get("site_id"), 80)
@@ -526,7 +577,10 @@ def prepare_category_match_input(
         category_search_language(platform, site)
     except AiToolExecutionError as exc:
         return normalized_target, {}, {
-            "code": exc.code, "message": str(exc), "stage": "input", "retryable": False,
+            "code": exc.code,
+            "message": str(exc),
+            "stage": "input",
+            "retryable": False,
         }
     facts = category_product_facts(product, draft, normalized_target)
     if not facts["source"]["title"] and not facts["target"]["title"]:
@@ -547,12 +601,15 @@ def setup_category_match_search(
     *,
     searcher: CategorySearcher | None = None,
     searcher_factory: CategorySearcherFactory = create_category_searcher,
+    canonical_identity: ProductCanonicalIdentity | None = None,
 ) -> tuple[dict[str, Any], AiToolSet]:
-    """创建绑定式 searcher 与 ToolSet，并组装首轮 payload；失败抛异常。"""
+    """创建绑定式 searcher 与 ToolSet，执行确定性预召回并组装首轮 payload。"""
 
+    platform = str(normalized_target.get("platform") or "")
+    site = str(normalized_target.get("site") or "")
     scoped_searcher = searcher or searcher_factory(
-        str(normalized_target.get("platform") or ""),
-        site=str(normalized_target.get("site") or ""),
+        platform,
+        site=site,
         limit=None,
         timeout_seconds=min(8, remaining_deadline_seconds(deadline_at)),
         deadline_at=deadline_at,
@@ -560,16 +617,32 @@ def setup_category_match_search(
     tool_bundle = build_category_match_toolset(
         searcher=scoped_searcher,
         ledger=ledger,
-        platform=str(normalized_target["platform"]),
-        site=str(normalized_target["site"]),
+        platform=platform,
+        site=site,
     )
     payload: dict[str, Any] = {
         "target": dict(normalized_target),
         "product": dict(facts),
     }
-    if tool_bundle.retrieval_mode == "tree_navigation":
+    if canonical_identity is not None:
+        payload["canonical_identity"] = {
+            "physical_form": canonical_identity.physical_form,
+            "material_or_structure": canonical_identity.material_or_structure,
+            "primary_use": canonical_identity.primary_use,
+        }
+        prefetched = _prefetch_candidates_for_target(
+            searcher=scoped_searcher,
+            ledger=ledger,
+            platform=platform,
+            site=site,
+            canonical_identity=canonical_identity,
+            deadline_at=deadline_at,
+        )
+        if prefetched:
+            payload["prefetched_candidates"] = prefetched
+    if tool_bundle.retrieval_mode in {"tree_navigation", "hybrid"}:
         payload["category_navigation"] = {
-            "mode": "tree_navigation",
+            "mode": tool_bundle.retrieval_mode,
             "root_nodes": tool_bundle.initial_options,
             "max_parent_ids_per_call": 2,
             "max_navigation_calls": 4,
@@ -604,11 +677,7 @@ def finalize_category_match(
     agent_run: CategoryMatchAgentRun | None = None,
     agent_error: Exception | None = None,
 ) -> CategoryMatchResult:
-    """Agent 运行结束（或运行失败）后的共享业务终检。
-
-    同步入口与 focused 流式任务共用；业务校验、领域终检和类型化 response
-    组装成功后才允许把根运行标记为 completed。
-    """
+    """Agent 运行结束（或运行失败）后的共享业务终检。"""
 
     platform = _text(normalized_target.get("platform"), 80).lower()
     site = _text(normalized_target.get("site"), 80)
@@ -759,7 +828,11 @@ def finalize_category_match(
                         _forbidden_categories_map(),
                         ancestor_ids=get_context().category_catalog.cached_category_ancestor_ids(platform, cid),
                     )
-                label = f"{cid}（{name}：{reason}）" if name and reason else f"{cid}（{reason or name or '禁售类目'}）"
+                label = (
+                    f"{cid}（{name}：{reason}）"
+                    if name and reason
+                    else f"{cid}（{reason or name or '禁售类目'}）"
+                )
                 forbidden_labels.append(label)
             return _result(
                 ok=True,
@@ -798,6 +871,7 @@ def finalize_category_match(
             ledger=ledger,
             detail_loader=detail_loader,
             ensure_deadline=lambda: remaining_deadline_seconds(deadline_at),
+            verified_details=agent_run.verified_details,
         )
     except Exception as exc:
         failure = failure_from_exception(exc, stage="validation")
@@ -822,6 +896,33 @@ def finalize_category_match(
     )
 
 
+def _canonicalize_for_languages(
+    product: Mapping[str, Any],
+    draft: Mapping[str, Any],
+    facts: Mapping[str, Any],
+    languages: Sequence[str],
+    *,
+    timeout_seconds: float,
+) -> tuple[ProductCanonicalIdentity | None, BinaryContent | None]:
+    context = get_context()
+    app_config = context.config.load_app_config()
+    image_part = resolve_product_main_image(
+        product,
+        draft,
+        app_dir=context.paths.app_dir,
+        app_config=app_config,
+    )
+    identity = canonicalize_product_for_category_match(
+        facts,
+        languages,
+        app_dir=context.paths.app_dir,
+        app_config=app_config,
+        image_content_part=image_part,
+        timeout_seconds=min(45.0, max(10.0, timeout_seconds * 0.3)),
+    )
+    return identity, image_part
+
+
 def match_category(
     product: Mapping[str, Any],
     draft: Mapping[str, Any],
@@ -831,11 +932,11 @@ def match_category(
     searcher_factory: CategorySearcherFactory = create_category_searcher,
     agent_service: CategoryMatchAgentService = run_category_match_agent,
     detail_loader: Callable[..., dict[str, Any]] = fetch_category_record,
+    canonical_identity: ProductCanonicalIdentity | None = None,
+    image_content: BinaryContent | None = None,
+    enable_canonicalizer: bool = True,
 ) -> CategoryMatchResult:
-    """运行一次同步、支持批量关键词搜索且允许 abstain 的 ``category.match``。
-
-    页面直接调用和主对话工具复用同一执行流程。
-    """
+    """运行一次同步、支持 1+N 预召回与单轮精排的 ``category.match``。"""
 
     deadline_at = time.monotonic() + CATEGORY_MATCH_DEADLINE_SECONDS
     ledger = CategoryCandidateLedger()
@@ -848,6 +949,30 @@ def match_category(
             ledger=ledger,
             failure=failure,
         )
+
+    resolved_identity = canonical_identity
+    resolved_image = image_content
+    if (
+        enable_canonicalizer
+        and resolved_identity is None
+        and agent_service is run_category_match_agent
+    ):
+        try:
+            lang = category_search_language(
+                normalized_target["platform"],
+                normalized_target["site"],
+            )
+            resolved_identity, resolved_image = _canonicalize_for_languages(
+                product,
+                draft,
+                facts,
+                [lang],
+                timeout_seconds=remaining_deadline_seconds(deadline_at),
+            )
+        except Exception:
+            resolved_identity = None
+            resolved_image = None
+
     try:
         payload, toolset = setup_category_match_search(
             normalized_target,
@@ -856,6 +981,7 @@ def match_category(
             deadline_at,
             searcher=searcher,
             searcher_factory=searcher_factory,
+            canonical_identity=resolved_identity,
         )
     except Exception as exc:
         return failed_category_match(
@@ -863,6 +989,7 @@ def match_category(
             ledger=ledger,
             failure=failure_from_exception(exc, stage="searcher_setup"),
         )
+
     agent_run: CategoryMatchAgentRun | None = None
     try:
         remaining_seconds = remaining_deadline_seconds(deadline_at)
@@ -876,14 +1003,19 @@ def match_category(
         agent_kwargs: dict[str, Any] = {
             "timeout_seconds": remaining_seconds,
             "candidate_detail_loader": lambda category_id, *, timeout_seconds: detail_loader(
-                normalized_target["platform"], category_id, site=normalized_target["site"],
-                include_attributes=False, timeout_seconds=min(timeout_seconds, remaining_deadline_seconds(deadline_at)),
+                normalized_target["platform"],
+                category_id,
+                site=normalized_target["site"],
+                include_attributes=False,
+                timeout_seconds=min(timeout_seconds, remaining_deadline_seconds(deadline_at)),
             ),
         }
         if agent_service is run_category_match_agent:
             agent_kwargs["forbidden_checker"] = lambda category_id, detail: _forbidden_issue_for_category(
                 normalized_target["platform"], category_id, detail,
             )
+            if resolved_image is not None:
+                agent_kwargs["image_content"] = resolved_image
         agent_run = agent_service(
             payload,
             toolset,
@@ -908,6 +1040,90 @@ def match_category(
     )
 
 
+def match_categories_batch(
+    subjects: Sequence[tuple[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]],
+    *,
+    searcher_factory: CategorySearcherFactory = create_category_searcher,
+    agent_service: CategoryMatchAgentService = run_category_match_agent,
+    detail_loader: Callable[..., dict[str, Any]] = fetch_category_record,
+) -> list[CategoryMatchResult]:
+    """1+N 批量类目匹配：1 次跨平台多模态标准化 + N 平台并行预召回与单轮精排。"""
+
+    if not subjects:
+        return []
+    if len(subjects) == 1:
+        product, draft, target = subjects[0]
+        return [
+            match_category(
+                product,
+                draft,
+                target,
+                searcher_factory=searcher_factory,
+                agent_service=agent_service,
+                detail_loader=detail_loader,
+            )
+        ]
+
+    # 收集本批所有有效目标涉及的检索语言（通常 1-2 种，如 ["ru", "es"]）
+    languages: list[str] = []
+    first_valid: tuple[Mapping[str, Any], Mapping[str, Any], dict[str, Any]] | None = None
+    for product, draft, target in subjects:
+        normalized_target, facts, failure = prepare_category_match_input(product, draft, target)
+        if failure is not None:
+            continue
+        if first_valid is None:
+            first_valid = (product, draft, facts)
+        try:
+            lang = category_search_language(
+                normalized_target["platform"],
+                normalized_target["site"],
+            )
+            if lang not in languages:
+                languages.append(lang)
+        except Exception:
+            continue
+
+    shared_identity: ProductCanonicalIdentity | None = None
+    shared_image: BinaryContent | None = None
+    if (
+        first_valid is not None
+        and languages
+        and agent_service is run_category_match_agent
+    ):
+        check_cancellation()
+        try:
+            shared_identity, shared_image = _canonicalize_for_languages(
+                first_valid[0],
+                first_valid[1],
+                first_valid[2],
+                languages,
+                timeout_seconds=CATEGORY_MATCH_DEADLINE_SECONDS,
+            )
+        except Exception:
+            shared_identity = None
+            shared_image = None
+
+    def _run_one(item: tuple[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]) -> CategoryMatchResult:
+        check_cancellation()
+        prod, drf, tgt = item
+        return match_category(
+            prod,
+            drf,
+            tgt,
+            searcher_factory=searcher_factory,
+            agent_service=agent_service,
+            detail_loader=detail_loader,
+            canonical_identity=shared_identity,
+            image_content=shared_image,
+            enable_canonicalizer=False,
+        )
+
+    workers = max(1, min(3, len(subjects)))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="category-match-batch") as pool:
+        futures = [pool.submit(copy_context().run, _run_one, subject) for subject in subjects]
+        return [future.result() for future in futures]
+
+
 __all__ = [
     "CATEGORY_MATCH_BUDGET_PROFILE",
     "CATEGORY_MATCH_DEADLINE_SECONDS",
@@ -917,6 +1133,7 @@ __all__ = [
     "failed_category_match",
     "failure_from_exception",
     "finalize_category_match",
+    "match_categories_batch",
     "match_category",
     "prepare_category_match_input",
     "remaining_deadline_seconds",

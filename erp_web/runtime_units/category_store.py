@@ -13,6 +13,7 @@ from erp_web.schemas.category_brand import (
 
 from .category_catalog import get_category_catalog
 from .category_definition_support import definition_to_legacy_attribute
+from .category_localization import enrich_category_candidates_l2
 from .category_providers import require_category_provider
 from .category_searchers import create_category_searcher
 
@@ -20,9 +21,9 @@ from .category_searchers import create_category_searcher
 logger = logging.getLogger(__name__)
 
 
-# SQLite 初始化已并入 ErpDatabase（构造期建 schema）；本模块只保留 JSON 文件
-# 读写工具和类目实时检索。所有平台类目事实统一经 CategoryCatalog 读取；
-# 返回的 legacy record 不再携带平台 raw 报文或完整枚举 values。
+# 所有平台类目事实统一经 CategoryCatalog 读取；返回的 legacy record 不再携带
+# 平台 raw 报文或完整枚举 values。展示层中文字段（name_zh / path_zh / label_zh）
+# 严格与发布值分离，仅通过 L1 官方双语与 L2 服务端词典零耗时回填。
 
 
 def fetch_category_record(
@@ -32,56 +33,87 @@ def fetch_category_record(
     include_attributes: bool = False,
     *,
     timeout_seconds: float | None = None,
+    force_refresh: bool = False,
 ) -> dict[str, Any]:
-    """经 Catalog 读取类目记录（过渡 shape；属性只含规范化有界字段）。"""
+    """经 Catalog 读取类目记录（属性只含规范化有界字段；include_attributes 不重复查详情）。"""
 
     platform = str(platform or "").strip().lower()
     provider = require_category_provider(platform)
     catalog = get_category_catalog()
+
+    if include_attributes:
+        definition = catalog.attribute_definitions(
+            platform,
+            category_id,
+            site=site,
+            timeout_seconds=timeout_seconds,
+            force_refresh=force_refresh,
+        )
+        path_segments = [
+            segment.strip()
+            for segment in str(definition.category_path or "").split("/")
+            if segment.strip()
+        ]
+        resolved_id = definition.category_id or str(category_id or "").strip()
+        name_original = path_segments[-1] if path_segments else resolved_id
+        ancestors = (
+            list(catalog.cached_category_ancestor_ids(platform, resolved_id))
+            if platform == "yandex"
+            else []
+        )
+        return {
+            "platform": platform,
+            "site": definition.site or provider.resolve_site(site),
+            "category_id": resolved_id,
+            "name_original": name_original,
+            "category_path": definition.category_path,
+            "path_zh": definition.category_path_zh,
+            "path_original": path_segments or ([name_original] if name_original else []),
+            "parent_id": ancestors[-1] if ancestors else "",
+            "ancestor_ids": ancestors,
+            "description_category_id": definition.description_category_id,
+            "type_id": resolved_id if platform == "ozon" else "",
+            "is_leaf": True,
+            "source": f"{platform}_live",
+            "attributes": {
+                "required": [
+                    definition_to_legacy_attribute(attribute)
+                    for attribute in definition.required
+                ],
+                "optional": [
+                    definition_to_legacy_attribute(attribute)
+                    for attribute in definition.optional
+                ],
+            },
+        }
+
     detail = catalog.category_detail(
         platform,
         category_id,
         site=site,
         timeout_seconds=timeout_seconds,
     )
-    record: dict[str, Any] = {
+    resolved_id = detail.category_id or str(category_id or "").strip()
+    return {
         "platform": platform,
         "site": detail.site or provider.resolve_site(site),
-        "category_id": detail.category_id or str(category_id or "").strip(),
+        "category_id": resolved_id,
         "name_original": detail.name,
+        "name_zh": detail.name_zh,
         "category_path": detail.path,
+        "path_zh": detail.path_zh,
         "path_original": [
             segment.strip() for segment in detail.path.split("/") if segment.strip()
         ]
         or ([detail.name] if detail.name else []),
         "parent_id": detail.parent_id,
         "ancestor_ids": list(detail.ancestor_ids),
-        "description_category_id": "",
+        "description_category_id": detail.description_category_id,
+        "type_id": resolved_id if platform == "ozon" else "",
         "is_leaf": detail.is_leaf,
         "source": f"{platform}_live",
         "attributes": {"required": [], "optional": []},
     }
-    if not include_attributes:
-        return record
-    definition = catalog.attribute_definitions(
-        platform,
-        category_id,
-        site=site,
-        timeout_seconds=timeout_seconds,
-    )
-    record["description_category_id"] = definition.description_category_id
-    record["category_path"] = definition.category_path or record["category_path"]
-    record["attributes"] = {
-        "required": [
-            definition_to_legacy_attribute(attribute)
-            for attribute in definition.required
-        ],
-        "optional": [
-            definition_to_legacy_attribute(attribute)
-            for attribute in definition.optional
-        ],
-    }
-    return record
 
 
 def fetch_category_attributes(
@@ -90,6 +122,7 @@ def fetch_category_attributes(
     site: str = "",
     *,
     timeout_seconds: float | None = None,
+    force_refresh: bool = False,
 ) -> dict[str, Any]:
     platform = str(platform or "").strip().lower()
     record = fetch_category_record(
@@ -98,6 +131,7 @@ def fetch_category_attributes(
         site=site,
         include_attributes=True,
         timeout_seconds=timeout_seconds,
+        force_refresh=force_refresh,
     )
     attrs = record.get("attributes") if isinstance(record.get("attributes"), dict) else {}
     required = list(attrs.get("required") or [])
@@ -125,8 +159,9 @@ def fetch_category_attribute_page(
     cursor: str = "",
     limit: int = 50,
     timeout_seconds: float | None = None,
+    force_refresh: bool = False,
 ) -> dict[str, Any]:
-    """前端/Agent 的有界属性页（不含 platform_binding/raw/完整枚举）。"""
+    """前端/Agent 的有界属性页（不含 platform_binding/raw/完整枚举，带 L2 中文回填）。"""
 
     catalog = get_category_catalog()
     page = catalog.public_attribute_page(
@@ -136,6 +171,7 @@ def fetch_category_attribute_page(
         cursor=cursor,
         limit=limit,
         timeout_seconds=timeout_seconds,
+        force_refresh=force_refresh,
     )
     payload = page.model_dump(mode="json")
     payload["ok"] = True
@@ -179,6 +215,7 @@ def fetch_category_attribute_values(
         {
             "id": value.dictionary_value_id,
             "value": value.value,
+            **({"label_zh": value.label_zh} if value.label_zh else {}),
             "info": "",
             "picture": "",
         }
@@ -222,6 +259,7 @@ def fetch_category_attribute_values(
                         pinned = {
                             "id": candidate.dictionary_value_id,
                             "value": candidate.value,
+                            **({"label_zh": candidate.label_zh} if candidate.label_zh else {}),
                             "info": "",
                             "picture": "",
                         }
@@ -237,8 +275,6 @@ def fetch_category_attribute_values(
             safe_limit = max(1, int(page.limit or limit or 50))
             if len(values) >= safe_limit:
                 values = [pinned, *values[: safe_limit - 1]]
-                # limit=1 时没有可作为续读位置的普通候选；Ozon 的显式
-                # 起始游标 "0" 可让下一页跳过置顶逻辑并重新读取原首项。
                 next_cursor = values[-1]["id"] if len(values) > 1 else "0"
                 has_more = True
             else:
@@ -275,26 +311,35 @@ def search_categories_live(
         limit=limit,
         timeout_seconds=timeout_seconds,
     ).search_categories(query)
-    return [
-        {
+    source = str(result.get("source") or f"{platform}_live")
+    rows: list[dict[str, Any]] = []
+    for candidate in result["candidates"]:
+        path_text = " / ".join(candidate.get("path_segments") or [])
+        row: dict[str, Any] = {
             "id": str(candidate.get("category_id") or ""),
             "category_id": str(candidate.get("category_id") or ""),
             "name": str(candidate.get("name") or ""),
-            "path": " / ".join(candidate.get("path_segments") or []),
-            "category_path": " / ".join(candidate.get("path_segments") or []),
-            **(
-                {"description_category_id": candidate["description_category_id"]}
-                if candidate.get("description_category_id")
-                else {}
-            ),
-            **(
-                {"type_id": candidate["type_id"]}
-                if candidate.get("type_id")
-                else {}
-            ),
+            "path": path_text,
+            "category_path": path_text,
+            "site": str(candidate.get("site") or site),
+            "source": source,
         }
-        for candidate in result["candidates"]
-    ]
+        if candidate.get("name_zh"):
+            row["name_zh"] = str(candidate["name_zh"])
+        if candidate.get("path_zh"):
+            row["path_zh"] = str(candidate["path_zh"])
+        elif candidate.get("path_segments_zh"):
+            row["path_zh"] = " / ".join(candidate["path_segments_zh"])
+        if candidate.get("description_category_id"):
+            row["description_category_id"] = str(candidate["description_category_id"])
+        if candidate.get("type_id"):
+            row["type_id"] = str(candidate["type_id"])
+        if candidate.get("forbidden"):
+            row["forbidden"] = True
+            if candidate.get("forbidden_reason"):
+                row["forbidden_reason"] = str(candidate["forbidden_reason"])
+        rows.append(row)
+    return enrich_category_candidates_l2(platform, rows)
 
 
 __all__ = [

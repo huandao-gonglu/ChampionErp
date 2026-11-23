@@ -421,6 +421,7 @@ function closeProductEditor() {
 
 function closeDraftWorkspace() {
   if (imageSaveState.dirty.value && !window.confirm('图片设置尚未保存，离开将放弃这些修改。确认返回？')) return false
+  if (draftSync.dirty.value && !window.confirm('草稿内容或平台属性有未保存修改，离开将放弃这些修改。确认返回？')) return false
   draftWorkspaceOpen.value = false
   const row = draftsIndex.value.find(item => item.draftId === currentDraft.value.draftId)
   if (activeNav.value === 'drafts' && row?.updatedAt !== currentDraft.value.updatedAt) void store.refreshDraftsIndex()
@@ -495,7 +496,7 @@ async function handleImportLibraryProducts(payload: Record<string, unknown>) {
 }
 
 function warnUnsavedImages(event: BeforeUnloadEvent) {
-  if (!draftWorkspaceOpen.value || !imageSaveState.dirty.value) return
+  if (!draftWorkspaceOpen.value || (!imageSaveState.dirty.value && !draftSync.dirty.value)) return
   event.preventDefault()
   event.returnValue = ''
 }
@@ -902,7 +903,11 @@ watch(
               </template>
 
               <template #category>
-                <DraftCategoryWorkspace :key="currentDraft.draftId" @update-package-dimension="syncPricingPackageDimension" />
+                <DraftCategoryWorkspace
+                  :key="currentDraft.draftId"
+                  @update-package-dimension="syncPricingPackageDimension"
+                  @open-sku-tab="draftWorkspaceTab = 'skus'"
+                />
               </template>
 
               <template #pricing>

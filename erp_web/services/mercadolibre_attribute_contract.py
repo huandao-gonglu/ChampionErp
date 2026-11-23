@@ -309,7 +309,7 @@ def _compile_attribute_value(
                     field,
                     f"Mercado Libre 属性 {attribute_id} 必须使用平台候选值",
                 )
-            if definition.value_type in {"list", "boolean"} and not resolved_id:
+            if definition.value_type in {"enum", "list", "boolean"} and not resolved_id:
                 return None, MercadoLibreAttributeIssue(
                     "ATTRIBUTE_ENUM_VALUE_INVALID",
                     field,
@@ -346,7 +346,7 @@ def _compile_attribute_value(
             f"Mercado Libre 属性 {attribute_id} 必须填写单个文本值",
         )
 
-    if definition.value_type in {"number", "integer", "float"}:
+    if definition.value_type in {"decimal", "number", "integer", "float"}:
         try:
             value_name = _number_text(raw_value)
         except (InvalidOperation, ValueError):
@@ -383,7 +383,7 @@ def _compile_attribute_value(
                 listing_model=listing_model,
             ), None
         return {"id": attribute_id, "value_name": known[1]}, None
-    if definition.value_type in {"list", "boolean"}:
+    if definition.value_type in {"enum", "list", "boolean"}:
         return None, MercadoLibreAttributeIssue(
             "ATTRIBUTE_ENUM_VALUE_INVALID",
             field,

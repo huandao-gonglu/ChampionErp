@@ -17,4 +17,10 @@ describe('平台值限制提示', () => {
     expect(attributeConstraintError(limits, '0x10')).toContain('有限')
     expect(attributeConstraintHint(limits, '0')).toContain('最小值 0')
   })
+  it('统一识别 decimal / Decimal / number_unit 与 Integer 类型约束', () => {
+    expect(attributeConstraintError({ valueType: 'decimal', minValue: '0.5' }, '0.2')).toContain('不能小于 0.5')
+    expect(attributeConstraintError({ valueType: 'Decimal', maxValue: '10' }, 'abc')).toContain('数字')
+    expect(attributeConstraintError({ valueType: 'number_unit', maxValue: '100' }, { value: '120', unit: 'g' })).toContain('不能大于 100')
+    expect(attributeConstraintError({ valueType: 'Integer' }, '1.5')).toContain('整数')
+  })
 })

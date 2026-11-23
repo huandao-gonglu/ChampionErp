@@ -36,7 +36,6 @@ from erp_web.product_model import (
 )
 from erp_web.marketplaces.publisher import PublishAdapterError
 from .store_credentials import get_mercadolibre_access_token
-from .ozon_category_api import load_ozon_category_corpus
 
 
 def _pricing_exchange_rate_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -240,8 +239,9 @@ class PricingSession:
 
     def ozon_categories(self) -> list[dict[str, Any]]:
         store = self.store_config.get("ozon") or {}
-        records, _ = load_ozon_category_corpus(credentials=(str(store.get("client_id") or ""), str(store.get("api_key") or "")))
-        return records
+        return get_context().category_catalog.ozon_leaf_records(
+            credentials=(str(store.get("client_id") or ""), str(store.get("api_key") or ""))
+        )
 
     def rates(self, force_refresh: bool) -> dict[str, Any]:
         if self.exchange_rates is None:

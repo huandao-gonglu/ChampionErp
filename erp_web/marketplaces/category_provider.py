@@ -55,6 +55,7 @@ class CategoryProvider(ABC):
         *,
         site: str = "",
         timeout_seconds: float | None = None,
+        force_refresh: bool = False,
     ) -> CategoryDefinition:
         """读取类目属性定义（临时平台规则，不得持久化进商品/草稿）。"""
 

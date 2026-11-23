@@ -387,7 +387,12 @@ export async function enqueuePublish(draft: DraftDetail, target: MarketplaceTarg
   }
 }
 
-export async function fetchCategoryAttrs(platform: Marketplace, categoryId: string, site = ''): Promise<CategorySelection> {
+export async function fetchCategoryAttrs(
+  platform: Marketplace,
+  categoryId: string,
+  site = '',
+  options: { forceRefresh?: boolean } = {},
+): Promise<CategorySelection> {
   // 完整取得属性定义后再更新编辑态；任何分页失败都不返回看似完整的半份规则。
   const rows: unknown[] = []
   const cursors = new Set<string>()
@@ -395,10 +400,17 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
   let cursor = ''
   let resolvedSite: string | undefined
   let data: Record<string, unknown> = {}
+  let isFirstPage = true
   do {
     const response = await apiClient.post('/api/category-attrs', {
-      platform, category_id: categoryId, site, limit: 100, ...(cursor ? { cursor } : {}),
+      platform,
+      category_id: categoryId,
+      site,
+      limit: 100,
+      ...(cursor ? { cursor } : {}),
+      ...(isFirstPage && options.forceRefresh ? { force_refresh: true } : {}),
     })
+    isFirstPage = false
     data = asRecord(response.data)
     ensureOk(data, '读取类目属性失败')
     if (getString(data, ['category_id'], categoryId) !== categoryId
@@ -425,17 +437,30 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
       const id = getString(record, ['id', 'attribute_id'])
       if (!id) return null
       const dictionaryId = normalizeCategoryDictionaryId(getString(record, ['dictionary_id']))
+      const optionsList: string[] = []
+      const optionLabelsZh: Record<string, string> = {}
+      if (Array.isArray(record.options)) {
+        for (const option of record.options) {
+          if (typeof option === 'string') {
+            const trimmed = option.trim()
+            if (trimmed) optionsList.push(trimmed)
+          } else {
+            const optRecord = asRecord(option)
+            const val = getString(optRecord, ['value', 'name'])
+            if (!val) continue
+            optionsList.push(val)
+            const labelZh = getString(optRecord, ['label_zh', 'labelZh'])
+            if (labelZh) optionLabelsZh[val] = labelZh
+          }
+        }
+      }
       return {
         id,
         name: getString(record, ['name', 'label'], id),
+        nameZh: getString(record, ['name_zh', 'nameZh']) || undefined,
         required: getBoolean(record, ['required']),
-        options: Array.isArray(record.options)
-          ? record.options
-            .map((option) => typeof option === 'string'
-              ? option.trim()
-              : getString(asRecord(option), ['value', 'name']))
-            .filter(Boolean)
-          : [],
+        options: optionsList,
+        ...(Object.keys(optionLabelsZh).length ? { optionLabelsZh } : {}),
         valueType: getString(record, ['value_type', 'valueType'], 'string'),
         variationRole: getString(record, ['variation_role']),
         managedBy: getString(record, ['managed_by']),
@@ -453,18 +478,23 @@ export async function fetchCategoryAttrs(platform: Marketplace, categoryId: stri
           : stringList(record.unit_options),
         defaultUnit: getString(record, ['default_unit', 'defaultUnit']),
         description: getString(record, ['description', 'help', 'tooltip']),
+        descriptionZh: getString(record, ['description_zh', 'descriptionZh']) || undefined,
         dictionaryId,
         isDictionary: isCategoryDictionaryAttribute(dictionaryId, getBoolean(record, ['is_dictionary'])),
         isCollection: getBoolean(record, ['is_collection']),
         maxValueCount: getNumber(record, ['max_value_count']),
         categoryDependent: getBoolean(record, ['category_dependent']),
+        skipValueLocalization: getBoolean(record, ['skip_value_localization', 'skipValueLocalization']),
       }
     })
     .filter((attribute): attribute is CategoryAttributeDefinition => Boolean(attribute))
   return {
     platform,
     categoryId: getString(data, ['category_id'], categoryId),
+    descriptionCategoryId: getString(data, ['description_category_id', 'descriptionCategoryId']) || undefined,
     categoryPath: getString(data, ['category_path', 'path', 'name']),
+    categoryPathZh: getString(data, ['category_path_zh', 'categoryPathZh']) || undefined,
+    cacheSource: getString(data, ['cache_source', 'cacheSource']) || undefined,
     requiredAttributes: attributes.filter((attribute) => attribute.required),
     optionalAttributes: attributes.filter((attribute) => !attribute.required),
     source: getString(data, ['source'], `${platform}_live`),
@@ -498,10 +528,12 @@ export async function fetchCategoryAttributeValues(
       const record = asRecord(item)
       const id = getString(record, ['id'])
       const value = getString(record, ['value'])
+      const labelZh = getString(record, ['label_zh', 'labelZh'])
       return id && value
         ? [{
           id,
           value,
+          ...(labelZh ? { labelZh } : {}),
           info: getString(record, ['info']),
           picture: getString(record, ['picture']),
         }]
@@ -517,24 +549,39 @@ export async function fetchCategoryAttributeValues(
   }
 }
 
-export async function searchCategories(platform: Marketplace, query: string, site = '', limit = 20): Promise<{ results: CategorySearchResult[] }> {
+export async function searchCategories(
+  platform: Marketplace,
+  query: string,
+  site = '',
+  limit = 20,
+): Promise<{ results: CategorySearchResult[]; translatedQuery?: string; searchLanguage?: string }> {
   const response = await apiClient.post('/api/category-search', { platform, query, site, limit })
   const data = asRecord(response.data)
   ensureOk(data, '搜索类目失败')
   const results = Array.isArray(data.results)
     ? data.results.map((item) => {
       const record = asRecord(item)
+      const nameZh = getString(record, ['name_zh', 'nameZh'])
+      const pathZh = getString(record, ['path_zh', 'pathZh'])
       return {
         id: getString(record, ['id', 'category_id']),
         name: getString(record, ['name', 'title']),
+        ...(nameZh ? { nameZh } : {}),
         path: getString(record, ['path', 'category_path'], getString(record, ['name', 'title'])),
+        ...(pathZh ? { pathZh } : {}),
         forbidden: getBoolean(record, ['forbidden']),
         forbiddenReason: getString(record, ['forbidden_reason', 'forbiddenReason']),
         raw: record,
       }
     })
     : []
-  return { results }
+  const translatedQuery = getString(data, ['translated_query', 'translatedQuery'])
+  const searchLanguage = getString(data, ['search_language', 'searchLanguage'])
+  return {
+    results,
+    ...(translatedQuery ? { translatedQuery } : {}),
+    ...(searchLanguage ? { searchLanguage } : {}),
+  }
 }
 
 export const CATEGORY_MATCH_PATH = '/api/v1/category-match'
@@ -551,10 +598,14 @@ function normalizeCategoryMatchResult(data: UnknownRecord): CategoryMatchResult 
     ? data.candidates.map((item) => {
       const record = asRecord(item)
       const pathSegments = stringList(record.path_segments ?? record.pathSegments)
+      const nameZh = getString(record, ['name_zh', 'nameZh'])
+      const pathZh = getString(record, ['path_zh', 'pathZh'])
       return {
         id: getString(record, ['category_id']),
         name: getString(record, ['name']),
+        ...(nameZh ? { nameZh } : {}),
         path: pathSegments.join(' / ') || getString(record, ['name']),
+        ...(pathZh ? { pathZh } : {}),
         forbidden: getBoolean(record, ['forbidden']),
         forbiddenReason: getString(record, ['forbidden_reason', 'forbiddenReason']),
         raw: { ...record, aiRecommended: getString(record, ['category_id']) === selectedCategoryId && data.status === 'completed',

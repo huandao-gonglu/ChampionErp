@@ -58,8 +58,10 @@ vi.mock('@/api/workflow/publishing', async (importOriginal) => ({
   runCategoryPrecheck: vi.fn(),
 }))
 
-vi.mock('@/api/workflow/translation', () => ({
+vi.mock('@/api/workflow/translation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/workflow/translation')>()),
   translateText: vi.fn(),
+  translateTextSilent: vi.fn(async () => ({ translations: {}, source: 'cache', degraded: false })),
 }))
 
 vi.mock('@/api/workflow/settings', () => ({
@@ -172,6 +174,11 @@ describe('workflow store live API flow', () => {
       },
     })
     vi.clearAllMocks()
+    vi.mocked(translationApi.translateTextSilent).mockResolvedValue({
+      translations: {},
+      source: 'cache',
+      degraded: false,
+    })
   })
 
   it('进入授权页合并并发读取，一分钟内重用配置，过期后重新读取', async () => {
@@ -538,7 +545,7 @@ describe('workflow store live API flow', () => {
     expect(store.targetEditors[1].state.precheck).toBeNull()
   })
 
-  it('打开类目标签直接显示各平台已填内容，点击编辑才读取该平台定义', async () => {
+  it('打开类目标签并行自动加载各平台定义且不触发多余保存，单平台失败不影响另一平台', async () => {
     const store = useWorkflowStore()
     const draft = multiMarketCategoryDraft()
     draft.targetSites[0].categoryPath = '家居 / 清洁用具'
@@ -546,30 +553,42 @@ describe('workflow store live API flow', () => {
       color: { values: [{ dictionaryValueId: '123', value: '白色' }, { value: '米色' }] },
       width: { value: '12', unit: 'cm' },
     }
+    vi.mocked(workflowApi.fetchCategoryAttrs).mockImplementation(async (platform, categoryId) => {
+      if (platform === 'ozon') throw new Error('平台接口超时')
+      return {
+        platform,
+        categoryId,
+        categoryPath: '家居 / 清洁用具',
+        requiredAttributes: [{ id: 'material', name: 'Материал', nameZh: '材质', required: true, options: [] }],
+        optionalAttributes: [],
+        fetchedAt: '2026-09-05T00:00:00Z',
+        raw: {},
+      }
+    })
     store.currentDraft = draft
-    const wrapper = mount(DraftCategoryWorkspace)
+    const wrapper = mount(DraftCategoryWorkspace, { attachTo: document.body })
     try {
       await flushPromises()
       const [yandex, ozon] = wrapper.findAll('[data-testid="category-target-editor"]')
-      const fields = yandex.findAll('input').map(input => input.element.value)
-      expect(fields).toContain('yandex-old')
-      expect(fields).toContain('家居 / 清洁用具')
-      expect(yandex.text()).toContain('棉')
+      // 方案 A：多平台通过顶部状态标签页切换全宽工作区，默认激活首个平台，另一个以 v-show 保持挂载与并行加载。
+      expect(yandex.isVisible()).toBe(true)
+      expect(ozon.isVisible()).toBe(false)
+      expect(yandex.get('[data-testid="selected-category-id"]').text()).toContain('yandex-old')
+      expect(yandex.get('[data-testid="selected-category-path"]').text()).toContain('家居 / 清洁用具')
+      expect(yandex.text()).toContain('材质')
+      expect(yandex.find('[data-attribute-id="material"]').exists()).toBe(true)
+
+      await wrapper.get('[data-testid="platform-tab-ozon:global"]').trigger('click')
+      expect(wrapper.get('[data-testid="platform-tab-ozon:global"]').attributes('aria-selected')).toBe('true')
+      expect(yandex.isVisible()).toBe(false)
+      expect(ozon.isVisible()).toBe(true)
+      expect(ozon.text()).toContain('平台接口超时')
       expect(ozon.text()).toContain('白色、米色')
       expect(ozon.text()).toContain('12 cm')
       expect(ozon.text()).not.toContain('棉')
-      expect(wrapper.text()).not.toContain('平台属性定义未加载')
-      expect(wrapper.text()).not.toContain('正在处理该平台')
-      expect(workflowApi.fetchCategoryAttrs).not.toHaveBeenCalled()
-      expect(workflowApi.saveDraft).not.toHaveBeenCalled()
-
-      vi.mocked(workflowApi.fetchCategoryAttrs).mockRejectedValueOnce(new Error('平台接口超时'))
-      await ozon.findAll('button').find(button => button.text() === '编辑平台属性')!.trigger('click')
-      await flushPromises()
-      expect(workflowApi.fetchCategoryAttrs).toHaveBeenCalledOnce()
+      expect(workflowApi.fetchCategoryAttrs).toHaveBeenCalledTimes(2)
+      expect(workflowApi.fetchCategoryAttrs).toHaveBeenCalledWith('yandex', 'yandex-old', 'global')
       expect(workflowApi.fetchCategoryAttrs).toHaveBeenCalledWith('ozon', 'ozon-old', 'global')
-      expect(ozon.text()).toContain('平台接口超时')
-      expect(ozon.text()).toContain('白色、米色')
       expect(workflowApi.saveDraft).not.toHaveBeenCalled()
     } finally {
       wrapper.unmount()
@@ -1901,80 +1920,176 @@ describe('workflow store live API flow', () => {
     expect(store.currentDraft.categoryId).toBe('')
   })
 
-  it('translates category candidates through the generic flat text contract', async () => {
-    vi.mocked(workflowApi.translateText).mockResolvedValue({
-      'category.0.path': '家居 / 风扇',
+  it('搜索候选类目与加载属性后按路径节点段去重静默补翻生词，跳过已有中文与大字典品牌选项', async () => {
+    vi.mocked(workflowApi.searchCategories).mockResolvedValue({
+      results: [
+        { id: 'MLM-FAN', name: 'Ventiladores', path: 'Hogar / Ventiladores', raw: {} },
+        { id: 'MLM-LAMP', name: 'Lámparas', path: 'Hogar / Lámparas', pathZh: '家居 / Lámparas', raw: {} },
+        { id: 'MLM-KNOWN', name: 'Conocido', nameZh: '已知类目', path: 'Hogar / Conocido', pathZh: '家居 / 已知类目', raw: {} },
+      ],
+      translatedQuery: 'ventilador',
+      searchLanguage: 'es',
     })
-    const store = useWorkflowStore()
-    store.currentDraft.draftId = 'draft-category'
-    store.currentDraft.platform = 'mercadolibre'
-    store.currentDraft.site = 'CBT'
-    store.categoryResults = [{
-      id: 'MLM-FAN',
-      name: 'Ventiladores',
-      path: 'Hogar / Ventiladores',
-      raw: {},
-    }]
-
-    await store.translateCategoryResults()
-
-    expect(workflowApi.translateText).toHaveBeenCalledWith('zh-CN', {
-      'category.0.path': 'Hogar / Ventiladores',
-    }, 'conversation-store-test', expect.objectContaining({ platform: 'mercadolibre' }))
-    expect(withAiConversation).toHaveBeenCalledWith(
-      '翻译候选类目',
-      expect.any(Function),
-    )
-    expect(store.categoryResultTranslations).toEqual({
-      'MLM-FAN': '家居 / 风扇',
-    })
-  })
-
-  it('translates loaded platform attributes without reloading the category', async () => {
-    vi.mocked(workflowApi.translateText).mockResolvedValue({
-      'attribute.0.label': '品牌',
-      'attribute.0.description': '填写商品品牌',
-      'attribute.0.option.0': '通用品牌',
-    })
-    const store = useWorkflowStore()
-    store.currentDraft.draftId = 'draft-category'
-    store.currentDraft.platform = 'mercadolibre'
-    store.currentDraft.site = 'CBT'
-    store.currentDraft.categoryId = 'MLM-FAN'
-    store.category = {
+    vi.mocked(workflowApi.translateTextSilent)
+      .mockResolvedValueOnce({
+        translations: {
+          'seg.0': '家居',
+          'seg.1': '风扇',
+          'seg.2': '灯具',
+        },
+        source: 'llm',
+        degraded: false,
+      })
+      .mockResolvedValueOnce({
+        translations: {
+          'attribute.0.label': '材质',
+          'attribute.0.description': '选择主要材质',
+          'attribute.0.option.0': '塑料',
+        },
+        source: 'llm',
+        degraded: false,
+      })
+    vi.mocked(workflowApi.fetchCategoryAttrs).mockResolvedValue({
       platform: 'mercadolibre',
       categoryId: 'MLM-FAN',
       categoryPath: 'Hogar / Ventiladores',
-      requiredAttributes: [{
-        id: 'BRAND',
-        name: 'Marca',
-        description: 'Indica la marca del producto',
-        required: true,
-        options: ['Generic'],
-      }],
+      requiredAttributes: [
+        {
+          id: 'MATERIAL',
+          name: 'Material',
+          description: 'Indica el material',
+          required: true,
+          options: ['Plástico'],
+        },
+        {
+          id: 'BRAND',
+          name: 'Brand',
+          nameZh: '品牌',
+          required: true,
+          options: ['Xiaomi'],
+          skipValueLocalization: true,
+        },
+      ],
       optionalAttributes: [],
+      fetchedAt: '2026-08-05T00:00:00Z',
       raw: {},
-    }
-
-    await store.translateCategoryAttributes()
-
-    expect(workflowApi.translateText).toHaveBeenCalledWith('zh-CN', {
-      'attribute.0.label': 'Marca',
-      'attribute.0.description': 'Indica la marca del producto',
-      'attribute.0.option.0': 'Generic',
-    }, 'conversation-store-test', expect.objectContaining({ platform: 'mercadolibre' }))
-    expect(withAiConversation).toHaveBeenCalledWith(
-      '翻译平台属性',
-      expect.any(Function),
-    )
-    expect(workflowApi.fetchCategoryAttrs).not.toHaveBeenCalled()
-    expect(store.categoryAttributeTranslations).toEqual({
-      BRAND: {
-        label: '品牌',
-        help: '填写商品品牌',
-        values: { Generic: '通用品牌' },
-      },
     })
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (draft) => draftMutation(JSON.parse(JSON.stringify(draft))))
+
+    const store = useWorkflowStore()
+    store.currentDraft.draftId = 'draft-category'
+    store.currentDraft.platform = 'mercadolibre'
+    store.currentDraft.site = 'CBT'
+    store.currentDraft.targetSites = [{ platform: 'mercadolibre', site: 'CBT', language: 'es', listingCurrency: 'USD' }]
+    store.categoryQuery = 'ventilador'
+
+    await store.searchCategory()
+    await flushPromises()
+
+    expect(withAiConversation).not.toHaveBeenCalled()
+    // 共享上级段按段去重，部分 L2 命中的 MLM-LAMP 只补翻缺失的叶子段 Lámparas，完全已翻译的 MLM-KNOWN 跳过
+    expect(workflowApi.translateTextSilent).toHaveBeenNthCalledWith(
+      1,
+      'zh-CN',
+      {
+        'seg.0': 'Hogar',
+        'seg.1': 'Ventiladores',
+        'seg.2': 'Lámparas',
+      },
+      expect.objectContaining({ domain: 'mercadolibre' }),
+    )
+    expect(store.categoryResultTranslations).toEqual({
+      'MLM-FAN': '家居 / 风扇',
+      'MLM-LAMP': '家居 / 灯具',
+    })
+    expect(store.logs.some((line) => line.includes('ventilador'))).toBe(true)
+
+    store.currentDraft.categoryId = 'MLM-FAN'
+    await store.loadCategoryAttributes({ auto: true })
+    await flushPromises()
+
+    expect(workflowApi.translateTextSilent).toHaveBeenNthCalledWith(
+      2,
+      'zh-CN',
+      {
+        'attribute.0.label': 'Material',
+        'attribute.0.description': 'Indica el material',
+        'attribute.0.option.0': 'Plástico',
+      },
+      expect.objectContaining({ domain: 'mercadolibre' }),
+    )
+    expect(store.categoryAttributeTranslations.MATERIAL).toEqual({
+      label: '材质',
+      help: '选择主要材质',
+      values: { 'Plástico': '塑料' },
+    })
+  })
+
+  it('多目标一键 AI 匹配类目与独立目标并行运行互不阻塞', async () => {
+    const store = useWorkflowStore()
+    store.currentDraft = multiMarketCategoryDraft()
+    vi.mocked(workflowApi.saveDraft).mockImplementation(async (draft) => draftMutation(JSON.parse(JSON.stringify(draft))))
+    vi.mocked(workflowApi.matchCategories).mockResolvedValue([
+      {
+        ok: true,
+        status: 'completed',
+        selectedCategoryId: 'y-1',
+        candidates: [{ id: 'y-1', name: 'Маски', path: 'Дом / Маски', pathZh: '家居 / 面罩', raw: {} }],
+        query: 'маски',
+        decision: {
+          confidenceBand: 'high',
+          modelConfidence: 0.9,
+          decisionScore: 0.9,
+          abstained: false,
+          evidence: ['一致'],
+          searchCount: 1,
+        },
+        failure: null,
+        trace: { taskRunId: 'task-batch-1' },
+      },
+      {
+        ok: true,
+        status: 'completed',
+        selectedCategoryId: 'o-1',
+        candidates: [{ id: 'o-1', name: 'Балаклава', path: 'Одежда / Балаклава', pathZh: '服装 / 面罩', raw: {} }],
+        query: 'балаклава',
+        decision: {
+          confidenceBand: 'high',
+          modelConfidence: 0.9,
+          decisionScore: 0.9,
+          abstained: false,
+          evidence: ['一致'],
+          searchCount: 1,
+        },
+        failure: null,
+        trace: { taskRunId: 'task-batch-2' },
+      },
+    ])
+
+    await store.autoMatchAllTargets()
+    expect(workflowApi.matchCategories).toHaveBeenCalledOnce()
+    const [yandex, ozon] = store.targetEditors
+    expect(yandex!.state.categoryResults[0]?.id).toBe('y-1')
+    expect(ozon!.state.categoryResults[0]?.id).toBe('o-1')
+
+    // 验证两平台 editor.run 真正并行执行且不设置全局 store.loading
+    let resolveYandex!: (val: { results: [] }) => void
+    let resolveOzon!: (val: { results: [] }) => void
+    vi.mocked(workflowApi.searchCategories)
+      .mockImplementationOnce(() => new Promise((r) => { resolveYandex = r }))
+      .mockImplementationOnce(() => new Promise((r) => { resolveOzon = r }))
+    yandex!.state.categoryQuery = 'test1'
+    ozon!.state.categoryQuery = 'test2'
+    const p1 = yandex!.run(yandex!.actions.searchCategory)
+    const p2 = ozon!.run(ozon!.actions.searchCategory)
+    expect(yandex!.state.busy).toBe(true)
+    expect(ozon!.state.busy).toBe(true)
+    expect(store.loading).toBe(false)
+    resolveYandex({ results: [] })
+    resolveOzon({ results: [] })
+    await Promise.all([p1, p2])
+    expect(yandex!.state.busy).toBe(false)
+    expect(ozon!.state.busy).toBe(false)
   })
 
   it('does not normalize root listing fields into missing or incomplete target sites', () => {
@@ -2143,7 +2258,8 @@ describe('workflow store live API flow', () => {
       raw: {},
     })
 
-    expect(savedDrafts).toHaveLength(2)
+    // 仅保存 1 次：加载属性后路径和元数据未变化，不再触发多余二次 saveDraft。
+    expect(savedDrafts).toHaveLength(1)
     expect(savedDrafts[0]).toEqual(expect.objectContaining({
       categoryId: 'MLM-NEW',
       categoryPath: '家居 / 新类目',
@@ -2168,15 +2284,7 @@ describe('workflow store live API flow', () => {
     }))
     expect(vi.mocked(workflowApi.saveDraft).mock.invocationCallOrder[0])
       .toBeLessThan(vi.mocked(workflowApi.fetchCategoryAttrs).mock.invocationCallOrder[0])
-    expect(vi.mocked(workflowApi.fetchCategoryAttrs).mock.invocationCallOrder[0])
-      .toBeLessThan(vi.mocked(workflowApi.saveDraft).mock.invocationCallOrder[1])
     expect(workflowApi.fetchCategoryAttrs).toHaveBeenCalledWith('mercadolibre', 'MLM-NEW', 'MLM')
-    // 属性定义只瞬时保存在编辑态，不写入保存 payload。
-    expect(savedDrafts[1].targetSites[0]).not.toHaveProperty('categoryAttributeSchema')
-    expect(savedDrafts[1].targetSites[0]).toEqual(expect.objectContaining({
-      categoryId: 'MLM-NEW',
-      categoryPath: '家居 / 新类目',
-    }))
     expect(store.category?.requiredAttributes[0]?.id).toBe('BRAND')
     expect(store.loading).toBe(false)
     expect(store.categoryAttributeLoading).toBe(false)
@@ -2251,10 +2359,9 @@ describe('workflow store live API flow', () => {
       },
     })
 
-    expect(savedDrafts).toHaveLength(2)
+    expect(savedDrafts).toHaveLength(1)
     expect(savedDrafts[0]?.descriptionCategoryId).toBe('17039635')
     expect(savedDrafts[0]?.targetSites[0]?.descriptionCategoryId).toBe('17039635')
-    expect(savedDrafts[1]?.targetSites[0]?.descriptionCategoryId).toBe('17039635')
     expect(store.currentDraft.descriptionCategoryId).toBe('17039635')
   })
 

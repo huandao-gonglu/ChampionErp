@@ -3,10 +3,12 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from erp_web.schemas.category_constraints import category_attribute_constraint_error
 from erp_web.schemas.category_grouping import is_listing_grouping_attribute, listing_grouping_value
 from erp_web.schemas.category import (
     category_attribute_schema,
     category_attribute_value_is_valid,
+    category_attribute_value_mode,
 )
 
 from .defaults import default_draft
@@ -141,8 +143,25 @@ _PACKAGE_ATTRIBUTE_FIELDS = {
     "PACKAGE_WIDTH": "width_cm",
     "PACKAGE_HEIGHT": "height_cm",
     "PACKAGE_WEIGHT": "weight_kg",
+    "SELLER_PACKAGE_LENGTH": "length_cm",
+    "SELLER_PACKAGE_WIDTH": "width_cm",
+    "SELLER_PACKAGE_HEIGHT": "height_cm",
+    "SELLER_PACKAGE_WEIGHT": "weight_kg",
 }
 _GTIN_ATTRIBUTE_IDS = {"GTIN", "UPC", "UNIVERSAL_PRODUCT_CODE"}
+
+
+def _raw_scalar_present(value: Any) -> bool:
+    if isinstance(value, dict):
+        if isinstance(value.get("values"), list):
+            return any(
+                isinstance(item, dict) and str(item.get("value") or "").strip()
+                for item in value["values"]
+            )
+        return bool(str(value.get("value") or "").strip())
+    if isinstance(value, (list, tuple, set)):
+        return any(str(item or "").strip() for item in value)
+    return bool(str(value or "").strip())
 
 
 def _required_attribute_is_satisfied(
@@ -184,10 +203,14 @@ def _required_attribute_is_satisfied(
         gtin_value or (platform == "mercadolibre" and (reason_present or legacy_exemption))
     ):
         return True
-    if attr_id_upper == "BRAND":
-        return bool(str(attributes.get(attr_id) or normalized.get("brand") or "").strip())
-    if attr_id_upper == "MODEL":
-        return bool(str(attributes.get(attr_id) or normalized.get("model") or "").strip())
+    if attr_id_upper in {"BRAND", "MODEL"}:
+        raw_val = attributes.get(attr_id)
+        if category_attribute_value_mode(definition) == "strict_enum":
+            return category_attribute_value_is_valid(definition, raw_val)
+        if _raw_scalar_present(raw_val):
+            return category_attribute_value_is_valid(definition, raw_val)
+        fallback_key = "brand" if attr_id_upper == "BRAND" else "model"
+        return bool(str(normalized.get(fallback_key) or "").strip())
     if attr_id_upper == "SELLER_SKU":
         return bool(selected) and all(str(row.get("sku") or "").strip() for _, row in selected)
     if attr_id_upper == "ITEM_CONDITION":
@@ -247,10 +270,21 @@ def validate_category_precheck(product: dict[str, Any], platform: str, category_
     missing_fields: list[str] = []
     if not str(draft.get("category_id") or "").strip():
         missing_fields.append("category_id")
+    definitions = category_attribute_schema(category_record)
     missing_fields.extend(
         f"attributes.{definition['id']}"
         for definition in unresolved_required_attributes_in_draft(
-            normalized, draft, platform, category_attribute_schema(category_record),
+            normalized, draft, platform, definitions,
         )
     )
+    attributes = draft.get("attributes") if isinstance(draft.get("attributes"), dict) else {}
+    for definition in definitions:
+        attr_id = str(definition.get("id") or "").strip()
+        if not attr_id or attr_id not in attributes:
+            continue
+        raw_value = attributes.get(attr_id)
+        if not _raw_scalar_present(raw_value):
+            continue
+        if category_attribute_constraint_error(definition, raw_value):
+            missing_fields.append(f"attributes.{attr_id}")
     return list(dict.fromkeys(missing_fields))

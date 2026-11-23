@@ -684,37 +684,66 @@ def test_mercado_confirmation_reads_selected_price_scope_only():
     assert "pictures" not in paths[0] and "attributes=available_quantity" not in paths[0]
 
 
-def test_ozon_dictionary_next_cursor_reuses_downloaded_values(monkeypatch):
+def test_ozon_dictionary_next_cursor_reuses_downloaded_values(monkeypatch, tmp_path):
     from erp_web.runtime_units import ozon_category_api as api
+    from erp_web.stores.category_catalog_store import CategoryCatalogStore
     calls = []
-    monkeypatch.setattr(api, "_attribute_values_cache", api._MemoryCorpusCache())
+    store = CategoryCatalogStore(tmp_path / "ozon-dict.sqlite3")
+    monkeypatch.setattr(api, "_catalog_store", lambda: store)
 
     def fetch(*a, **k):
         calls.append(a)
         return {"result": [{"id": i, "value": str(i)} for i in range(1, 2001)], "has_next": True}
 
     monkeypatch.setattr(api, "request_ozon_json", fetch)
-    options = dict(description_category_id=1, type_id=2, attribute_id=3, client_id="isolated", api_key="secret", timeout_seconds=2)
+    options = dict(
+        description_category_id=1,
+        type_id=2,
+        attribute_id=3,
+        client_id="isolated",
+        api_key="secret",
+        timeout_seconds=2,
+        skip_zh=True,
+    )
     first, more = api._attribute_value_page(last_value_id=0, **options)
     second, more = api._attribute_value_page(last_value_id=50, **options)
     assert len(calls) == 1 and len(first) == 2000 and len(second) == 1950
     assert second[0]["id"] == "51" and more
 
 
-def test_category_definition_and_candidates_share_raw_response():
-    from erp_web.runtime_units.category_http_cache import cached_category_http
+def test_category_definition_and_candidates_share_raw_response(tmp_path):
+    from erp_web.stores.category_catalog_store import CategoryCatalogStore
+    store = CategoryCatalogStore(tmp_path / "http-cache.sqlite3")
     calls = []
 
-    def fetch(*args, **kwargs):
-        calls.append(args)
+    def fetch():
+        calls.append(1)
         return [{"id": "BRAND", "values": [{"id": "1", "name": "品牌"}]}]
 
     url = "https://api.mercadolibre.com/categories/CBT1/attributes"
-    first = cached_category_http(fetch, url, "token")
+    first = store.load_cached_value(
+        f"ml:GET:scope-a:{url}",
+        platform="mercadolibre",
+        scope_key="scope-a",
+        loader=fetch,
+        ttl_seconds=3600,
+    )
     first[0]["values"].clear()
-    second = cached_category_http(fetch, url, "token")
+    second = store.load_cached_value(
+        f"ml:GET:scope-a:{url}",
+        platform="mercadolibre",
+        scope_key="scope-a",
+        loader=fetch,
+        ttl_seconds=3600,
+    )
     assert len(calls) == 1 and second[0]["values"]
-    cached_category_http(fetch, url, "rotated-token")
+    store.load_cached_value(
+        f"ml:GET:scope-b:{url}",
+        platform="mercadolibre",
+        scope_key="scope-b",
+        loader=fetch,
+        ttl_seconds=3600,
+    )
     assert len(calls) == 2
 
 

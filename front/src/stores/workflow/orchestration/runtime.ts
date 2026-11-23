@@ -287,11 +287,18 @@ export function createWorkflowRuntime() {
     categoryResults.value = recommendation?.results || []
   }
 
-  function setCategoryRecommendation(target: MarketplaceTargetSite, query: string, results: CategorySearchResult[], error = '') {
+  function setCategoryRecommendation(
+    target: MarketplaceTargetSite,
+    query: string,
+    results: CategorySearchResult[],
+    error = '',
+    translatedQuery = '',
+  ) {
     categoryRecommendations.value = {
       ...categoryRecommendations.value,
       [targetSiteKey(target)]: {
         query,
+        ...(translatedQuery ? { translatedQuery } : {}),
         results,
         error,
       },
@@ -1147,26 +1154,55 @@ export function createWorkflowRuntime() {
     return draftWithPricingInput(draft, pricingInput.value, readPricingInput(draft))
   }
 
-  async function persistCurrentDraftForPublish() {
-    if (!currentDraft.value.draftId) {
-      throw new Error('请先从草稿箱选择一个草稿再进行发布预检。')
+  let persistDraftQueue: Promise<unknown> = Promise.resolve()
+
+  function persistCurrentDraftForPublish(): Promise<DraftDetail> {
+    const run = async (): Promise<DraftDetail> => {
+      if (!currentDraft.value.draftId) {
+        throw new Error('请先从草稿箱选择一个草稿再进行发布预检。')
+      }
+      if (!currentPublishTargets.value.length) {
+        throw new Error('当前草稿没有目标站点，请先在草稿箱选择目标市场。')
+      }
+      persistActiveTargetListingFields(categoryPrecheck.value ? { categoryPrecheck: categoryPrecheck.value.raw || categoryPrecheck.value } : {})
+      syncActivePublishTarget()
+      const target = selectedPublishTarget.value
+      const draftId = currentDraft.value.draftId
+      const snapshotByTargetKey = new Map(
+        currentDraft.value.targetSites.map((item) => [
+          targetSiteKey(item),
+          JSON.stringify(item),
+        ]),
+      )
+      const result = await saveDraftApi(draftForSave())
+      if (currentDraft.value.draftId !== draftId) {
+        throw new Error('草稿已改变，已忽略上一份草稿的保存响应。')
+      }
+      // 多平台并行编辑时，保留保存请求期间其他平台刚刚在本地编辑但尚未入队的改动。
+      const latestLocalTargets = new Map(
+        currentDraft.value.targetSites.map((item) => [targetSiteKey(item), item]),
+      )
+      const mergedTargetSites = result.draft.targetSites.map((serverTarget) => {
+        const key = targetSiteKey(serverTarget)
+        const localNow = latestLocalTargets.get(key)
+        const beforeSnapshot = snapshotByTargetKey.get(key)
+        if (localNow && beforeSnapshot !== undefined && JSON.stringify(localNow) !== beforeSnapshot) {
+          return localNow
+        }
+        return serverTarget
+      })
+      currentDraft.value = {
+        ...result.draft,
+        targetSites: mergedTargetSites,
+      }
+      currentDraftProductContext.value = result.productContext
+      syncActivePublishTarget(target)
+      applyMutationIndexes(result)
+      return currentDraft.value
     }
-    if (!currentPublishTargets.value.length) {
-      throw new Error('当前草稿没有目标站点，请先在草稿箱选择目标市场。')
-    }
-    persistActiveTargetListingFields(categoryPrecheck.value ? { categoryPrecheck: categoryPrecheck.value.raw || categoryPrecheck.value } : {})
-    syncActivePublishTarget()
-    const target = selectedPublishTarget.value
-    const draftId = currentDraft.value.draftId
-    const result = await saveDraftApi(draftForSave())
-    if (currentDraft.value.draftId !== draftId) {
-      throw new Error('草稿已改变，已忽略上一份草稿的保存响应。')
-    }
-    currentDraft.value = result.draft
-    currentDraftProductContext.value = result.productContext
-    syncActivePublishTarget(target)
-    applyMutationIndexes(result)
-    return result.draft
+    const task = persistDraftQueue.then(run, run)
+    persistDraftQueue = task.catch(() => undefined)
+    return task
   }
 
 

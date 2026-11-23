@@ -69,4 +69,22 @@ describe('SKU 使用真实类目属性编辑器', () => {
     wrapper.unmount()
   })
 
+  it('无 Proxy 显式覆盖与“恢复沿用公共属性”真删键', async () => {
+    const { catalog } = setup()
+    const wrapper = mount(DraftSkuAttributesEditor, { props: { skuId: 'black', sku, targetKey: 'ozon:global' } })
+    const sizeInput = wrapper.get<HTMLInputElement>('input[data-attribute-id="size"]')
+    expect(sizeInput.element.value).toBe('均码')
+    expect(wrapper.text()).toContain('沿用公共')
+
+    await sizeInput.setValue('大号')
+    expect(catalog.currentDraft.skuItems[0]?.attributes_by_target['ozon:global']?.size).toBe('大号')
+    expect(catalog.currentDraft.targetSites[0]?.attributes?.size).toBe('均码')
+    expect(wrapper.text()).toContain('已单独覆盖')
+
+    await wrapper.get('[data-testid="restore-inherited-attribute"]').trigger('click')
+    expect(catalog.currentDraft.skuItems[0]?.attributes_by_target['ozon:global']).toBeUndefined()
+    expect(sizeInput.element.value).toBe('均码')
+    wrapper.unmount()
+  })
+
 })

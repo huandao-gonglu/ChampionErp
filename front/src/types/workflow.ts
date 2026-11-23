@@ -159,10 +159,14 @@ export interface MarketplaceOption {
 export interface CategoryAttributeDefinition {
   id: string
   name: string
+  /** 中文展示名（L1 官方中文或 L2 服务端词典）；仅用于展示，不替代发布值。 */
+  nameZh?: string
   required: boolean
   variationRole?: string
   managedBy?: string
   options?: string[]
+  /** 预览枚举值对应的中文展示映射（key 为原文 value）。 */
+  optionLabelsZh?: Record<string, string>
   valueType?: string
   valueMode?: 'strict_enum' | 'open_enum' | 'free_text' | string
   allowCustomValues?: boolean
@@ -181,16 +185,20 @@ export interface CategoryAttributeDefinition {
   /** 平台默认计量单位；unitOptions 非空时作为初始选中。 */
   defaultUnit?: string
   description?: string
+  descriptionZh?: string
   dictionaryId?: string
   isDictionary?: boolean
   isCollection?: boolean
   maxValueCount?: number
   categoryDependent?: boolean
+  /** 品牌/型号等专有名词属性的大字典值自动跳过 L3 本地化。 */
+  skipValueLocalization?: boolean
 }
 
 export interface CategoryAttributeOption {
   id: string
   value: string
+  labelZh?: string
   info?: string
   picture?: string
 }
@@ -621,7 +629,10 @@ export interface PricingResult {
 export interface CategorySelection {
   platform: Marketplace
   categoryId: string
+  descriptionCategoryId?: string
   categoryPath: string
+  categoryPathZh?: string
+  cacheSource?: string
   requiredAttributes: CategoryAttributeDefinition[]
   optionalAttributes: CategoryAttributeDefinition[]
   source?: string
@@ -643,7 +654,9 @@ export type CategoryResultTranslations = Record<string, string>
 export interface CategorySearchResult {
   id: string
   name: string
+  nameZh?: string
   path: string
+  pathZh?: string
   forbidden?: boolean
   forbiddenReason?: string
   raw: UnknownRecord

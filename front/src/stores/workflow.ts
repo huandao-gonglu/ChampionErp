@@ -1,4 +1,8 @@
+import { ref } from 'vue'
 import { defineStore } from 'pinia'
+import { matchCategories } from '@/api/workflow/publishing'
+import { withAiConversation } from '@/services/withAiConversation'
+import { draftContextTitle } from '@/utils/draftDisplayTitle'
 import { createWorkflowCatalogActions } from './workflow/actions/catalog'
 import { createWorkflowCollectionActions } from './workflow/actions/collection'
 import { createWorkflowPricingActions } from './workflow/actions/pricing'
@@ -11,12 +15,71 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const runtime = createWorkflowRuntime()
   const targetEditors = createDraftTargetEditors(runtime)
   const publishBatch = createDraftPublishBatch(runtime, targetEditors)
+  const batchCategoryMatching = ref(false)
   const combined = {
     ...runtime,
     ...createWorkflowCollectionActions(runtime),
     ...createWorkflowCatalogActions(runtime),
     ...createWorkflowPricingActions(runtime),
     ...createWorkflowPublishingActions(runtime),
+  }
+
+  /** 一键 1+N 并行匹配当前草稿的全部目标平台类目，并分发到各平台编辑卡片。 */
+  async function autoMatchAllTargets() {
+    const editors = targetEditors.value
+    if (!runtime.currentDraft.value.draftId || !editors.length || batchCategoryMatching.value) return false
+    const targets = editors.map((editor) => editor.target)
+    batchCategoryMatching.value = true
+    runtime.setError('')
+    const productName = draftContextTitle(runtime.currentDraftProductContext.value, runtime.currentDraft.value.draftId)
+    for (const editor of editors) {
+      editor.state.busy = true
+      editor.state.categoryAutoMatching = true
+      editor.state.categoryAutoMatchProductName = productName
+      editor.state.categoryAutoMatchMessage = `正在 1+N 并行匹配 ${targets.length} 个平台类目…`
+      editor.state.error = ''
+    }
+    try {
+      await runtime.persistCurrentDraftForPublish()
+      const results = await withAiConversation('一键 AI 匹配全部平台类目', id => matchCategories(runtime.currentDraft.value, targets, id))
+      let candidateTargetCount = 0
+      let completedCount = 0
+      editors.forEach((editor, index) => {
+        const result = results[index]
+        if (!result || !editor.attached()) return
+        const errorMessage = result.status !== 'completed'
+          ? result.failure?.message || 'AI 尚未确认合适类目，请核对候选。'
+          : ''
+        editor.state.categoryRecommendations[editor.key] = {
+          query: result.query,
+          results: result.candidates,
+          error: errorMessage,
+        }
+        editor.state.categoryQuery = result.query
+        editor.state.categoryResults = result.candidates
+        editor.state.categoryResultTranslations = {}
+        editor.state.categoryResultTranslationsSource = ''
+        if (result.candidates.length) candidateTargetCount += 1
+        if (result.status === 'completed') completedCount += 1
+        void editor.actions.localizeCategoryResultsInBackground(result.candidates, editor.target)
+      })
+      runtime.addLog(`全平台类目匹配完成：${candidateTargetCount}/${targets.length} 个目标返回候选，${completedCount} 个给出已验证首选。`)
+      return candidateTargetCount > 0
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : '全平台类目匹配失败'
+      runtime.setError(message)
+      for (const editor of editors) {
+        if (editor.attached()) editor.state.error = message
+      }
+      return false
+    } finally {
+      for (const editor of editors) {
+        editor.state.categoryAutoMatchMessage = ''
+        editor.state.categoryAutoMatching = false
+        editor.state.busy = false
+      }
+      batchCategoryMatching.value = false
+    }
   }
 
   async function hydrateTab(key: string) {
@@ -38,6 +101,8 @@ export const useWorkflowStore = defineStore('workflow', () => {
   return {
     targetEditors,
     publishBatch,
+    batchCategoryMatching,
+    autoMatchAllTargets,
     product: combined.product,
     collectForm: combined.collectForm,
     collectDiagnostics: combined.collectDiagnostics,
@@ -145,8 +210,6 @@ export const useWorkflowStore = defineStore('workflow', () => {
     autoSuggestCategoriesForDraft: combined.autoSuggestCategoriesForDraft,
     selectCategory: combined.selectCategory,
     loadCategoryAttributes: combined.loadCategoryAttributes,
-    translateCategoryAttributes: combined.translateCategoryAttributes,
-    translateCategoryResults: combined.translateCategoryResults,
     invalidatePublishValidation: combined.invalidatePublishValidation,
     invalidateCategoryPrecheck: combined.invalidateCategoryPrecheck,
     runCategoryOnlyPrecheck: combined.runCategoryOnlyPrecheck,

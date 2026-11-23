@@ -17,6 +17,7 @@ import ssl
 import urllib.error
 from typing import Any
 
+from erp_web.schemas.category_brand import is_brand_attribute_id
 from erp_web.schemas.category_constraints import attribute_value_limits
 from erp_web.schemas.category import (
     category_attribute_text_format,
@@ -32,7 +33,9 @@ from erp_web.schemas.category_definition import (
     CategoryAttributeSummary,
     CategoryDefinition,
     CategoryUnitOption,
+    normalize_canonical_value_type,
 )
+from erp_web.services.mercadolibre_attribute_contract import MERCADOLIBRE_DERIVED_ATTRIBUTE_IDS
 
 CATEGORY_ATTRIBUTES_UNAVAILABLE = "CATEGORY_ATTRIBUTES_UNAVAILABLE"
 
@@ -191,7 +194,11 @@ def legacy_attribute_to_definition(
     previews: list[CategoryAttributeOptionPreview] = []
     seen: set[str] = set()
 
-    def add_preview(value: str, dictionary_value_id: str = "") -> None:
+    def add_preview(
+        value: str,
+        dictionary_value_id: str = "",
+        label_zh: str = "",
+    ) -> None:
         value = _text(value)
         if not value or value in seen:
             return
@@ -200,6 +207,7 @@ def legacy_attribute_to_definition(
             CategoryAttributeOptionPreview(
                 value=value,
                 dictionary_value_id=_text(dictionary_value_id),
+                label_zh=_text(label_zh),
             )
         )
 
@@ -213,6 +221,7 @@ def legacy_attribute_to_definition(
             add_preview(
                 row.get("value") or row.get("name") or row.get("id"),
                 row.get("id") or row.get("dictionary_value_id"),
+                row.get("label_zh") or "",
             )
         else:
             add_preview(row)
@@ -225,6 +234,7 @@ def legacy_attribute_to_definition(
             add_preview(
                 row.get("name") or row.get("value") or row.get("id"),
                 row.get("id") or row.get("dictionary_value_id"),
+                row.get("label_zh") or "",
             )
         else:
             add_preview(row)
@@ -280,9 +290,12 @@ def legacy_attribute_to_definition(
     return CategoryAttributeDefinition(
         id=attribute_id,
         name=_text(legacy.get("name") or attribute_id),
+        name_zh=_text(legacy.get("name_zh")),
+        description=_text(legacy.get("description"))[:1500],
+        description_zh=_text(legacy.get("description_zh"))[:1500],
         required=bool(legacy.get("required")),
         variation_role=_text(legacy.get("variation_role")) or ("variant" if record_aspect(legacy) else ""),
-        value_type=_text(legacy.get("value_type")),
+        value_type=normalize_canonical_value_type(legacy.get("value_type")),
         value_mode=value_mode,
         allow_custom_values=bool(legacy.get("allow_custom_values")),
         read_only=bool(legacy.get("read_only")),
@@ -310,6 +323,7 @@ def definition_to_legacy_attribute(
     return {
         "id": definition.id,
         "name": definition.name,
+        "name_zh": definition.name_zh,
         "required": definition.required,
         "variation_role": definition.variation_role,
         "value_type": definition.value_type,
@@ -326,7 +340,8 @@ def definition_to_legacy_attribute(
         },
         "default_unit_id": definition.default_unit_id,
         "constraints": dict(definition.constraints),
-        "description": "",
+        "description": definition.description,
+        "description_zh": definition.description_zh,
         "options": [option.value for option in definition.options],
         "has_more_values": definition.has_more_values,
         "dictionary_id": definition.dictionary_id,
@@ -379,6 +394,7 @@ def definition_from_legacy_attributes(
     site: str,
     category_id: str,
     category_path: str = "",
+    category_path_zh: str = "",
     description_category_id: str = "",
     required: list[dict[str, Any]] | tuple[dict[str, Any], ...],
     optional: list[dict[str, Any]] | tuple[dict[str, Any], ...],
@@ -408,6 +424,7 @@ def definition_from_legacy_attributes(
         site=site,
         category_id=category_id,
         category_path=category_path,
+        category_path_zh=category_path_zh,
         description_category_id=description_category_id,
         required=required_definitions,
         optional=optional_definitions,
@@ -419,17 +436,47 @@ def definition_from_legacy_attributes(
 # ---------------------------------------------------------------------------
 
 
+_MODEL_LIKE_ATTR_IDS = frozenset({"MODEL", "9048", "ARTICLE", "PART_NUMBER", "MPN", "GTIN", "EAN", "UPC", "SKU"})
+
+
+def skip_attribute_value_localization(
+    platform: str,
+    attribute_id: str,
+    attribute_name: str = "",
+) -> bool:
+    """判断该属性的枚举值是否属于专有名词/型号/编码，应跳过中文翻译。"""
+
+    attr_id = _text(attribute_id)
+    if is_brand_attribute_id(platform, attr_id):
+        return True
+    if attr_id.upper() in _MODEL_LIKE_ATTR_IDS:
+        return True
+    name_cf = _text(attribute_name).casefold()
+    if any(marker in name_cf for marker in ("бренд", "brand", "marca", "артикул", "модель", "model", "gtin", "штрихкод")):
+        return True
+    return False
+
+
 def public_attribute_summary(
     definition: CategoryAttributeDefinition,
     *, platform: str,
 ) -> CategoryAttributeSummary:
+    if is_listing_grouping_attribute(platform, {"id": definition.id, "name": definition.name}):
+        managed_by = "listing_grouping"
+    elif platform == "mercadolibre" and definition.id in MERCADOLIBRE_DERIVED_ATTRIBUTE_IDS:
+        managed_by = "draft_derived"
+    else:
+        managed_by = ""
     return CategoryAttributeSummary(
         **attribute_value_limits(definition.constraints),
         id=definition.id,
         name=definition.name,
+        name_zh=definition.name_zh,
+        description=definition.description,
+        description_zh=definition.description_zh,
         required=definition.required,
         variation_role=definition.variation_role,
-        managed_by="listing_grouping" if is_listing_grouping_attribute(platform, {"id": definition.id, "name": definition.name}) else "",
+        managed_by=managed_by,
         value_type=definition.value_type,
         value_mode=definition.value_mode,
         allow_custom_values=definition.allow_custom_values,
@@ -439,12 +486,16 @@ def public_attribute_summary(
         is_dictionary=definition.is_dictionary,
         is_collection=definition.is_collection,
         max_value_count=definition.max_value_count,
+        category_dependent=definition.category_dependent,
         dictionary_id=definition.dictionary_id,
         default_unit=definition.default_unit,
         default_unit_id=definition.default_unit_id,
         unit_options=definition.unit_options,
         options=definition.options,
         has_more_values=definition.has_more_values,
+        skip_value_localization=skip_attribute_value_localization(
+            platform, definition.id, definition.name
+        ),
     )
 
 
@@ -464,7 +515,7 @@ def _decode_cursor(cursor: str) -> int:
 
 
 def paginate_value_candidates(
-    candidates: list[tuple[str, str]] | tuple[tuple[str, str], ...],
+    candidates: list[tuple[str, ...]] | tuple[tuple[str, ...], ...],
     *,
     platform: str,
     site: str,
@@ -476,8 +527,8 @@ def paginate_value_candidates(
 ) -> "CategoryAttributeValuePage":
     """对内存候选列表做关键词过滤 + offset 游标分页。
 
-    ``candidates`` 项为 ``(value, dictionary_value_id)``。用于候选全集可
-    一次性从平台读取（Mercado Libre / Yandex）的场景；Ozon 走服务端分页。
+    ``candidates`` 项为 ``(value, dictionary_value_id)`` 或
+    ``(value, dictionary_value_id, label_zh)``。
     """
 
     from erp_web.schemas.category_definition import (
@@ -488,11 +539,15 @@ def paginate_value_candidates(
     safe_limit = max(1, min(100, int(limit or 50)))
     offset = _decode_cursor(cursor)
     normalized_query = _text(query).casefold()
-    filtered = [
-        (value, dictionary_value_id)
-        for value, dictionary_value_id in candidates
-        if value and (not normalized_query or normalized_query in value.casefold())
-    ]
+    filtered: list[tuple[str, str, str]] = []
+    for item in candidates:
+        value = _text(item[0]) if len(item) > 0 else ""
+        dictionary_value_id = _text(item[1]) if len(item) > 1 else ""
+        label_zh = _text(item[2]) if len(item) > 2 else ""
+        if not value:
+            continue
+        if not normalized_query or normalized_query in value.casefold() or (label_zh and normalized_query in label_zh.casefold()):
+            filtered.append((value, dictionary_value_id, label_zh))
     window = filtered[offset : offset + safe_limit]
     has_more = offset + safe_limit < len(filtered)
     return CategoryAttributeValuePage(
@@ -503,8 +558,12 @@ def paginate_value_candidates(
         limit=safe_limit,
         cursor=_text(cursor),
         values=tuple(
-            CategoryAttributeValue(value=value, dictionary_value_id=dictionary_value_id)
-            for value, dictionary_value_id in window
+            CategoryAttributeValue(
+                value=value,
+                dictionary_value_id=dictionary_value_id,
+                label_zh=label_zh,
+            )
+            for value, dictionary_value_id, label_zh in window
         ),
         next_cursor=f"offset:{offset + safe_limit}" if has_more else "",
         has_more=has_more,
@@ -528,7 +587,10 @@ def project_attribute_page(
         platform=definition.platform,
         site=definition.site,
         category_id=definition.category_id,
+        description_category_id=definition.description_category_id,
         category_path=definition.category_path,
+        category_path_zh=definition.category_path_zh,
+        cache_source=definition.cache.source,
         limit=safe_limit,
         cursor=cursor,
         attributes=tuple(public_attribute_summary(item, platform=definition.platform) for item in window),

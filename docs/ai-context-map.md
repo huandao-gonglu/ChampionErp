@@ -990,19 +990,10 @@ Direct 边界仅在异常确实来自此终态的 Pydantic OpenAI adapter、API 
   不静默截断，已知违规禁止发布。`fetchCategoryAttrs` 完整读取属性分页，缺页、重复或身份变化
   报错，不展示不完整定义。规则缺失不推定统一上限。故障证据及回归见
   [草稿属性限制验收](draft-attribute-limits.md)。
-- `erp_web/runtime_units/category_catalog.py`：业务消费者的统一类目读取入口；负责 Provider
-  解析、定义 Loader 注入与有界公共投影。类目匹配、属性填充、预检、payload 编译、前端和
-  Agent 工具不得绕过 Catalog/注入 Loader 直接读取平台规则。
-- `erp_web/runtime_units/category_providers.py`：Mercado Libre、Ozon、Yandex 的显式
-  `CategoryProvider` 实现与注册表；平台 API shape 在这里归一化为当前定义和明确
-  `platform_binding`。Mercado Libre CBT 类目预测固定调用
-  `/marketplace/domain_discovery/search`，并统一通过
-  `store_credentials.get_mercadolibre_access_token()` 读取已保存的
-  Global Selling Access Token；只有实际业务请求明确返回 401 后才执行一次共享刷新；Provider 不得直接读取凭据。区域站点仍调用
-  `/sites/{site}/domain_discovery/search`。
-- `erp_web/runtime_units/category_definition_cache.py`：统一属性定义持久缓存 owner；24 小时
-  fresh、最多 7 天 transient stale，401/403、凭据缺失、禁用类目和结构错误不得用 stale
-  掩盖。缓存不进入商品、草稿、任务或 Agent history。
+- `erp_web/stores/category_catalog_store.py`：三平台统一类目 SQLite WAL + FTS5 持久存储 owner（`data/cache/category-catalog.sqlite3`，挂载于 `AppContext.category_catalog_store` 并通过 `acquire_shared`/`release_shared` 按规范化库路径做进程内引用计数单例，确保多账号共享同一套 singleflight 锁、冷却态与热 LRU），取代已删除的 `ozon_category_cache.py`、`category_http_cache.py` 与 `category_definition_cache.py`。集中管理类目树与 FTS5 倒排索引、属性定义缓存（`DEFINITION_FORMAT_VERSION=7`，24 小时 fresh、最多 7 天 transient stale，401/403/凭据缺失/禁用类目/结构错误不得使用 stale）、HTTP/枚举游标页缓存及跨平台共享 L2 持久化词典（`translation_glossary`）；Schema v2 原地迁移会清理历史按凭据重复存储的 Ozon/Yandex 旧作用域缓存并保留全部 `translation_glossary` 词条，不进入商品、草稿、任务或 Agent history。
+- `erp_web/runtime_units/category_localization.py`：L2 0ms 词典自动中文化投影与人工中文搜索转换入口；对搜索结果（支持 `path_segments` 节点段拼装）、属性定义和枚举分页按原文回填 `*_zh` / `label_zh` 展示文案（展示文案与发布事实严格分离且不参与定义 fingerprint）；`resolve_manual_search_query` 为 `/api/category-search` 在 Yandex / Mercado Libre 上的中文输入自动完成「L2 正向缓存 → L2 反向精确同义词 → 唯一 `text.translate` 永久入库 → 反向子串兜底」转换（Ozon 走原生 `ZH_HANS` FTS5 直搜）。
+- `erp_web/runtime_units/category_catalog.py`：业务消费者的统一类目读取入口；负责 Provider 解析、定义 Loader 注入、L2 自动中文化投影、有界公共投影及 `ozon_leaf_records`（供 `pricing_runtime.py` 读取，消除对平台类目 API 的直连）。类目匹配、属性填充、预检、payload 编译、前端和 Agent 工具不得绕过 Catalog/注入 Loader 直接读取平台规则。
+- `erp_web/runtime_units/category_providers.py`：Mercado Libre、Ozon、Yandex 的显式 `CategoryProvider` 实现与注册表；平台 API shape 在这里归一化为当前定义和明确 `platform_binding`，均支持 `force_refresh` 显式穿透缓存。Mercado Libre CBT 类目预测固定调用 `/marketplace/domain_discovery/search`（并并发通过 `category_detail` 补全 `path_from_root` 完整路径，以 `children_categories == []` 判定 `is_leaf`），统一通过 `store_credentials.get_mercadolibre_access_token()` 读取已保存的 Global Selling Access Token 并以稳定 `user_id` 构造缓存作用域（覆盖 `POST /catalog_domains/.../top_values`），仅在 401 后执行一次共享刷新；未知属性 ID 显式抛出 `ValueError`；区域站点仍调用 `/sites/{site}/domain_discovery/search`。
 - `erp_web/schemas/category_grouping.py`：刊登分组字段识别和值派生的唯一纯规则入口。
   Ozon 按类目字段名称识别，Yandex 使用分组属性 200；组合展示使用 `draft.grouping.name`
   或标题，独立刊登省略可选分组值，必填值按 SKU 卖家编码派生。公共属性页的
@@ -1012,46 +1003,31 @@ Direct 边界仅在异常确实来自此终态的 Pydantic OpenAI adapter、API 
   Ozon wire 构造使用同一规则。旧属性值不能改变分组设置，也不作为第二份可编辑来源。
   仅调整领域输入与确定性派生，不新增或修改 Agent 生命周期、模型循环或重试机制。
 - `erp_web/runtime_units/category_searchers.py`：任务入口根据当前平台实例化具体
-  检索对象。Mercado Libre 调用 `domain_discovery/search`；Ozon 同一绑定对象同时
-  保留人工关键词搜索能力并为自动匹配实现树导航；Yandex 只在本地缓存类目树上做
-  规范化关键词匹配（source `yandex_cache`），并把限流/认证/缺凭据错误统一分类。
-  平台选择只发生在对象创建处。
+  检索对象。Mercado Libre 调用 `domain_discovery/search`；Ozon 与 Yandex 的绑定对象同时支持 SQLite FTS5 关键词检索、类目树逐层导航（`roots/children`）及同父级兄弟叶扩展（`sibling_leaves`），并把限流/认证/缺凭据错误统一分类。平台选择只发生在对象创建处。
 - Mercado Libre OAuth 的 `code_verifier` 只在生成授权链接到兑换 code 期间存在；兑换
   成功后必须删除，授权检查清单在 Access Token 与 Refresh Token 已就绪时不再把它显示为
   缺失项。
-- `erp_web/runtime_units/ozon_category_api.py`：Ozon 类目语料的刷新、人工搜索和树导航入口；
-  24 小时内复用缓存，远端瞬时网络错误时最多使用 7 天旧语料，认证错误不允许
-  stale fallback。完整树不会进入 AI 上下文。
-- `erp_web/runtime_units/ozon_category_cache.py`：Ozon 展平类目语料的版本化压缩 JSON
-  持久化 owner；使用原子替换写入，文件只含 Client ID 单向摘要，不保存凭据。
-- `erp_web/runtime_units/yandex_category_api.py`：Yandex 类目树与类目参数语料的刷新
-  与缓存 owner；类目树按语言与凭据作用域缓存（内存 + gzip 持久化 JSON），6 小时
-  新鲜窗口用于避开 Yandex 每小时限额，远端瞬时错误最多使用 7 天旧语料；底层类目参数
-  还有短 TTL 内存缓存，归一化后的 `CategoryDefinition` 统一进入上述持久定义缓存。
-  缓存文件只含凭据作用域单向摘要，不保存凭据。
-- `erp_web/schemas/category.py`：规范化候选、搜索结果、匹配结果 shape，以及
-  Agent Service 与领域工具共同使用的请求级 `CategoryCandidateLedger`；
+- `erp_web/runtime_units/ozon_category_api.py`：Ozon 类目语料、属性定义与枚举分页的刷新、双语合并、FTS5 检索和树导航入口；由于 Ozon 类目树、属性定义与枚举字典均属平台公共元数据，统一以 `scope_key="global"` 跨多账号共享缓存（读取与刷新前仍先校验当前账号 Ozon 凭据，授权测试使用 `force_refresh=True` 穿透验证）；L1 先拉 `DEFAULT` 发布事实再成对补拉 `ZH_HANS` 官方中文（非品牌枚举分页同样成对合表，品牌/型号跳过并保留 `last_value_id` 独立缓存键），采用 `(description_category_id, type_id)` 复合键保留同 `type_id` 不同父类目记录，支持中文/俄文/ID 检索；24 小时内复用 SQLite 缓存，远端瞬时网络错误时最多使用 7 天旧语料（60s 冷却），认证错误不允许 stale fallback。完整树不会进入 AI 上下文。
+- `erp_web/runtime_units/yandex_category_api.py`：Yandex 类目树、树导航、O(log N) 祖先反查与类目参数（保留 `description` 帮助说明）的刷新与 SQLite 缓存 owner；平台公共类目树按语言以 `scope_key="global"` 跨多账号共享写入 `CategoryCatalogStore`（读取与刷新前仍先校验已配置凭据，6 小时新鲜窗口避开每小时限额，远端瞬时错误最多使用 7 天旧语料）；因 `distinctive` 变体参数归属具体店铺业务，底层类目参数与归一化后的 `CategoryDefinition` 统一按稳定 `business:{business_id}` 作用域隔离缓存（6 小时窗口，不掺入 `api_token`，令牌轮换不失效）。
+- `erp_web/schemas/category.py`：规范化候选（含双语 `name_zh/path_zh`）、搜索结果、匹配结果 shape，以及
+  Agent Service 与领域工具共同使用的请求级 `CategoryCandidateLedger`（支持 `record_prefetched` 与 `mark_forbidden`）；
   `normalize_category_attribute_definition` 为带单位属性暴露 `unit_options/default_unit`。
-- `tests/test_category_searchers.py`、`tests/test_ozon_category_api.py`：平台对象选择、
-  远端/缓存搜索、错误分类和 Ozon ID 配对测试；含 Yandex 关键词搜索与
-  HTTP 420 限流（可重试）/401 认证失败（终态）分类。
+- `tests/test_category_searchers.py`、`tests/test_ozon_category_api.py`、`tests/test_category_match_v2_refactor.py`：平台对象选择、SQLite FTS5 检索、L1/L2/L3 本地化、1+N 批量匹配、错误分类和 Ozon 复合键/游标分页测试。
 
 `erp_web/runtime_units/category_query_capabilities.py::category_search`（v3）为通用 AI 查询入口，
 接收 `product_type` 与 `keywords` 列表，合并查询固定语言的通用名和补充词，复用
-`category_keyword_search.py` 的并发与合并逻辑；`limit` 限制合并
+`category_keyword_search.py` 的并发、RRF 与多词共识排序逻辑；`limit` 限制合并
 结果总量，返回逐词错误与命中词，同时保留 Ozon 类目 ID 配对。
 `erp_web/runtime_units/category_store.py::search_categories_live` 继续服务人工关键词搜索；
-自动匹配按绑定对象能力选择 `CategoryNavigator` 或 `CategorySearcher`，两者不互相 fallback。
+自动匹配默认进入 `hybrid` 模式（确定性预召回 + 单轮精排，按需调用 `search_categories` v6 或 `browse_categories` v2 补查）。
 
-## 通用文本翻译
+## 通用文本翻译与三级自动本地化
 
 - `erp_web/http_route_units/translation_routes.py`：唯一公开入口 `POST /api/text-translate`；
-  只接受 `target_language` 与扁平 `content` 键值对象。
-- `erp_web/facades/translation_facade.py`：HTTP 状态映射，不包含类目或属性领域分支。
-- `erp_web/runtime_units/text_translation.py`：唯一 `text.translate` AI 用例调用方；校验请求与
-  模型响应拥有完全相同的 key 集合，并统一返回扁平 `{key: value}`。
-- `erp_web/assets/prompts/text_translate.json`：唯一“翻译” Prompt。调用方负责注入目标语言和具体文本；
-  类目候选与平台属性在前端各自独立组装内容并触发，不共享领域 payload。
+  接受 `target_language`、扁平 `content` 及可选 `domain`/`cache_only`/`bypass_cache`/`silent`。
+- `erp_web/facades/translation_facade.py`：0ms L2 词典优先命中（全命中时跳过 AI 模型检查），仅对未命中生词走模型补翻；`silent=true` 在模型未配置或故障时优雅降级返回已命中项与 `degraded=true`，不阻断页面编辑。
+- `erp_web/runtime_units/text_translation.py`：唯一 `text.translate` AI 用例调用方；结合 `CategoryCatalogStore` 共享 `translation_glossary` 执行 L2 读写与请求内同文案去重，校验模型响应与代表键集合一致并永久入库。
+- `erp_web/assets/prompts/text_translate.json`：唯一“翻译” Prompt。前端不再提供「翻译候选类目」「翻译平台属性」手动按钮，改为非阻塞静默 L3 补翻（大字典属性仅打开下拉时按当前页懒本地化，跳过品牌/型号/纯数字）。
 
 已退役的类目结果翻译、类目属性翻译端点、用例、Prompt 和 runtime unit 不提供兼容路径。
 
@@ -1080,17 +1056,13 @@ Direct 边界仅在异常确实来自此终态的 Pydantic OpenAI adapter、API 
 - 属性填写只有主对话这一条 AI 路径。页面入口、专用属性 Agent/复核模型、局部 HTTP 调用和复合草稿准备里的隐式属性步骤均已删除。`draft_prepare_for_market` 返回的完成步骤只包含目标、文案、图片、类目和定价；主对话随后按需直接填写属性。
 - `erp_web/services/global_agent_chat_service.py` 与 `erp_web/assets/systemAgents.md` 规定事实复用、公共/SKU 边界、无品牌优先及缺口汇报。继续使用已安装的 Pydantic AI 2.44.0 原生工具调用、消息历史和指令装配；此次不需要新增 Agent loop 或生命周期。
 - `front/src/composables/useAiDraftSync.ts` 在原生对话历史提交、流结束及返回草稿工作台时读取最新业务数据，统一同步属性、包装、库存、核价参数、SKU 售价和保存版本。无未保存编辑时自动更新；有编辑时保留页面并提示重新加载，覆盖前需确认。重新加载是只读操作，不重放 AI 工具或提交表单；过期读取响应不能覆盖切换后的草稿。`DraftWorkspacePanel` 在工作台内持续显示错误与“重新加载最新数据”入口。眼睛开关继续控制发送时的页面背景。
-- `front/src/components/domain/CategoryAttributesPanel.vue` 对字典字段只保存平台选项的
+- `front/src/components/domain/CategoryAttributesPanel.vue` 与 `CategoryAttributeField.vue`：默认展开必填属性并展示完成进度、状态筛选（全部/待处理/必填/选填）与中文/原文/ID 搜索；展示文案（`*_zh`）与发布值严格分离；字典字段只保存平台选项的
   `dictionary_value_id + value`（ID 原样按字符串存取，不做数值化），搜索输入不进入草稿；
-  实时候选按 `next_cursor/has_more` 追加并按 ID 去重，大品牌字典通过“加载更多”继续读取；
-  带 `unit_options` 的属性通过数值输入 + 单位下拉生成 `{value, unit}`；
-  发布预检拒绝自由文本字典值。
+  实时候选按 `next_cursor/has_more` 追加并按 ID 去重，多选 `isCollection` 不清空已载入选项，大字典打开下拉时仅对当前页懒触发 L3 静默补翻；布尔属性提供标准选择器；带 `unit_options` 的属性通过数值输入 + 单位下拉生成 `{value, unit}`；
+  发布预检拒绝自由文本字典值。`DraftSkuAttributesEditor.vue` 已移除 JS `Proxy`，显式通过 `inheritedAttributes` / `overrideAttributes` 与真实 `delete` 管理 SKU 覆盖与“恢复沿用公共属性”；`targetEditors.ts` 将各平台 `state.busy` 与全局 `loading` 解耦并经 `runtime.ts` 串行草稿保存队列保护并发写入。
 
-- `erp_web/runtime_units/category_tools.py`：`category.search` 只读 ToolSet。绑定对象实现
-  `CategoryNavigator` 时只暴露 `browse_categories(parent_ids)`；否则只暴露
-  `search_categories`（v5）。先在 `product_identity` 摘出原始规格中的实物结构，再填写固定语言的
-  `product_type / alternative_names / keywords`，三组词在一次工具调用中合并查询。
-  不额外启动规划 Agent；工具 schema 与执行器均没有 platform/site 参数。
+- `erp_web/services/category_product_canonicalizer.py`：1+N 多模态商品实体标准化纯服务（不依赖 `runtime_units`）；一次提取多目标共用的高优先级材质/品类/SKU 规格事实与多语言检索词，并在模型同时支持 `image_understanding` 与 `chat_structured` 时附带主图 `BinaryContent`。
+- `erp_web/runtime_units/category_tools.py`：`category.search` 只读 ToolSet。支持 `hybrid`（默认，确定性预召回后暴露 `search_categories` v6 与可选 `browse_categories` v2 供缺口补查）、`tree_navigation` 与 `keyword_search` 三种模式；`search_categories` v6 将 `keywords` 设为可选以降低冗余填参，`browse_categories` v2 返回 `total_node_count` 与 `truncated`。工具 schema 与执行器均没有 platform/site 参数。
 - `erp_web/schemas/category_search_language.py`：根据注册平台/站点确定唯一检索语言，独立于商品
   原文和草稿语言。Yandex/Ozon 俄语，MLB 葡语，其余美客多本地站西语，CBT 预测接口固定英语。
   CBT 覆盖定义在 `marketplace_registry.py`，不改变刊登语言。执行前整批拒绝中文或错误文字体系，
@@ -1098,7 +1070,7 @@ Direct 边界仅在异常确实来自此终态的 Pydantic OpenAI adapter、API 
   检查宣称为完整语言识别。
 - `erp_web/runtime_units/category_keyword_search.py`：关键词批量 I/O owner；每个匹配任务内
   去重并复用成功查询，最多 3 个并发查询，沿用入口绑定的 provider 超时和任务 deadline。
-  Yandex/Ozon 本地树搜索取回每词全部命中，交错合并并按类目 ID 去重，不再按 8/24/50 条裁剪自动检索。
+  Yandex/Ozon 本地树搜索取回每词全部命中，采用 RRF 与多词共识加权排序并按类目 ID 去重，不再按 8/24/50 条裁剪自动检索。
   人工查询显式传入的 `limit` 继续有效；美客多远端预测仍遵守平台接口限制，数量不代表全库覆盖。
   focused 工具仅返回 ID、名称、完整路径和命中词；已见类目用 `repeated_candidate_ids` 引用，仍可最终选择。
   单次回执沿用 Execution Profile 的 128 KiB 预算，仅超过字节预算时分页；这是工具输出边界，不是对模型剩余上下文的估算。
@@ -1109,10 +1081,9 @@ Direct 边界仅在异常确实来自此终态的 Pydantic OpenAI adapter、API 
   主对话 `category_search` 同样默认完整检索并按字节分页，支持显式 `limit / offset`，保留 Ozon ID 配对且计入预算；
   该通用只读工具每次重新查询，跨调用分页依赖平台目录和查询结果保持稳定。
   64 个词仅作为异常入参保护，不设置总关键词配额；工具调用次数仍由 Pydantic AI 原生预算管理。
-- `erp_web/facades/category_match_facade.py`：`category_match` 共享业务阶段；
-  首轮发送裁剪后的双语商品事实；绑定导航器时发送真实顶层节点并允许最多四次树导航，
-  绑定搜索器时使用关键词列表批量发现，所有平台复用相同批量契约。最终选择必须经过叶子候选账本、站点、可发布状态、
-  详情和 Ozon ID 配对校验；匹配阶段不读取属性定义，属性由用户选择类目后的独立加载步骤读取，
+- `erp_web/facades/category_match_facade.py`：`category_match` 与 1+N 并行批量 `match_categories_batch` 共享业务阶段；
+  同商品跨多平台时仅运行 1 次实体标准化，随后并行对各平台执行确定性预召回（SQLite FTS5/API + 同父级兄弟叶扩展）并将预召回候选写入 `CategoryCandidateLedger` 供 Agent 单轮精排。最终选择必须经过叶子候选账本、站点、可发布状态、
+  详情（优先复用校验阶段已核实的 `verified_details`）和 Ozon ID 配对校验，并在返回前经 L2 词典回填双语展示字段；匹配阶段不读取属性定义，属性由用户选择类目后的独立加载步骤读取，
   避免属性接口超时使已完成的匹配失败。达到资源上限时返回 failed 并保留通用额度错误和 details。
   仅模型主动、有效地 abstain 返回 unresolved；检索未确认不等于平台没有类目，不静默改选。
   `prepare_category_match_input / setup_category_match_search / finalize_category_match`
@@ -1877,7 +1848,7 @@ Yandex 首次报单以真实平台订单号写入 `order_number`，历史已创�
 - 界面语言设置与 `vue-i18n` 已退役；前端文案、路由标题及业务 HTTP 的语言头固定为中文，不读取历史设备语言偏好。刊登语言与图片翻译目标语言仍由各自业务契约维护。
 
 - 「禁售类目」（`settings_section=forbidden_categories`）支持导入 Yandex 的 XLSX 名单，列为 `category`、`name`，可含 `int64` / `string` 类型说明行。GET `/api/system-settings/forbidden-categories` 和 POST `/api/system-settings/forbidden-categories/import` 经 `auth_config_facade`、`forbidden_category_service` 与根 `ConfigStore` 完整校验并替换共享 `app_config.forbidden_categories`；导入仅管理员开放，所有个人空间的预检读取同一名单。空名单、错误行和同 ID 异名均拒绝整次导入，失败保留旧配置。通用配置保存不能覆盖该区段。
-  `yandex_category_api` 的类目树缓存（`yandex.category-corpus.v2`）在展平叶子时保留可信 `ancestor_ids` 链，`CategoryDetail` 与 `fetch_category_record` 同源传递，其他模块一律经 `CategoryCatalog.cached_category_ancestor_map / cached_category_ancestor_ids`（由 `YandexCategoryProvider` 实现）读取本地祖先链而不直接导入平台类目 API。`forbidden_category_service.forbidden_category_match / forbidden_category_issue` 仅按自身类目 ID 及由近及远的祖先 ID 链匹配，不按名称推测。类目检索（人工搜索与 AI `category_search` / `category_match`）保留禁售候选但实时标注 `forbidden` / `forbidden_reason` 并将合规候选排前；前端候选列表标红禁售原因且禁止直接点选；AI 类目匹配允许模棱两可商品优先选实物相符的非禁售类目，若唯一实物匹配类目禁售且无合规替代则 `abstain` 为 `CATEGORY_FORBIDDEN_NO_ALTERNATIVE`，并由 `CategoryMatchOutputValidator`、`category_match_facade` 与 `category_capabilities` 确定性拦截。页面 `/api/category-precheck`、AI `category_precheck` 与 `publish_validation` 共用同一规则与服务端可信祖先链（不信客户端 `category_record`）；单次 SKU 批次由 `PublishValidationSession` 固定名单与祖先快照，旧预检通过不能绕过最终校验。回归见 `tests/test_forbidden_categories.py`、`tests/test_category_match_facade.py`、`tests/test_category_match_agent_service.py`、`tests/test_yandex_publish.py`。
+  `yandex_category_api` 的 SQLite 类目树索引（`CategoryCatalogStore`）在落库时保留可信 `ancestor_ids` 链并支持 O(log N) 单条反查，`CategoryDetail` 与 `fetch_category_record` 同源传递，其他模块一律经 `CategoryCatalog.cached_category_ancestor_map / cached_category_ancestor_ids`（由 `YandexCategoryProvider` 实现）读取本地祖先链而不直接导入平台类目 API。`forbidden_category_service.forbidden_category_match / forbidden_category_issue` 仅按自身类目 ID 及由近及远的祖先 ID 链匹配，不按名称推测。类目检索（人工搜索与 AI `category_search` / `category_match`）保留禁售候选但实时标注 `forbidden` / `forbidden_reason` 并将合规候选排前；前端候选列表标红禁售原因且禁止直接点选；AI 类目匹配允许模棱两可商品优先选实物相符的非禁售类目，若唯一实物匹配类目禁售且无合规替代则 `abstain` 为 `CATEGORY_FORBIDDEN_NO_ALTERNATIVE`，并由 `CategoryMatchOutputValidator`、`category_match_facade` 与 `category_capabilities` 确定性拦截。页面 `/api/category-precheck`、AI `category_precheck` 与 `publish_validation` 共用同一规则与服务端可信祖先链（不信客户端 `category_record`）；单次 SKU 批次由 `PublishValidationSession` 固定名单与祖先快照，旧预检通过不能绕过最终校验。回归见 `tests/test_forbidden_categories.py`、`tests/test_category_match_facade.py`、`tests/test_category_match_agent_service.py`、`tests/test_yandex_publish.py`。
 
 - “关于”页提供应用版本、英文第三方声明，以及独立的中文《软件许可与服务协议》和《隐私政策》。版本与 `front/package.json` 同源。第三方声明从运行依赖生成并校验指纹，`front/build/third-party-notices.ts` 按 Web 实际构建模块或桌面交付范围筛选，排除纯开发与测试工具；许可证及声明生成为 `licenses/` 下的可读文件，桌面版随安装包放在 ASAR 外，“关于”打开该目录，Web 仅提供 TXT 下载；不在弹窗加载或展开全文。组件版权和 NOTICE 保留，来源与发行边界见 [第三方声明来源](../scripts/legal-notices/README.md)。法律文本分别维护于 `front/src/legal/user-agreement.ts` 与 `privacy-policy.ts`，硬件信息期限不适用于自行部署的业务数据库。查看不代表同意，不启用设备上报或自动升级。
 

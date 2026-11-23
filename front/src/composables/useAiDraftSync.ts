@@ -129,6 +129,19 @@ export function useAiDraftSync(options: {
     }
   }
 
+  if (options.active) {
+    watch(options.active, async (isActive, wasActive) => {
+      if (isActive && !wasActive) {
+        const token = ++generation
+        await nextTick()
+        if (!disposed && token === generation) {
+          baseline.value = draftSignature()
+          pricingBaseline.value = pricingSignature()
+        }
+      }
+    }, { flush: 'sync' })
+  }
+
   // 原生历史提交同时覆盖直接工具、run_code 写入及部分成功后失败的回合。
   watch(() => [chat.activeConversationId, chat.historyVersion] as const, () => { void refresh() })
   watch(() => chat.isBusy, (busy, wasBusy) => { if (wasBusy && !busy) void refresh() })

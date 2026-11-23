@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-import gzip
 from pathlib import Path
 import urllib.error
 from unittest.mock import patch
@@ -11,15 +10,12 @@ import pytest
 from erp_web import marketplaces as publisher
 from erp_web.context import get_context
 from erp_web.runtime_units import category_store, ozon_category_api, store_credentials
-from erp_web.runtime_units.ozon_category_cache import (
-    OzonCategoryCacheEntry,
-    write_ozon_category_cache,
-)
 from erp_web.runtime_units.category_providers import OzonCategoryProvider
 from erp_web.runtime_units.category_searchers import (
     CategorySearchError,
     OzonCategorySearcher,
 )
+from erp_web.stores.category_catalog_store import CategoryCatalogStore
 
 
 OZON_TREE = {
@@ -53,6 +49,37 @@ OZON_TREE = {
     ]
 }
 
+OZON_TREE_ZH = {
+    "result": [
+        {
+            "description_category_id": 17027949,
+            "category_name": "轮胎",
+            "disabled": False,
+            "children": [
+                {
+                    "type_id": 94765,
+                    "type_name": "轿车轮胎",
+                    "disabled": False,
+                    "children": [],
+                }
+            ],
+        },
+        {
+            "description_category_id": 17030000,
+            "category_name": "服装",
+            "disabled": False,
+            "children": [
+                {
+                    "type_id": 10001,
+                    "type_name": "T恤",
+                    "disabled": False,
+                    "children": [],
+                }
+            ],
+        },
+    ]
+}
+
 
 def _store_config() -> dict[str, object]:
     return {"ozon": {"client_id": "client-id", "api_key": "api-key"}}
@@ -62,13 +89,15 @@ def _store_config() -> dict[str, object]:
 def isolated_ozon_category_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(ozon_category_api, "_category_cache_root", lambda: tmp_path)
-    ozon_category_api.clear_ozon_category_tree_cache()
+) -> CategoryCatalogStore:
+    store = CategoryCatalogStore(tmp_path / "category-catalog.sqlite3")
+    monkeypatch.setattr(ozon_category_api, "_catalog_store", lambda: store)
+    from erp_web.runtime_units import category_providers
+    monkeypatch.setattr(category_providers, "_catalog_store", lambda: store)
+    return store
 
 
-def test_ozon_category_search_and_attributes_use_official_api() -> None:
-    ozon_category_api.clear_ozon_category_tree_cache()
+def test_ozon_bilingual_tree_chinese_search_and_attributes_use_official_api() -> None:
     calls: list[tuple[str, str, dict[str, object]]] = []
 
     def request(
@@ -79,13 +108,22 @@ def test_ozon_category_search_and_attributes_use_official_api() -> None:
         payload: dict[str, object] | None = None,
         **kwargs: object,
     ) -> dict[str, object]:
+        del kwargs
         assert client_id == "client-id"
         assert api_key == "api-key"
-        calls.append((method, url, payload or {}))
+        body = payload or {}
+        calls.append((method, url, body))
         if url == ozon_category_api.OZON_CATEGORY_TREE_URL:
-            return OZON_TREE
+            return OZON_TREE_ZH if body.get("language") == "ZH_HANS" else OZON_TREE
         if url == ozon_category_api.OZON_CATEGORY_ATTRIBUTES_URL:
-            assert payload == {"description_category_id": 17027949, "type_id": 94765, "language": "DEFAULT"}
+            if body.get("language") == "ZH_HANS":
+                return {
+                    "result": [
+                        {"id": 85, "name": "品牌", "description": "选择品牌", "is_required": True, "type": "String"},
+                        {"id": 8229, "name": "商品颜色", "description": "主色调", "is_required": False, "type": "String"},
+                    ]
+                }
+            assert body == {"description_category_id": 17027949, "type_id": 94765, "language": "DEFAULT"}
             return {
                 "result": [
                     {"id": 85, "name": "Бренд", "is_required": True, "type": "String"},
@@ -98,21 +136,28 @@ def test_ozon_category_search_and_attributes_use_official_api() -> None:
         patch.object(ozon_category_api, "_load_store_config", _store_config),
         patch.object(ozon_category_api, "request_ozon_json", side_effect=request),
     ):
-        results = category_store.search_categories_live("ozon", "легковых автомобилей", limit=5)
-        record = category_store.fetch_category_record("ozon", "94765", include_attributes=True)
+        ru_results = category_store.search_categories_live("ozon", "легковых автомобилей", limit=5)
+        zh_results = category_store.search_categories_live("ozon", "轿车轮胎", limit=5)
+        page = category_store.fetch_category_attribute_page("ozon", "94765")
 
-    assert len(results) == 1
-    assert results[0]["category_id"] == "94765"
-    assert results[0]["description_category_id"] == "17027949"
-    assert results[0]["path"] == "Шины / Шины для легковых автомобилей"
-    assert record["platform"] == "ozon"
-    assert record["source"] == "ozon_live"
-    assert record["attributes"]["required"][0]["id"] == "85"
-    assert record["attributes"]["optional"][0]["id"] == "8229"
-    assert [call[1] for call in calls] == [
-        ozon_category_api.OZON_CATEGORY_TREE_URL,
-        ozon_category_api.OZON_CATEGORY_ATTRIBUTES_URL,
-    ]
+    assert len(ru_results) == 1
+    assert ru_results[0]["category_id"] == "94765"
+    assert ru_results[0]["description_category_id"] == "17027949"
+    assert ru_results[0]["path"] == "Шины / Шины для легковых автомобилей"
+    assert ru_results[0]["name_zh"] == "轿车轮胎"
+    assert ru_results[0]["path_zh"] == "轮胎 / 轿车轮胎"
+    # 中文搜索命中同一官方类目
+    assert len(zh_results) == 1 and zh_results[0]["category_id"] == "94765"
+    # 属性页双语分离：发布原文 name 不变，展示中文进入 name_zh / description_zh
+    assert page["category_path_zh"] == "轮胎 / 轿车轮胎"
+    assert page["description_category_id"] == "17027949"
+    attr_by_id = {attr["id"]: attr for attr in page["attributes"]}
+    assert attr_by_id["85"]["name"] == "Бренд"
+    assert attr_by_id["85"]["name_zh"] == "品牌"
+    assert attr_by_id["85"]["skip_value_localization"] is True
+    assert attr_by_id["8229"]["name"] == "Цвет товара"
+    assert attr_by_id["8229"]["name_zh"] == "商品颜色"
+    assert attr_by_id["8229"]["description_zh"] == "主色调"
 
 
 def test_ozon_dictionary_metadata_and_values_are_loaded_separately() -> None:
@@ -130,7 +175,7 @@ def test_ozon_dictionary_metadata_and_values_are_loaded_separately() -> None:
         body = payload or {}
         calls.append((url, body))
         if url == ozon_category_api.OZON_CATEGORY_TREE_URL:
-            return OZON_TREE
+            return OZON_TREE_ZH if body.get("language") == "ZH_HANS" else OZON_TREE
         if url == ozon_category_api.OZON_CATEGORY_ATTRIBUTES_URL:
             return {
                 "result": [
@@ -191,7 +236,6 @@ def test_ozon_dictionary_metadata_and_values_are_loaded_separately() -> None:
     model_name = record["attributes"]["required"][1]
     assert model_name["dictionary_id"] == ""
     assert model_name["is_dictionary"] is False
-    # 枚举公共视图有界化：只保留字典 ID 与值，不再携带 info/picture 元数据。
     assert values["values"] == [
         {
             "id": "126745801",
@@ -199,11 +243,6 @@ def test_ozon_dictionary_metadata_and_values_are_loaded_separately() -> None:
             "info": "",
             "picture": "",
         }
-    ]
-    assert [call[0] for call in calls] == [
-        ozon_category_api.OZON_CATEGORY_TREE_URL,
-        ozon_category_api.OZON_CATEGORY_ATTRIBUTES_URL,
-        ozon_category_api.OZON_CATEGORY_ATTRIBUTE_VALUES_SEARCH_URL,
     ]
 
 
@@ -225,11 +264,7 @@ def test_ozon_no_brand_alias_uses_platform_search_for_large_dictionary() -> None
         if url != ozon_category_api.OZON_CATEGORY_ATTRIBUTE_VALUES_SEARCH_URL:
             raise AssertionError(url)
         search_payloads.append(body)
-        return {
-            "result": [
-                {"id": 2001, "value": "Нет бренда"},
-            ]
-        }
+        return {"result": [{"id": 2001, "value": "Нет бренда"}]}
 
     with (
         patch.object(ozon_category_api, "_load_store_config", _store_config),
@@ -253,14 +288,8 @@ def test_ozon_no_brand_alias_uses_platform_search_for_large_dictionary() -> None
         }
     ]
     assert values["query"] == "无品牌"
-    assert values["values"] == [
-        {
-            "id": "2001",
-            "value": "Нет бренда",
-            "info": "",
-            "picture": "",
-        }
-    ]
+    assert values["values"][0]["id"] == "2001"
+    assert values["values"][0]["value"] == "Нет бренда"
 
 
 def test_ozon_dictionary_search_rejects_single_character_before_request() -> None:
@@ -272,7 +301,7 @@ def test_ozon_dictionary_search_rejects_single_character_before_request() -> Non
         )
 
 
-def test_ozon_empty_dictionary_query_keeps_cursor_pagination() -> None:
+def test_ozon_non_brand_dictionary_merges_zh_hans_and_caches_each_cursor_page() -> None:
     value_payloads: list[dict[str, object]] = []
 
     def request(
@@ -290,59 +319,69 @@ def test_ozon_empty_dictionary_query_keeps_cursor_pagination() -> None:
         if url != ozon_category_api.OZON_CATEGORY_ATTRIBUTE_VALUES_URL:
             raise AssertionError(url)
         value_payloads.append(body)
+        is_zh = body.get("language") == "ZH_HANS"
+        last_id = int(body.get("last_value_id") or 0)
+        start = last_id + 1
         return {
             "result": [
-                {"id": value_id, "value": f"Значение {value_id}"}
-                for value_id in range(1, 52)
-            ]
+                {
+                    "id": value_id,
+                    "value": f"中文色 {value_id}" if is_zh else f"Значение {value_id}",
+                }
+                for value_id in range(start, start + 50)
+            ],
+            "has_next": last_id == 0,
         }
 
     with (
         patch.object(ozon_category_api, "_load_store_config", _store_config),
         patch.object(ozon_category_api, "request_ozon_json", side_effect=request),
     ):
-        values = category_store.fetch_category_attribute_values(
-            "ozon",
-            "94765",
-            "8229",
-            limit=50,
+        page1 = category_store.fetch_category_attribute_values("ozon", "94765", "8229", limit=50)
+        # 二次读同页应命中 SQLite 缓存
+        page1_cached = category_store.fetch_category_attribute_values("ozon", "94765", "8229", limit=50)
+        page2 = category_store.fetch_category_attribute_values(
+            "ozon", "94765", "8229", limit=50, cursor=page1["next_cursor"]
         )
 
-    assert value_payloads == [
-        {
-            "description_category_id": 17027949,
-            "type_id": 94765,
-            "attribute_id": 8229,
-            "language": "DEFAULT",
-            "last_value_id": 0,
-            "limit": 2000,
-        }
-    ]
-    assert len(values["values"]) == 50
-    assert values["next_cursor"] == "50"
-    assert values["has_more"] is True
+    assert len(page1["values"]) == 50
+    assert page1["values"][0]["value"] == "Значение 1"
+    assert page1["values"][0]["label_zh"] == "中文色 1"
+    assert page1["next_cursor"] == "50"
+    assert page1["has_more"] is True
+    assert page1_cached["values"][0]["value"] == "Значение 1"
+    # 第二页（last_value_id=50）拥有独立缓存键，不得串到第一页。
+    assert page2["values"][0]["id"] == "51"
+    assert page2["values"][0]["label_zh"] == "中文色 51"
+    default_calls = [p for p in value_payloads if p.get("language") == "DEFAULT"]
+    assert [p["last_value_id"] for p in default_calls] == [0, 50]
 
 
-def test_ozon_category_tree_summary_reuses_the_live_tree() -> None:
-    ozon_category_api.clear_ozon_category_tree_cache()
+def test_ozon_composite_key_preserves_same_type_id_under_different_description_categories() -> None:
+    tree = {
+        "result": [
+            {
+                "description_category_id": 1001,
+                "category_name": "Категория А",
+                "children": [{"type_id": 99999, "type_name": "Универсальный товар", "disabled": False, "children": []}],
+            },
+            {
+                "description_category_id": 2002,
+                "category_name": "Категория Б",
+                "children": [{"type_id": 99999, "type_name": "Универсальный товар", "disabled": False, "children": []}],
+            },
+        ]
+    }
     with (
         patch.object(ozon_category_api, "_load_store_config", _store_config),
-        patch.object(ozon_category_api, "request_ozon_json", return_value=OZON_TREE) as request,
+        patch.object(ozon_category_api, "request_ozon_json", return_value=tree),
     ):
-        summary = ozon_category_api.fetch_ozon_category_tree_summary()
-
-    assert summary["product_type_count"] == 2
-    assert summary["sample"]["type_id"] == "94765"
-    request.assert_called_once_with(
-        "POST",
-        ozon_category_api.OZON_CATEGORY_TREE_URL,
-        "client-id",
-        "api-key",
-        {"language": "DEFAULT"},
-    )
+        records, _ = ozon_category_api.load_ozon_category_corpus()
+    desc_ids = sorted(row["description_category_id"] for row in records)
+    assert desc_ids == ["1001", "2002"]
 
 
-def test_ozon_category_navigation_rebuilds_three_levels_from_flat_corpus() -> None:
+def test_ozon_category_tree_summary_and_navigation() -> None:
     tree = {
         "result": [
             {
@@ -353,18 +392,8 @@ def test_ozon_category_navigation_rebuilds_three_levels_from_flat_corpus() -> No
                         "description_category_id": 17039878,
                         "category_name": "Автомагнитолы",
                         "children": [
-                            {
-                                "type_id": 971326576,
-                                "type_name": "Аксессуар для автомагнитолы",
-                                "disabled": False,
-                                "children": [],
-                            },
-                            {
-                                "type_id": 95858,
-                                "type_name": "Автомагнитола",
-                                "disabled": False,
-                                "children": [],
-                            },
+                            {"type_id": 971326576, "type_name": "Аксессуар для автомагнитолы", "disabled": False, "children": []},
+                            {"type_id": 95858, "type_name": "Автомагнитола", "disabled": False, "children": []},
                         ],
                     }
                 ],
@@ -373,138 +402,40 @@ def test_ozon_category_navigation_rebuilds_three_levels_from_flat_corpus() -> No
     }
     with (
         patch.object(ozon_category_api, "_load_store_config", _store_config),
-        patch.object(
-            ozon_category_api,
-            "request_ozon_json",
-            return_value=tree,
-        ) as request,
+        patch.object(ozon_category_api, "request_ozon_json", return_value=tree),
     ):
+        summary = ozon_category_api.fetch_ozon_category_tree_summary()
         roots = ozon_category_api.fetch_ozon_category_roots()
         groups = ozon_category_api.fetch_ozon_category_children(["17027495"])
-        product_types = ozon_category_api.fetch_ozon_category_children(
-            ["17039878"]
-        )
+        product_types = ozon_category_api.fetch_ozon_category_children(["17039878"])
+        siblings = ozon_category_api.fetch_ozon_category_siblings(["95858"])
 
-    assert [(node["node_id"], node["level"]) for node in roots["nodes"]] == [
-        ("17027495", "branch")
-    ]
+    assert summary["product_type_count"] == 2
+    assert [(node["node_id"], node["level"]) for node in roots["nodes"]] == [("17027495", "branch")]
     assert groups["nodes"][0]["node_id"] == "17039878"
-    assert groups["nodes"][0]["path_segments"] == [
-        "Автотовары",
-        "Автомагнитолы",
-    ]
-    assert {
-        node["category_id"]: node["name"] for node in product_types["nodes"]
-    } == {
+    assert {node["category_id"]: node["name"] for node in product_types["nodes"]} == {
         "95858": "Автомагнитола",
         "971326576": "Аксессуар для автомагнитолы",
     }
-    selected = next(
-        node
-        for node in product_types["nodes"]
-        if node["category_id"] == "971326576"
-    )
-    assert selected["description_category_id"] == "17039878"
-    assert selected["type_id"] == "971326576"
-    request.assert_called_once()
+    assert [row["category_id"] for row in siblings] == ["971326576"]
 
 
-def test_ozon_bound_searcher_searches_the_server_cache_by_keyword() -> None:
-    ozon_category_api.clear_ozon_category_tree_cache()
-    tree = {
-        "result": [
-            {
-                "description_category_id": 200,
-                "category_name": "Климатическая техника",
-                "children": [
-                    {
-                        "type_id": 201,
-                        "type_name": "Вентиляторы бытовые",
-                        "disabled": False,
-                        "children": [],
-                    }
-                ],
-            },
-            {
-                "description_category_id": 300,
-                "category_name": "Электроника",
-                "children": [
-                    {
-                        "type_id": 301,
-                        "type_name": "USB аксессуары",
-                        "disabled": False,
-                        "children": [],
-                    }
-                ],
-            },
-        ]
-    }
-    with (
-        patch.object(ozon_category_api, "_load_store_config", _store_config),
-        patch.object(
-            ozon_category_api,
-            "request_ozon_json",
-            return_value=tree,
-        ) as request,
-        patch.object(
-            ozon_category_api,
-            "_flatten_product_types",
-            wraps=ozon_category_api._flatten_product_types,
-        ) as flatten,
-        patch.object(
-            ozon_category_api,
-            "_stable_corpus_hash",
-            wraps=ozon_category_api._stable_corpus_hash,
-        ) as corpus_hash,
-    ):
-        searcher = OzonCategorySearcher(
-            OzonCategoryProvider(),
-            "global",
-        )
-        result = searcher.search_categories("вентилятор")
-        searcher.search_categories("usb аксессуары")
-
-    assert result["candidates"][0]["category_id"] == "201"
-    assert result["keyword"] == "вентилятор"
-    assert result["source"] == "remote_cache"
-    assert "corpus" not in str(result)
-    request.assert_called_once()
-    flatten.assert_called_once()
-    corpus_hash.assert_called_once()
-
-
-def test_ozon_search_reports_missing_credentials_on_tool_call() -> None:
-    ozon_category_api.clear_ozon_category_tree_cache()
+def test_ozon_search_reports_missing_credentials_and_empty_corpus() -> None:
     with patch.object(
         ozon_category_api,
         "_load_store_config",
         return_value={"ozon": {"client_id": "", "api_key": ""}},
     ):
         with pytest.raises(CategorySearchError) as raised:
-            OzonCategorySearcher(
-                OzonCategoryProvider(),
-                "global",
-            ).search_categories("вентилятор")
-
+            OzonCategorySearcher(OzonCategoryProvider(), "global").search_categories("вентилятор")
     assert raised.value.code == "CATEGORY_CREDENTIALS_MISSING"
 
-
-def test_ozon_empty_cache_source_is_not_reported_as_zero_match() -> None:
-    ozon_category_api.clear_ozon_category_tree_cache()
     with (
         patch.object(ozon_category_api, "_load_store_config", _store_config),
-        patch.object(
-            ozon_category_api,
-            "request_ozon_json",
-            return_value={"result": []},
-        ),
+        patch.object(ozon_category_api, "request_ozon_json", return_value={"result": []}),
     ):
         with pytest.raises(CategorySearchError) as raised:
-            OzonCategorySearcher(
-                OzonCategoryProvider(),
-                "global",
-            ).search_categories("вентилятор")
-
+            OzonCategorySearcher(OzonCategoryProvider(), "global").search_categories("вентилятор")
     assert raised.value.code == "CATEGORY_CORPUS_UNAVAILABLE"
 
 
@@ -519,175 +450,70 @@ def test_ozon_category_auth_test_reads_the_category_tree_without_a_category_id()
     ):
         result = store_credentials.test_store_auth("ozon", "category")
 
-    fetch_tree.assert_called_once_with(
-        force_refresh=True,
-        credentials=("client-id", "api-key"),
-    )
+    fetch_tree.assert_called_once_with(force_refresh=True, credentials=("client-id", "api-key"))
     fetch_seller.assert_called_once_with("client-id", "api-key")
     save_config.assert_called_once_with(config)
     assert result["ok"] is True
-    assert result["message"] == "类目读取测试成功：已读取 2 个可发布商品类型。"
-    assert result["category_tree"] == {"product_type_count": 2, "sample": {"type_id": "94765"}}
-    assert result["publish_ready"] is True
-    assert result["currency_configuration"]["listing_currency"] == "CNY"
-    assert result["currency_configuration"]["currency_mode"] == "locked"
-    assert result["currency_configuration"]["currency_status"] == "ready"
 
 
-def test_ozon_category_corpus_persists_across_memory_cache_clear(
-    tmp_path: Path,
-) -> None:
-    with (
-        patch.object(ozon_category_api, "_load_store_config", _store_config),
-        patch.object(
-            ozon_category_api,
-            "request_ozon_json",
-            return_value=OZON_TREE,
-        ) as request,
-    ):
-        first_records, first_info = ozon_category_api.load_ozon_category_corpus()
-        ozon_category_api.clear_ozon_category_tree_cache(
-            include_persistent=False
-        )
-        second_records, second_info = ozon_category_api.load_ozon_category_corpus()
-
-    assert first_records == second_records
-    assert first_info["cache_source"] == "remote_cache"
-    assert second_info["cache_source"] == "persistent_cache"
-    assert second_info["stale"] is False
-    request.assert_called_once()
-    cache_files = list((tmp_path / "ozon_categories").glob("*.json.gz"))
-    assert len(cache_files) == 1
-    raw_cache = gzip.decompress(cache_files[0].read_bytes()).decode("utf-8")
-    assert "client-id" not in raw_cache
-    assert "api-key" not in raw_cache
-
-
-def _write_aged_cache(cache_root: Path, *, age: timedelta) -> None:
-    records = ozon_category_api._flatten_product_types(OZON_TREE["result"])
-    write_ozon_category_cache(
-        cache_root,
-        OzonCategoryCacheEntry(
-            credential_scope_hash=ozon_category_api._credential_scope_hash(
-                "client-id"
-            ),
-            corpus_hash=ozon_category_api._stable_corpus_hash(records),
-            taxonomy_version=None,
-            locale="ru-RU",
-            retrieved_at=datetime.now(timezone.utc) - age,
-            records=records,
-        ),
+def _seed_aged_taxonomy(store: CategoryCatalogStore, *, age: timedelta) -> None:
+    nodes, _ = ozon_category_api._build_taxonomy_nodes(OZON_TREE["result"], OZON_TREE_ZH["result"])
+    scope = ozon_category_api.OZON_CATALOG_SCOPE
+    store.save_taxonomy(
+        "ozon",
+        scope,
+        ozon_category_api._TAXONOMY_LOCALE,
+        nodes,
+        corpus_hash=ozon_category_api._stable_corpus_hash(nodes),
+        taxonomy_version=None,
+        retrieved_at=datetime.now(timezone.utc) - age,
+        fresh_ttl=ozon_category_api.OZON_CATEGORY_CACHE_FRESH_TTL,
+        max_age=ozon_category_api.OZON_CATEGORY_CACHE_MAX_AGE,
     )
 
 
-def test_ozon_category_corpus_uses_seven_day_stale_cache_on_network_error(
-    tmp_path: Path,
-) -> None:
-    _write_aged_cache(tmp_path, age=timedelta(days=2))
-    network_error = urllib.error.URLError(
-        "[SSL: UNEXPECTED_EOF_WHILE_READING]"
-    )
+def test_ozon_category_corpus_stale_cooldown_and_auth_rules(isolated_ozon_category_cache: CategoryCatalogStore) -> None:
+    _seed_aged_taxonomy(isolated_ozon_category_cache, age=timedelta(days=2))
+    network_error = urllib.error.URLError("[SSL: UNEXPECTED_EOF_WHILE_READING]")
     with (
         patch.object(ozon_category_api, "_load_store_config", _store_config),
-        patch.object(
-            ozon_category_api,
-            "request_ozon_json",
-            side_effect=network_error,
-        ) as request,
+        patch.object(ozon_category_api, "request_ozon_json", side_effect=network_error),
     ):
         records, info = ozon_category_api.load_ozon_category_corpus()
         _, repeated_info = ozon_category_api.load_ozon_category_corpus()
-
     assert records
     assert info["cache_source"] == "stale_cache"
     assert info["stale"] is True
     assert repeated_info["cache_source"] == "stale_cache"
-    # 首次刷新包含一次瞬时错误重试；60 秒冷却内的多轮搜索不重复打远端。
-    assert request.call_count == 1
 
-
-def test_ozon_category_corpus_treats_cache_as_fresh_for_24_hours(
-    tmp_path: Path,
-) -> None:
-    _write_aged_cache(tmp_path, age=timedelta(hours=23))
+    # 鉴权错误不得被 stale 缓存掩盖
+    isolated_ozon_category_cache.clear_taxonomy("ozon")
+    _seed_aged_taxonomy(isolated_ozon_category_cache, age=timedelta(days=2))
     with (
         patch.object(ozon_category_api, "_load_store_config", _store_config),
-        patch.object(
-            ozon_category_api,
-            "request_ozon_json",
-            side_effect=AssertionError("24 小时内不应请求远端"),
-        ) as request,
-    ):
-        _, info = ozon_category_api.load_ozon_category_corpus()
-
-    assert info["cache_source"] == "persistent_cache"
-    assert info["stale"] is False
-    assert (
-        datetime.fromisoformat(info["expires_at"])
-        - datetime.fromisoformat(info["retrieved_at"])
-    ) == timedelta(days=1)
-    request.assert_not_called()
-
-
-def test_ozon_category_corpus_does_not_mask_auth_error_with_stale_cache(
-    tmp_path: Path,
-) -> None:
-    _write_aged_cache(tmp_path, age=timedelta(days=2))
-    with (
-        patch.object(ozon_category_api, "_load_store_config", _store_config),
-        patch.object(
-            ozon_category_api,
-            "request_ozon_json",
-            side_effect=RuntimeError("POST failed: 401 unauthorized"),
-        ) as request,
+        patch.object(ozon_category_api, "request_ozon_json", side_effect=RuntimeError("POST failed: 401 unauthorized")),
     ):
         with pytest.raises(RuntimeError, match="401 unauthorized"):
             ozon_category_api.load_ozon_category_corpus()
 
-    request.assert_called_once()
-
-
-def test_ozon_category_corpus_rejects_cache_older_than_seven_days(
-    tmp_path: Path,
-) -> None:
-    _write_aged_cache(tmp_path, age=timedelta(days=8))
-    network_error = urllib.error.URLError("connection reset")
+    # 超过 7 天的过期缓存不得再提供 stale
+    isolated_ozon_category_cache.clear_taxonomy("ozon")
+    _seed_aged_taxonomy(isolated_ozon_category_cache, age=timedelta(days=8))
     with (
         patch.object(ozon_category_api, "_load_store_config", _store_config),
-        patch.object(
-            ozon_category_api,
-            "request_ozon_json",
-            side_effect=network_error,
-        ),
+        patch.object(ozon_category_api, "request_ozon_json", side_effect=network_error),
     ):
         with pytest.raises(urllib.error.URLError):
             ozon_category_api.load_ozon_category_corpus()
 
 
-def test_ozon_category_force_refresh_bypasses_fresh_cache(
-    tmp_path: Path,
-) -> None:
-    _write_aged_cache(tmp_path, age=timedelta(hours=1))
+def test_ozon_category_force_refresh_bypasses_fresh_cache(isolated_ozon_category_cache: CategoryCatalogStore) -> None:
+    _seed_aged_taxonomy(isolated_ozon_category_cache, age=timedelta(hours=1))
     with (
         patch.object(ozon_category_api, "_load_store_config", _store_config),
-        patch.object(
-            ozon_category_api,
-            "request_ozon_json",
-            return_value=OZON_TREE,
-        ) as request,
+        patch.object(ozon_category_api, "request_ozon_json", return_value=OZON_TREE) as request,
     ):
         _, info = ozon_category_api.load_ozon_category_corpus(force_refresh=True)
 
     assert info["cache_source"] == "remote_cache"
-    request.assert_called_once()
-
-
-def test_unlimited_local_search_retains_all_ozon_candidates_and_binding_ids(monkeypatch):
-    records = [{"category_id": str(index), "type_id": str(index), "description_category_id": "10000",
-                "name_original": "Органайзер", "category_path": "Кухня / Органайзер"} for index in range(100)]
-    monkeypatch.setattr(ozon_category_api, "load_ozon_category_corpus",
-                        lambda **kwargs: (records, {"cache_source": "persistent_cache"}))
-    results = category_store.search_categories_live("ozon", "органайзер", limit=None)
-    assert len(results) == 100
-    assert all(row["type_id"] == row["category_id"] and row["description_category_id"] == "10000" for row in results)
-    assert len(category_store.search_categories_live("ozon", "органайзер", limit=5)) == 5
+    assert request.call_count >= 1

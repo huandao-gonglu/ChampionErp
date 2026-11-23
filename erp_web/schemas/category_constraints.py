@@ -38,7 +38,7 @@ def category_attribute_constraint_error(definition: Mapping[str, Any], value: An
         maximum = limits["max_length"]
         if maximum is not None and len(text) > maximum:
             return f"{prefix}当前 {len(text)} 个字符，超过最大长度 {maximum}，需减少 {len(text) - maximum} 个字符"
-        if kind in {"numeric", "number", "integer", "float"}:
+        if kind in {"numeric", "number", "integer", "float", "decimal", "number_unit"}:
             try:
                 number = Decimal(text.replace(",", "."))
                 if not number.is_finite() or (kind == "integer" and number != number.to_integral_value()):
