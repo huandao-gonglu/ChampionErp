@@ -15,6 +15,9 @@ from erp_shared.desktop import validate_action
 from .capability_errors import BusinessCapabilityError
 
 _connection = ContextVar('desktop_connection', default='')
+# 网页手动图片操作借用本账号在线桌面时只开放 Canvas 图片动作；采集、授权和本机配置仍须由桌面本机发起。
+_delegated = ContextVar('desktop_delegated', default=False)
+DELEGATED_OPERATIONS = frozenset({'canvas.check', 'canvas.edit'})
 
 
 class DesktopUnavailable(BusinessCapabilityError):
@@ -32,6 +35,7 @@ def server_worker_context():
     """常驻服务继承业务空间，但不能继承碰巧启动它的请求所绑定的设备。"""
     context = copy_context()
     context.run(_connection.set, '')
+    context.run(_delegated.set, False)
     return context
 
 
@@ -49,9 +53,33 @@ def desktop_unavailable_reason(connection_id=None):
 @contextmanager
 def bind_desktop_connection(connection_id):
     token = _connection.set(connection_id or '')
+    flag = _delegated.set(False)
     try:
         yield
     finally:
+        _delegated.reset(flag)
+        _connection.reset(token)
+
+
+def delegate_connection_id():
+    """网页手动图片操作可借用的本账号唯一在线桌面；没有或多台在线时返回空，由网页改走桌面交接。"""
+    from erp_web.context import get_context
+    return get_context().desktop_connections.delegate_connection()
+
+
+@contextmanager
+def delegate_desktop_connection():
+    """请求未携带本机连接时借用本账号唯一在线桌面，仅允许 Canvas 图片动作；后续批次线程沿用这次绑定。"""
+    key = '' if current_desktop_connection() else delegate_connection_id()
+    if not key:
+        yield
+        return
+    token = _connection.set(key)
+    flag = _delegated.set(True)
+    try:
+        yield
+    finally:
+        _delegated.reset(flag)
         _connection.reset(token)
 
 
@@ -118,6 +146,18 @@ class DesktopConnections:
             except DesktopUnavailable:
                 return False
             return True
+
+    def delegate_connection(self):
+        with self.condition:
+            live = [key for key in list(self.connections) if self._live(key)]
+        return live[0] if len(live) == 1 else ''
+
+    def _live(self, key):
+        try:
+            self._get(key)
+        except DesktopUnavailable:
+            return False
+        return True
 
     def revoke_sessions(self, token_hash=None):
         with self.condition:
@@ -195,6 +235,8 @@ class DesktopConnections:
         key = current_desktop_connection()
         if not key:
             raise DesktopUnavailable(desktop_unavailable_reason(key))
+        if _delegated.get() and operation not in DELEGATED_OPERATIONS:
+            raise DesktopUnavailable(desktop_unavailable_reason(''))
         params = validate_action(operation, params)
         ctx = request_context('desktop://local', timeout=timeout, source='desktop')
         deadlines = [time.time() + timeout]

@@ -343,36 +343,73 @@ def test_callbacks_select_owner_and_still_verify_domain_credentials(accounts_htt
 
 @pytest.mark.parametrize('provider', ['alibaba', 'alibaba_crossborder'])
 def test_oauth_callback_routes_and_consumes_state_in_correct_space(accounts_http, monkeypatch, provider):
+    from erp_web.services.alibaba_authorization_service import AlibabaAuthorizationService, alibaba_runtime_config
+    from erp_web.services.alibaba_credentials import application_fingerprint
+
     url, runtime, login = accounts_http
-    runtime.root.db.set_runtime_secret('enterprise_applications', 'active', {'alibaba_api_application': provider})
+    runtime.root.db.set_runtime_secret('enterprise_applications', 'active', {
+        'alibaba_api_application': provider,
+        'onebound': {'api_key': 'vendor-key', 'api_secret': 'vendor-secret'},
+    })
     prefix = 'ERP_ALIBABA_' if provider == 'alibaba' else 'ERP_ALIBABA_CROSSBORDER_'
     monkeypatch.setenv(prefix + "APP_KEY", "123456")
     monkeypatch.setenv(prefix + "APP_SECRET", "deployment-application-secret")
     monkeypatch.setenv(prefix + "REDIRECT_URI", url + "/auth/alibaba/callback")
-    from erp_web.services.alibaba_authorization_service import AlibabaAuthorizationService
     monkeypatch.setattr(AlibabaAuthorizationService, "_token", staticmethod(lambda application, values: {
         "access_token": "buyer-token-" + values["code"], "memberId": values["code"], "expires_in": 3600,
     }))
-    states = []
-    users = []
-    for email in ("a@example.com", "b@example.com"):
-        user = register(url, email)
-        users.append(user)
-        response = login(email).post(url + "/api/alibaba/authorization/start", json={})
-        assert response.status_code == 200
-        state = parse_qs(urlsplit(response.json()["url"]).query)["state"][0]
-        assert state.startswith(f"account.{user['id']}.")
-        states.append(state)
-    forged = states[1].replace(users[1]["id"], users[0]["id"], 1)
-    assert requests.get(url + "/auth/alibaba/callback", params={"code": "b", "state": forged}).status_code == 400
-    for index, state in enumerate(states):
-        callback = url + "/auth/alibaba/callback"
-        response = requests.get(callback, params={"code": str(index), "state": state})
-        assert response.status_code == 200, response.text
-        assert requests.get(callback, params={"code": str(index), "state": state}).status_code == 400
-        context = runtime.context_for(runtime.store.by_email(("a@example.com", "b@example.com")[index]))
-        with bind_context(context):
-            assert context.config.alibaba_credentials()["authorization"]["member_id"] == str(index)
+
+    admin = login()
+    user = register(url, "buyer@example.com")
+    ordinary = login(user["email"])
+
+    # 普通用户无论管理员选择哪种方案，都只能访问万邦；企业应用入口全部返回 403。
+    assert ordinary.get(url + "/api/alibaba/authorization").json()["application_type"] == "onebound"
+    assert ordinary.get(url + "/api/alibaba/authorization", params={"provider": provider}).status_code == 403
+    assert ordinary.post(url + "/api/alibaba/authorization/start", json={"provider": provider}).status_code == 403
+    assert ordinary.post(url + "/api/alibaba/authorization/self-use-token", json={"access_token": "tok"}).status_code == 403
+    start_default = ordinary.post(url + "/api/alibaba/authorization/start", json={})
+    assert start_default.status_code == 200 and start_default.json()["url"].startswith("https://o0b.cn/")
+
+    # 普通用户历史保存的企业自用/跨境凭据保留不删，但运行时不会读取，始终解析为万邦。
+    user_ctx = runtime.context_for(runtime.store.by_email(user["email"]))
+    legacy_grant = {
+        "access_token": "legacy-official-token", "member_id": "legacy-buyer",
+        "application_fingerprint": application_fingerprint(runtime.root.config.alibaba_application(provider)),
+    }
+    user_ctx.config.update_alibaba_credentials({"authorization": legacy_grant}, provider=provider)
+    user_ctx.config.update_alibaba_credentials(
+        {"authorization": {
+            "access_token": "personal-onebound-token", "credential_type": "access_token",
+            "member_id": "ob-buyer", "account_scope": "ob-scope", "expires_at": 4_000_000_000,
+            "application_fingerprint": application_fingerprint(runtime.root.config.alibaba_application("onebound")),
+        }},
+        provider="onebound",
+    )
+    with bind_context(user_ctx):
+        resolved_cfg = alibaba_runtime_config(user_ctx.config)
+        assert resolved_cfg["application_type"] == "onebound"
+        assert resolved_cfg["access_token"] == "personal-onebound-token"
+        assert user_ctx.config.alibaba_credentials(provider)["authorization"] == legacy_grant
+
+    # 普通用户的伪造 OAuth 回调也被 403 拒绝。
+    forged_user_state = f"account.{user['id']}.{provider}.fake-state"
+    assert requests.get(url + "/auth/alibaba/callback", params={"code": "x", "state": forged_user_state}).status_code == 403
+
+    # 管理员可以在自己的根空间完成企业应用的 OAuth 回调，且一次性消耗。
+    response = admin.post(url + "/api/alibaba/authorization/start", json={})
+    assert response.status_code == 200
+    state = parse_qs(urlsplit(response.json()["url"]).query)["state"][0]
+    admin_user = runtime.store.admin()
+    assert admin_user is not None and admin_user["workspace"] == "."
+    assert state.startswith(f"account.{admin_user['id']}.")
+    assert requests.get(url + "/auth/alibaba/callback", params={"code": "b", "state": state + "tampered"}).status_code == 400
+    callback = url + "/auth/alibaba/callback"
+    done = requests.get(callback, params={"code": "admin-member", "state": state})
+    assert done.status_code == 200, done.text
+    assert requests.get(callback, params={"code": "admin-member", "state": state}).status_code == 400
+    with bind_context(runtime.root):
+        assert runtime.root.config.alibaba_credentials(provider)["authorization"]["member_id"] == "admin-member"
 
 
 @pytest.mark.parametrize('provider', ['alibaba', 'alibaba_crossborder'])
@@ -405,12 +442,14 @@ def test_admin_pastes_1688_callback_into_own_space(accounts_http, monkeypatch, p
         return redirect + '?code=private%2Bcode&state=' + state
 
     admin_url = callback(admin)
-    user_url = callback(user)
+    assert user.post(auth + '/start', json={'provider': provider}).status_code == 403
+    assert user.get(auth, params={'provider': provider}).status_code == 403
+    forged_url = redirect + f'?code=private%2Bcode&state=account.other.{provider}.forged'
     body = {'callback_url': admin_url, 'provider': provider}
     assert requests.post(complete, json=body).status_code == 401
     assert user.post(complete, json=body).status_code == 403
     assert admin.post(complete, json=body, headers={'X-CSRF-Token': ''}).status_code == 403
-    for invalid in (user_url, admin_url.replace('localhost', 'example.com'), admin_url.replace('/callback', '/other'),
+    for invalid in (forged_url, admin_url.replace('localhost', 'example.com'), admin_url.replace('/callback', '/other'),
                     admin_url + '&code=b', admin_url + '&state=b', admin_url.replace('code=', 'x=')):
         result = admin.post(complete, json={'callback_url': invalid, 'provider': provider})
         assert result.status_code == 400 and 'private' not in result.text
@@ -419,7 +458,6 @@ def test_admin_pastes_1688_callback_into_own_space(accounts_http, monkeypatch, p
     assert result.status_code == 200 and result.json()['account_name'] == '买家甲'
     assert 'hidden-token' not in result.text and 'private' not in result.text
     assert admin.get(auth, params={'provider': provider}).json()['authorized']
-    assert not user.get(auth, params={'provider': provider}).json()['authorized']
     assert admin.get(auth).json()['application_type'] == 'onebound'
     assert not admin.get(auth).json()['authorized']
     assert admin.get(auth, params={'provider': 'invalid'}).status_code == 400

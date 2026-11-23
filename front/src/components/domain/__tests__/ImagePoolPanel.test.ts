@@ -26,7 +26,7 @@ function image(id: string): ImageAsset {
 
 describe('ImagePoolPanel', () => {
   it('网页填写修图要求，确认生成才打开桌面并可恢复所选素材和要求', async () => {
-    setOperationAvailability({ desktop_use_cases: ['image.translate'], desktop_reason: '需要本机', blocked_use_cases: {} })
+    setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: ['image.translate'], desktop_reason: '需要本机', blocked_use_cases: {} })
     const options = { attachTo: document.body, props: { images: [image('a'), image('b')], loading: false }, global: { stubs: { Teleport: true } } }
     const web = mount(ImagePoolPanel, options)
     await web.findAll('input[aria-label^="选择处理图片"]')[1].setValue(true)
@@ -38,7 +38,7 @@ describe('ImagePoolPanel', () => {
     expect(web.emitted('imageEdit')).toBeUndefined()
     const state = web.vm.pendingImageAction()!
     const desktop = mount(ImagePoolPanel, options)
-    setOperationAvailability({ desktop_use_cases: [], desktop_reason: '', blocked_use_cases: {} })
+    setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: [], desktop_reason: '', blocked_use_cases: {} })
     desktop.vm.restoreImageAction(state)
     await flushPromises()
     await desktop.get('button[type="submit"]').trigger('click')
@@ -46,7 +46,7 @@ describe('ImagePoolPanel', () => {
   })
 
   it('默认不勾选商品素材，翻译只提交本次选中的图片', async () => {
-    setOperationAvailability({ desktop_use_cases: [], desktop_reason: '', blocked_use_cases: {} })
+    setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: [], desktop_reason: '', blocked_use_cases: {} })
     const wrapper = mount(ImagePoolPanel, {
       attachTo: document.body,
       props: { images: [image('a'), image('b')], loading: false, showTranslateAction: true },

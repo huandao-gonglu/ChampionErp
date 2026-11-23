@@ -1,6 +1,7 @@
 """按平台响应契约识别请求拒绝；业务状态不代表接口不可用。"""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import json
 import re
@@ -9,6 +10,12 @@ import time
 from erp_web.schemas.external_requests import RequestFailure
 
 _ACCOUNT_DISABLED_MARKERS = ("api access disabled", "account suspended", "account blocked")
+_CST = timezone(timedelta(hours=8))
+
+
+def _next_cst_midnight(now: float) -> float:
+    day = datetime.fromtimestamp(now, _CST).date() + timedelta(days=1)
+    return datetime.combine(day, datetime.min.time(), _CST).timestamp()
 
 
 def _header(headers, name: str) -> str:
@@ -73,6 +80,9 @@ def retry_after(headers, *, now=None):
 def _failed_envelope(platform, body):
     """只解释已接入平台的响应信封，不把任意 JSON 的状态当作协议错误。"""
     error = body.get("error") or body.get("errors")
+    if platform == "onebound":
+        code = str(body.get("error_code") or "").strip()
+        return bool(error) or code not in {"", "0", "0000"}
     if platform == "gw.open.1688.com":
         if body.get("success") is True or body.get("success") == "true":
             return False
@@ -87,6 +97,100 @@ def _failed_envelope(platform, body):
         return bool(body.get("error"))
     # 未声明的业务协议交给原适配器；HTTP 拒绝仍由统一入口处理。
     return False
+
+
+def _classify_onebound(status: int, headers, body: dict, detail: str, *, now: float) -> RequestFailure:
+    """万邦网关在 HTTP 200 中以 error_code 表达配额、停用与频率限制。"""
+    if status >= 500 or status == 408:
+        return RequestFailure("ONEBOUND_SERVER_ERROR", "万邦网关暂时不可用，请稍后重试", status=status, retryable=True)
+    code = str(body.get("error_code") or "").strip()
+    if code == "4013":
+        return RequestFailure(
+            "ONEBOUND_DAILY_RATE_LIMITED",
+            "万邦今日调用次数已超限（4013），将于次日 00:00（北京时间）自动恢复",
+            "account",
+            resume_at=_next_cst_midnight(now),
+            status=status or 200,
+        )
+    if code == "4008" or status == 429:
+        return RequestFailure(
+            "ONEBOUND_RATE_LIMITED",
+            "万邦接口请求频率超限（4008），将自动退避后恢复",
+            "account",
+            resume_at=retry_after(headers, now=now),
+            status=status or 200,
+        )
+    if code == "4016":
+        return RequestFailure(
+            "ONEBOUND_ACCOUNT_DISABLED",
+            "万邦账户余额不足（4016），已暂停调用，请管理员充值后在设置中恢复使用",
+            "account",
+            status=status or 200,
+        )
+    if code == "4007":
+        return RequestFailure(
+            "ONEBOUND_ACCOUNT_DISABLED",
+            "万邦账户已停用（4007），已暂停调用，请管理员核对后在设置中恢复使用",
+            "account",
+            status=status or 200,
+        )
+    if code == "4005":
+        return RequestFailure(
+            "ONEBOUND_ACCOUNT_DISABLED",
+            "万邦 API Key 或签名无效（4005），已暂停调用，请管理员核对企业配置后恢复使用",
+            "account",
+            status=status or 200,
+        )
+    if code == "4006":
+        return RequestFailure(
+            "ONEBOUND_AUTH_FAILED",
+            "万邦接口已停用（4006），请联系管理员检查万邦控制台接口状态",
+            "interface",
+            status=status or 200,
+        )
+    if code == "4012":
+        return RequestFailure(
+            "ONEBOUND_AUTH_FAILED",
+            "万邦尚未开通该接口权限（4012），请联系管理员在万邦控制台添加该 API",
+            "interface",
+            status=status or 200,
+        )
+    if code == "4009":
+        return RequestFailure(
+            "ONEBOUND_SERVER_ERROR",
+            "万邦网关维护中（4009），请稍后查询原请求结果，勿重复下单或支付",
+            "",
+            status=status or 200,
+            retryable=True,
+        )
+    if code == "2000":
+        return RequestFailure(
+            "ONEBOUND_REQUEST_INVALID",
+            "万邦买家授权已失效或目标未找到（2000）",
+            "request",
+            status=status or 200,
+        )
+    if code == "4003":
+        return RequestFailure(
+            "ONEBOUND_REQUEST_INVALID",
+            "万邦请求参数无效（4003），请核对商品或订单参数",
+            "request",
+            status=status or 200,
+        )
+    if code in {"4004", "4010", "4014", "4015"}:
+        return RequestFailure(
+            "ONEBOUND_REQUEST_INVALID",
+            f"万邦拒绝调用{detail}，请核对接入配置与接口权限",
+            "request",
+            status=status or 200,
+        )
+    return RequestFailure(
+        "ONEBOUND_SERVER_ERROR",
+        f"万邦未确认接口结果{detail}，请查询原请求，勿重复下单或支付",
+        "",
+        status=status or 200,
+        retryable=True,
+    )
 
 
 def _classify_ozon(status: int, headers, codes: list[str], text: str, detail: str, interface: str) -> RequestFailure:
@@ -110,7 +214,7 @@ def _classify_ozon(status: int, headers, codes: list[str], text: str, detail: st
     return RequestFailure("OZON_REQUEST_INVALID", f"平台明确拒绝请求{detail}，请检查参数与业务回执", "request", status=status)
 
 
-def classify_response(platform, status, headers, raw, *, method="", interface=""):
+def classify_response(platform, status, headers, raw, *, method="", interface="", now=None):
     """HTTP 状态优先；正常业务状态仅按平台和具体接口契约识别。"""
     # S3 HeadObject 的 404 是“对象尚不存在”的查询事实，上传前会正常出现。
     # SDK 仍接收原始 404；仅限流与审计不将它当成接口拒绝。
@@ -127,6 +231,12 @@ def classify_response(platform, status, headers, raw, *, method="", interface=""
             and not (body.get("error") or body.get("errors") or body.get("error_code"))):
         # 与 1688 客户端一致：未发货是空物流结果，不计失败，也不阻止原请求。
         return None
+    if (status == 200 and platform == "onebound"
+            and interface == "sys/shop_bind_list"
+            and str(body.get("error_code") or "").strip() == "2000"
+            and "request need user authorized" not in str(body.get("reason") or "").lower()):
+        # shop_bind_list 的 2000 表示未查到匹配记录，不是异常失败。
+        return None
     failed = status >= 400 or _failed_envelope(platform, body)
     if not failed:
         return None
@@ -141,6 +251,8 @@ def classify_response(platform, status, headers, raw, *, method="", interface=""
     prefix = re.sub(r"[^A-Z0-9_]", "_", platform.upper())
     codes = platform_error_codes(raw, platform=platform)
     detail = "（错误码：" + "、".join(codes) + "）" if codes else ""
+    if platform == "onebound":
+        return _classify_onebound(status, headers, body, detail, now=time.time() if now is None else now)
     if platform == "ozon":
         return _classify_ozon(status, headers, codes, text, detail, interface)
     if platform == "yandex" and (status == 400 or (status == 200 and "BAD_REQUEST" in codes)):

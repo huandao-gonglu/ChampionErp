@@ -229,6 +229,9 @@ export const useAiChatStore = defineStore('aiChat', () => {
       }
       chat.value.messages = detail.messages
       historyVersion.value = detail.history_version
+      // 无 HTTP 状态的流错误（如断流 network error）只表示浏览器没收完输出；
+      // 后台运行独立继续，此时以服务端快照为准，真实运行失败由 run_error 表达。
+      if (chat.value.error && !(chat.value.error as AiChatError).status) chat.value.clearError()
       localError.value = detail.run_error ? Object.assign(new Error(detail.run_error.message), { code: detail.run_error.code }) : undefined
       receivedNotice.value = ''
       if (!parallelActive.value) connectEvents(conversationId)

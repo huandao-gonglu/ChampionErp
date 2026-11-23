@@ -515,16 +515,22 @@ class ConfigStore:
 
     def enterprise_application(self, provider: str) -> dict:
         """共享应用凭据只由根配置持有，用户 Token 留在各自数据库。"""
+        from erp_web.schemas.onebound_quota import DEFAULT_INITIAL_GRANT
+
         if self.shared_config is not self:
             return self.shared_config.enterprise_application(provider)
         saved = self._db.runtime_secret("enterprise_applications", "active", {})
         if provider not in {"alibaba", "alibaba_crossborder", "onebound", "crossborderbus"}:
             raise ValueError("不支持的企业应用")
         if provider in saved:
-            return dict(saved[provider])
+            value = dict(saved[provider])
+            if provider == "onebound":
+                value["initial_grant"] = self._normalize_onebound_initial_grant(value.get("initial_grant", DEFAULT_INITIAL_GRANT))
+            return value
         if provider == "onebound":
             return {"api_key": os.environ.get("ERP_ONEBOUND_API_KEY", "").strip(),
-                    "api_secret": os.environ.get("ERP_ONEBOUND_API_SECRET", "").strip()}
+                    "api_secret": os.environ.get("ERP_ONEBOUND_API_SECRET", "").strip(),
+                    "initial_grant": DEFAULT_INITIAL_GRANT}
         if provider == "crossborderbus":
             secret = os.environ.get("ERP_CROSSBORDERBUS_CLIENT_SECRET", "").strip()
             return {"client_secret": secret or self.integration_credentials("crossborderbus").get("client_secret", "")}
@@ -536,8 +542,19 @@ class ConfigStore:
         application["redirect_uri"] = os.environ.get(prefix + "REDIRECT_URI", application.get("redirect_uri", "")).strip()
         return application
 
+    @staticmethod
+    def _normalize_onebound_initial_grant(raw) -> int:
+        from erp_web.schemas.onebound_quota import DEFAULT_INITIAL_GRANT, MAX_INITIAL_GRANT
+
+        try:
+            if isinstance(raw, bool):
+                return DEFAULT_INITIAL_GRANT
+            return max(0, min(MAX_INITIAL_GRANT, int(raw)))
+        except (TypeError, ValueError):
+            return DEFAULT_INITIAL_GRANT
+
     def alibaba_api_application(self) -> str:
-        """管理员统一选择应用；未设置时恢复企业自用应用，不自动切换。"""
+        """管理员本人使用的 1688 方案；普通用户固定使用万邦，未设置时默认企业自用应用。"""
         return self.shared_config._db.runtime_secret("enterprise_applications", "active", {}).get("alibaba_api_application", "alibaba")
 
     def managed_settings(self) -> dict:
@@ -551,7 +568,8 @@ class ConfigStore:
                              "secret_configured": bool(value.get("app_secret"))}
                   for provider, value in applications.items() if provider in {"alibaba", "alibaba_crossborder"}}
         public["onebound"] = {"api_key": applications["onebound"].get("api_key", ""),
-                              "secret_configured": bool(applications["onebound"].get("api_secret"))}
+                              "secret_configured": bool(applications["onebound"].get("api_secret")),
+                              "initial_grant": self._normalize_onebound_initial_grant(applications["onebound"].get("initial_grant"))}
         return {"ok": True, "revision": revision, "exchange_rates": rates, **public,
                 "alibaba_api_application": selected,
                 "crossborderbus_secret_configured": bool(applications["crossborderbus"].get("client_secret"))}
@@ -574,14 +592,20 @@ class ConfigStore:
                         continue
                     changes = settings.model_dump()
                 value = {**old, **{key: val for key, val in changes.items() if val is not None}}
-                if provider == "onebound" and value != old and any(value.get(key) for key in ("api_key", "api_secret")):
-                    if not all(value.get(key) for key in ("api_key", "api_secret")):
+                if provider == "onebound":
+                    old_cred = (old.get("api_key", ""), old.get("api_secret", ""))
+                    new_cred = (value.get("api_key", ""), value.get("api_secret", ""))
+                    if new_cred != old_cred and any(new_cred) and not all(new_cred):
                         raise ValueError("万邦 API Key 和 Secret 须填写完整")
-                if provider in {"alibaba", "alibaba_crossborder"} and value != old and any(value.get(key) for key in ("app_key", "app_secret", "redirect_uri")):
-                    if not all(value.get(key) for key in ("app_key", "app_secret", "redirect_uri")):
-                        raise ValueError("1688 应用编号、密钥和回调地址须填写完整")
-                if value != old:
-                    value["credential_generation"] = uuid4().hex
+                    value["initial_grant"] = self._normalize_onebound_initial_grant(value.get("initial_grant"))
+                    if new_cred != old_cred:
+                        value["credential_generation"] = uuid4().hex
+                else:
+                    if provider in {"alibaba", "alibaba_crossborder"} and value != old and any(value.get(key) for key in ("app_key", "app_secret", "redirect_uri")):
+                        if not all(value.get(key) for key in ("app_key", "app_secret", "redirect_uri")):
+                            raise ValueError("1688 应用编号、密钥和回调地址须填写完整")
+                    if value != old:
+                        value["credential_generation"] = uuid4().hex
                 applications[provider] = value
             applications["alibaba_api_application"] = request.alibaba_api_application or owner.alibaba_api_application()
             config = owner.load_app_config()

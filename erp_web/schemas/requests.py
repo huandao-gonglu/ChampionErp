@@ -382,6 +382,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/alibaba/authorization/complete": RequestContract({"callback_url": STRING, "provider": ALIBABA_PROVIDER}, required=("callback_url",)),
     "/api/alibaba/authorization/onebound/complete": RequestContract({"callback_url": STRING}, required=("callback_url",)),
     "/api/alibaba/authorization/self-use-token": RequestContract({"access_token": STRING}, required=("access_token",)),
+    "/api/alibaba/onebound/key/restore": _EMPTY,
     "/api/open-auth-link": _contract(required=("url",)),
     "/api/publish-bus/enqueue": _contract(
         # 人工确认摘要指纹：HTTP 边界声明字符串类型；业务判空与绑定校验

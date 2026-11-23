@@ -292,3 +292,42 @@ def test_manual_query_of_legacy_price_timeout_keeps_submission_separate(native, 
     assert advanced["status"] == "pending_submission"
     assert len(writes) == 1 and writes[0][1].endswith("/offer-prices/updates")
     assert [offer["offerId"] for offer in writes[0][2]["offers"]] == ["SKU-0", "SKU-1"]
+
+
+def test_batch_confirmation_preserves_campaign_errors_and_warnings(native, monkeypatch):
+    payloads, config, writes, _, _, _ = native
+    results = []
+    for index in range(2):
+        plan = batch.leaf._publish_plan(payloads[index])
+        completed = list(batch.leaf.YANDEX_PUBLISH_STEPS if index == 0 else batch.leaf.YANDEX_PUBLISH_STEPS[:2])
+        checkpoint = batch.leaf.YandexPublishCheckpoint(
+            offer_id=plan['offer_id'], business_id='222', campaign_id='333',
+            phase='confirmation' if index == 0 else 'price', completed_steps=completed,
+        )
+        results.append(batch.leaf._pending_result(plan, checkpoint))
+    error_row = {
+        'message': 'Товар не подходит для продажи из-за рубежа',
+        'comment': 'Товары этой категории не могут продаваться из-за рубежа на Маркете',
+    }
+    warning_row = {'message': 'Проверьте категорию'}
+    monkeypatch.setattr(batch.api, 'fetch_yandex_offer_mapping', lambda token, business, ids, **kw:
+        [{'offer': {'offerId': sku, 'cardStatus': 'HAS_CARD_CAN_UPDATE'}} for sku in ids])
+    monkeypatch.setattr(batch.api, 'fetch_yandex_campaign_offer', lambda token, campaign, *, offer_ids, **kw: [
+        {'offerId': sku, 'status': 'DISABLED_AUTOMATICALLY', 'errors': [error_row], 'warnings': [warning_row]}
+        for sku in offer_ids
+    ])
+    monkeypatch.setattr(batch.api, 'fetch_yandex_price_quarantine', lambda *a, **kw: [])
+
+    confirmed = batch.confirm_many(results, config)
+
+    assert not writes
+    assert confirmed[0]['status'] == 'real_publish_failed'
+    assert confirmed[0]['error_code'] == 'YANDEX_CAMPAIGN_DISABLED_AUTOMATICALLY'
+    assert 'Товар не подходит для продажи из-за рубежа' in confirmed[0]['error']
+    assert confirmed[0]['checkpoint']['evidence']['confirmation']['campaign_errors'] == [error_row]
+    assert confirmed[0]['checkpoint']['evidence']['confirmation']['campaign_warnings'] == [warning_row]
+    assert confirmed[0]['warnings'] == [warning_row]
+    observation = confirmed[1]['result']['checkpoint']['evidence']['campaign_observation']
+    assert observation['status'] == 'DISABLED_AUTOMATICALLY'
+    assert observation['campaign_errors'] == [error_row]
+    assert observation['campaign_warnings'] == [warning_row]

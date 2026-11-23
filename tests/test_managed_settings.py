@@ -139,30 +139,48 @@ def test_enterprise_rotation_invalidates_each_users_authorization_even_when_reve
     user = register(url)
     body = settings_body(admin, url)
     body[provider] = dict(app_key='123', app_secret='secret-a', redirect_uri='https://erp.example/auth/alibaba/callback')
+    body['onebound'] = dict(api_key='ob-key-a', api_secret='ob-secret-a', initial_grant=200)
     body['alibaba_api_application'] = provider
     body['crossborderbus_client_secret'] = 'bus-secret-a'
     public = post_settings(admin, url, body)
     assert 'secret-a' not in json.dumps(public)
-    context = runtime.context_for(next(row for row in runtime.store.users() if row['id'] == user['id']))
-    store = context.config
-    application = store.alibaba_application()
-    store.update_alibaba_credentials({'authorization': {
-        'access_token': 'private-token', 'application_fingerprint': application_fingerprint(application)}})
-    store.save_crossborderbus_credentials({**store.crossborderbus_credentials(), 'app_uid': 8, 'access_token': 'bus-token'})
-    assert AlibabaAuthorizationService(store).status()['authorized']
-    assert store.crossborderbus_credentials()['app_uid'] == 8
-    late_bus_receipt = store.crossborderbus_credentials()
-    for app_secret, bus_secret in [('secret-b', 'bus-secret-b'), ('secret-a', 'bus-secret-a')]:
+    admin_store = runtime.root.config
+    user_store = runtime.context_for(next(row for row in runtime.store.users() if row['id'] == user['id'])).config
+
+    # 管理员持有企业应用的个人授权；普通用户持有万邦和跨境巴士授权。
+    admin_app = admin_store.alibaba_application(provider)
+    admin_store.update_alibaba_credentials({'authorization': {
+        'access_token': 'admin-token', 'application_fingerprint': application_fingerprint(admin_app)}}, provider=provider)
+    ob_app = user_store.alibaba_application('onebound')
+    user_store.update_alibaba_credentials({'authorization': {
+        'access_token': 'user-ob-token', 'credential_type': 'access_token', 'member_id': 'buyer-u',
+        'expires_at': 4_000_000_000, 'application_fingerprint': application_fingerprint(ob_app)}}, provider='onebound')
+    user_store.save_crossborderbus_credentials({**user_store.crossborderbus_credentials(), 'app_uid': 8, 'access_token': 'bus-token'})
+    assert AlibabaAuthorizationService(admin_store).status(provider)['authorized']
+    assert AlibabaAuthorizationService(user_store).status()['authorized']
+    assert user_store.crossborderbus_credentials()['app_uid'] == 8
+
+    # 仅修改万邦默认基础额度，不更换 Key/Secret，不应使已有万邦授权失效。
+    body = settings_body(admin, url)
+    body['onebound']['initial_grant'] = 350
+    saved_grant = post_settings(admin, url, body)
+    assert saved_grant['onebound']['initial_grant'] == 350
+    assert AlibabaAuthorizationService(user_store).status()['authorized']
+
+    late_bus_receipt = user_store.crossborderbus_credentials()
+    for app_secret, ob_secret, bus_secret in [('secret-b', 'ob-secret-b', 'bus-secret-b'), ('secret-a', 'ob-secret-a', 'bus-secret-a')]:
         body = settings_body(admin, url)
         body[provider]['app_secret'] = app_secret
+        body['onebound']['api_secret'] = ob_secret
         body['crossborderbus_client_secret'] = bus_secret
         post_settings(admin, url, body)
-        assert not AlibabaAuthorizationService(store).status()['authorized']
-        assert 'app_uid' not in store.crossborderbus_credentials()
+        assert not AlibabaAuthorizationService(admin_store).status(provider)['authorized']
+        assert not AlibabaAuthorizationService(user_store).status()['authorized']
+        assert 'app_uid' not in user_store.crossborderbus_credentials()
         with pytest.raises(ValueError, match='配置已变化'):
-            store.save_crossborderbus_credentials(late_bus_receipt)
-    assert store.alibaba_credentials()['authorization']['access_token'] == 'private-token'
-    assert runtime.root.config.alibaba_credentials().get('authorization', {}) == {}
+            user_store.save_crossborderbus_credentials(late_bus_receipt)
+    assert admin_store.alibaba_credentials(provider)['authorization']['access_token'] == 'admin-token'
+    assert user_store.alibaba_credentials('onebound')['authorization']['access_token'] == 'user-ob-token'
 
 
 def test_admin_application_switch_is_shared_and_preserves_separate_buyer_grants(accounts_http):
@@ -175,26 +193,30 @@ def test_admin_application_switch_is_shared_and_preserves_separate_buyer_grants(
     client = login('user@example.com')
     body = settings_body(admin, url)
     assert body['alibaba_api_application'] == 'alibaba'
+    assert body['onebound']['initial_grant'] == 200
     for provider, key in [('alibaba', '1938727'), ('alibaba_crossborder', '4848173')]:
         body[provider] = dict(app_key=key, app_secret=provider + '-secret', redirect_uri='https://erp.example/auth/alibaba/callback')
     public = post_settings(admin, url, body)
-    store = runtime.context_for(next(row for row in runtime.store.users() if row['id'] == user['id'])).config
+    admin_store = runtime.root.config
+    user_store = runtime.context_for(next(row for row in runtime.store.users() if row['id'] == user['id'])).config
     grants = {}
     scopes = {}
     for provider in ('alibaba', 'alibaba_crossborder'):
         body = settings_body(admin, url)
         body['alibaba_api_application'] = provider
         post_settings(admin, url, body)
-        assert client.get(url + '/api/alibaba/authorization').json()['application_type'] == provider
-        application = store.alibaba_application()
+        # 管理员切换方案只影响管理员自己；普通用户固定使用万邦。
+        assert admin.get(url + '/api/alibaba/authorization').json()['application_type'] == provider
+        assert client.get(url + '/api/alibaba/authorization').json()['application_type'] == 'onebound'
+        application = admin_store.alibaba_application(provider)
         scopes[provider] = buyer_scope(application['app_key'], 'same-buyer')
         grants[provider] = {'access_token': provider + '-token', 'member_id': 'same-buyer',
             'application_fingerprint': application_fingerprint(application), 'account_scope': scopes[provider]}
-        store.update_alibaba_credentials({'authorization': grants[provider]})
-        assert account_scope(AlibabaAuthorizationService(store).runtime_config()) == scopes[provider]
+        admin_store.update_alibaba_credentials({'authorization': grants[provider]}, provider=provider)
+        assert account_scope(AlibabaAuthorizationService(admin_store).runtime_config()) == scopes[provider]
     assert scopes['alibaba'] != scopes['alibaba_crossborder']
-    late_application = store.alibaba_application()
-    late_state = store.alibaba_credentials()
+    late_application = admin_store.alibaba_application('alibaba_crossborder')
+    late_state = admin_store.alibaba_credentials('alibaba_crossborder')
     stale_settings = settings_body(admin, url)
     body = deepcopy(stale_settings)
     body['alibaba_api_application'] = 'alibaba'
@@ -202,11 +224,11 @@ def test_admin_application_switch_is_shared_and_preserves_separate_buyer_grants(
     assert switched['revision'] != stale_settings['revision']
     assert admin.post(url + '/api/admin/settings', json=stale_settings).status_code == 409
     with pytest.raises(ValueError, match='已变化'):
-        store.update_alibaba_credentials({'authorization': {'access_token': 'late-token'}}, expected=late_state, application=late_application)
-    assert store.alibaba_credentials()['authorization'] == grants['alibaba']
-    assert store.alibaba_application() == runtime.root.config.alibaba_application()
-    assert store.alibaba_application()['credential_generation']
-    assert AlibabaAuthorizationService(store).status()['authorized']
+        admin_store.update_alibaba_credentials({'authorization': {'access_token': 'late-token'}}, expected=late_state, application=late_application)
+    assert admin_store.alibaba_credentials('alibaba')['authorization'] == grants['alibaba']
+    assert user_store.alibaba_application('onebound') == admin_store.alibaba_application('onebound')
+    assert admin_store.alibaba_application('alibaba')['credential_generation']
+    assert AlibabaAuthorizationService(admin_store).status()['authorized']
     # 旧客户端省略选择与自用配置时，保留管理员的现有选择和原密钥。
     body = settings_body(admin, url)
     body.pop('alibaba_api_application')
@@ -215,9 +237,9 @@ def test_admin_application_switch_is_shared_and_preserves_separate_buyer_grants(
     body = settings_body(admin, url)
     body['alibaba_api_application'] = 'alibaba_crossborder'
     final = post_settings(admin, url, body)
-    assert store.alibaba_credentials()['authorization'] == grants['alibaba_crossborder']
-    assert AlibabaAuthorizationService(store).status()['authorized']
-    assert not runtime.root.config.alibaba_credentials().get('authorization')
+    assert admin_store.alibaba_credentials('alibaba_crossborder')['authorization'] == grants['alibaba_crossborder']
+    assert AlibabaAuthorizationService(admin_store).status()['authorized']
+    assert not user_store.alibaba_credentials('onebound').get('authorization')
     assert public['alibaba'] == final['alibaba']
     assert public['alibaba_crossborder'] == final['alibaba_crossborder']
     for value in (public, switched, final):

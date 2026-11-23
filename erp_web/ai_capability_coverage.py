@@ -131,13 +131,14 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         reason='网页与同账号桌面之间的短期页面交接和确认，不提供业务执行或设备授权。')
       for suffix in ('create', 'status', 'resolve', 'acknowledge', 'installers')),
     *(AiCapabilityCoverageEntry(method=method, path=path, business_domain="授权基础设施", disposition="excluded",
-        reason="1688 买家授权状态、浏览器登录、一次性回调及企业自用 Token 绑定仅供授权界面使用。") for method, path in (
+        reason="1688 买家授权状态、浏览器登录、一次性回调、企业自用 Token 绑定及管理员恢复企业万邦 Key 仅供授权与管理界面使用。") for method, path in (
         ("GET", "/api/alibaba/crossborder/authorization"),
         ("POST", "/api/alibaba/crossborder/authorization/start"),
         ("GET", "/api/alibaba/authorization"), ("GET", "/auth/alibaba/callback"),
         ("POST", "/api/alibaba/authorization/start"), ("POST", "/api/alibaba/authorization/complete"),
         ("POST", "/api/alibaba/authorization/onebound/complete"),
         ("POST", "/api/alibaba/authorization/self-use-token"),
+        ("POST", "/api/alibaba/onebound/key/restore"),
     )),
     AiCapabilityCoverageEntry(method="POST", path="/api/publish-bus/retry", business_domain="商品发布", disposition="internal_only",
         reason="任务队列中由用户显式重试原批准发布内容；不增加 Agent 自动重发入口。"),

@@ -7,7 +7,14 @@ import type { BackendAlibabaAuthorizationStatus } from '@/types/workflow.generat
 
 const account = vi.hoisted(() => ({ isAdmin: false }))
 vi.mock('@/stores/account', () => ({ useAccountStore: () => account }))
-vi.mock('@/api/alibabaAuthorization', () => ({ bindSelfUseToken: vi.fn(), completeAlibabaAuthorization: vi.fn(), fetchAlibabaAuthorization: vi.fn(), startAlibabaAuthorization: vi.fn() }))
+vi.mock('@/api/alibabaAuthorization', () => ({
+  bindSelfUseToken: vi.fn(),
+  completeAlibabaAuthorization: vi.fn(),
+  fetchAlibabaAuthorization: vi.fn(),
+  fetchOneBoundQuota: vi.fn(),
+  restoreOneBoundKey: vi.fn(),
+  startAlibabaAuthorization: vi.fn(),
+}))
 vi.mock('@/utils/desktop', () => ({ hasLocalOperations: vi.fn() }))
 enableAutoUnmount(afterEach)
 const status: BackendAlibabaAuthorizationStatus = {
@@ -28,6 +35,11 @@ beforeEach(() => {
   vi.mocked(hasLocalOperations).mockReturnValue(false)
   vi.spyOn(window, 'open').mockReturnValue(tab as unknown as Window)
   vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue(status)
+  vi.mocked(api.fetchOneBoundQuota).mockResolvedValue({
+    ok: true, configured: true, is_admin: false, active_provider: 'onebound', authorized: true,
+    buyer: { member_id: 'buyer-a', account_name: '采购甲', balance: 185, granted: 200, earned: 10, spent_total: 25, spent_trade: 5, spent_auth: 2, spent_collect: 18 },
+    buyers: [], key: null, entries: [],
+  })
   vi.mocked(api.startAlibabaAuthorization).mockResolvedValue({ ok: true, url })
 })
 afterEach(() => {
@@ -165,5 +177,49 @@ describe('1688 浏览器授权', () => {
     await vi.advanceTimersByTimeAsync(2500)
     expect(wrapper.text()).toContain('采购甲')
     expect(wrapper.text()).toContain('本次授权未完成')
+  })
+
+  it('万邦卡展示买家余额构成，管理员可查看企业 Key 用量并恢复已停用的 Key', async () => {
+    account.isAdmin = true
+    const onebound = { ...status, application_type: 'onebound' as const, refreshable: false }
+    vi.mocked(api.fetchAlibabaAuthorization).mockResolvedValue(onebound)
+    vi.mocked(api.fetchOneBoundQuota).mockResolvedValue({
+      ok: true, configured: true, is_admin: true, active_provider: 'onebound', authorized: true,
+      buyer: { member_id: 'buyer-a', account_name: '采购甲', balance: 185, granted: 200, earned: 10, spent_total: 25, spent_trade: 5, spent_auth: 2, spent_collect: 18 },
+      buyers: [],
+      key: {
+        configured: true, today_snapshot: 120, today_estimated: 125, daily_max: 10000, reserve: 500,
+        expires: '2030-02-19', days_until_expiry: 1000, expiring_soon: false, expired: false,
+        observed_at: 1700000000, disabled: true, disabled_code: 'ONEBOUND_ACCOUNT_DISABLED',
+        disabled_message: '万邦账户余额不足（4016）', disabled_at: 1700000001, exhausted_until: null, initial_grant: 200,
+      },
+      entries: [],
+    })
+    vi.mocked(api.restoreOneBoundKey).mockResolvedValue({
+      ok: true, restored: true,
+      quota: {
+        ok: true, configured: true, is_admin: true, active_provider: 'onebound', authorized: true,
+        buyer: { member_id: 'buyer-a', account_name: '采购甲', balance: 185, granted: 200, earned: 10, spent_total: 25, spent_trade: 5, spent_auth: 2, spent_collect: 18 },
+        buyers: [],
+        key: {
+          configured: true, today_snapshot: 120, today_estimated: 125, daily_max: 10000, reserve: 500,
+          expires: '2030-02-19', days_until_expiry: 1000, expiring_soon: false, expired: false,
+          observed_at: 1700000000, disabled: false, disabled_code: '', disabled_message: '',
+          disabled_at: null, exhausted_until: null, initial_grant: 200,
+        },
+        entries: [],
+      },
+    })
+    const wrapper = await panel('onebound')
+    expect(wrapper.text()).toContain('余额 185 次')
+    expect(wrapper.text()).toContain('基础额度 200')
+    expect(wrapper.text()).toContain('125 / 10000')
+    expect(wrapper.text()).toContain('保留额度 500')
+    expect(wrapper.text()).toContain('万邦账户余额不足（4016）')
+    await wrapper.get('[data-testid="restore-onebound-key"]').trigger('click')
+    await flushPromises()
+    expect(api.restoreOneBoundKey).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('已恢复万邦企业 Key 使用')
+    expect(wrapper.find('[data-testid="restore-onebound-key"]').exists()).toBe(false)
   })
 })

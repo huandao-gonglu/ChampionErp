@@ -6,6 +6,7 @@ from erp_web.services.business_queries import BusinessQueries, BusinessQuery
 from erp_web.services.dashboard_analytics import build_dashboard_analytics
 from erp_web.services.pricing_data import draft_pricing_data
 from erp_web.services import config_queries
+from erp_web.services.alibaba_authorization_service import onebound_quota_view
 from erp_web.services.operation_availability import operation_availability
 from erp_web.schemas.platform_query_capabilities import PublishJobsQueryRequest, PublishJobStatusQueryRequest, PublishLogsQueryRequest
 
@@ -103,6 +104,13 @@ BUSINESS_QUERIES = BusinessQueries((
                   DashboardAnalyticsParameters,
                   lambda context, request: build_dashboard_analytics(context, days=request.days, time_zone=request.time_zone),
                   '', ('window_days', 'order_summary', 'platform_breakdown', 'catalog_summary', 'online_summary', 'trends'),
+                  permission='order.read'),
+    BusinessQuery('alibaba.onebound_quota',
+                  '万邦调用额度：当前账号已授权买家的余额，以及基础额度、下单收入、各类调用支出的构成；'
+                  '管理员额外可见 Key 当日用量、上限、到期日、保留额度和全部买家。entries 可用 path=entries 分页读取流水。只读本地账本，不访问万邦。',
+                  NoDataParameters,
+                  lambda context, _: onebound_quota_view(context),
+                  '', ('active_provider', 'configured', 'authorized', 'buyer', 'key'),
                   permission='order.read'),
 ))
 

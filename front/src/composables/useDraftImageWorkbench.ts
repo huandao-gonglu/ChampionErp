@@ -43,6 +43,7 @@ export function useDraftImageWorkbench(options: {
   const checking = ref(true)
   const saving = ref(false)
   const pending = ref('')
+  const awaitingDesktop = ref<{ requestId: string; deadline: number } | null>(null)
   const notice = ref('')
   const past = ref<ImageOperation[]>([])
   const future = ref<ImageOperation[]>([])
@@ -71,6 +72,23 @@ export function useDraftImageWorkbench(options: {
   }
   function applyState(result: DraftImagePoll) {
     const next = result.batch
+    const waiting = awaitingDesktop.value
+    if (waiting) {
+      if (next?.conversation_id === waiting.requestId) {
+        // 桌面端已按固定标识创建任务，此后与本端提交的任务一样按进度和终态处理。
+        awaitingDesktop.value = null; assetsRequested = ''
+        pending.value = waiting.requestId
+        remember(draft.value.draftId, pending.value)
+      } else if (Date.now() >= waiting.deadline) {
+        awaitingDesktop.value = null; assetsRequested = ''
+        notice.value = '桌面端未开始处理，打开请求已过期，请重新发起。'
+        return
+      } else {
+        // 桌面端尚未提交时，旧批次的失败文案不属于本次操作，保持等待提示。
+        notice.value = '已交给桌面端，正在等待桌面端开始处理…'
+        return
+      }
+    }
     if (!next && pending.value) {
       notice.value = '提交结果尚未确认，正在查询原任务…'
       return
@@ -101,24 +119,48 @@ export function useDraftImageWorkbench(options: {
     if (unsent.length) summary.push(`${unsent.length} 张尚未执行。${unsent[0].error}`)
     notice.value = summary.length ? `本批已结束，${summary.join('')}` : ''
   }
+  // 套图结果只写入商品素材池，草稿版本不变；版本一致的轮询不带素材，需要在发现缺图时补读一次。
+  let assetsRequested = ''
+  async function refreshResultAssets(result: DraftImagePoll, token: number) {
+    if (!('unchanged' in result) || !result.batch) return
+    const known = new Set(options.productContext.value.imagePool.map(image => image.id))
+    const missing = result.batch.items
+      .filter(item => item.status === 'success').flatMap(item => item.result_asset_ids || [])
+      .filter(id => !known.has(id)).sort()
+    const requested = missing.join(',')
+    if (!requested || requested === assetsRequested) return
+    assetsRequested = requested
+    const full = await fetchDraftImageState(draft.value.draftId, result.batch.conversation_id)
+    if (token !== epoch) return
+    // 只合入素材，不覆盖页面上尚未保存的草稿编辑。
+    options.productContext.value.imagePool = full.imagePool
+  }
   async function poll(token = epoch) {
     if (!active.value || token !== epoch) return
     try {
-      const result = await fetchDraftImageState(draft.value.draftId, pending.value, draft.value.updatedAt)
+      const result = await fetchDraftImageState(draft.value.draftId, awaitingDesktop.value?.requestId || pending.value, draft.value.updatedAt)
       if (token !== epoch) return
-      if (!saving.value) { applyState(result); checking.value = false }
+      if (!saving.value) { applyState(result); checking.value = false; await refreshResultAssets(result, token) }
     } catch {
       if (token !== epoch) return
       notice.value = '暂时无法查询图片任务，正在重新连接…'
       // 首次未确认和已有任务都保持只读；网络异常不改写批次状态。
     } finally {
-      if (token === epoch && active.value && busy.value) timer = setTimeout(() => void poll(token), 2000)
+      if (token === epoch && active.value && (busy.value || awaitingDesktop.value)) timer = setTimeout(() => void poll(token), 2000)
     }
+  }
+  function awaitDesktop(requestId: string) {
+    // 交接请求最长保留 10 分钟；等待期间网页保持可操作，只跟随该标识的任务。
+    awaitingDesktop.value = { requestId, deadline: Date.now() + 600_000 }
+    notice.value = '已交给桌面端，正在等待桌面端开始处理…'
+    clearTimeout(timer)
+    timer = setTimeout(() => void poll(), 2000)
   }
   watch([() => active.value, () => draft.value.draftId], ([opened, id]) => {
     ++epoch
     clearTimeout(timer)
     batch.value = null; pending.value = ''; past.value = []; future.value = []
+    awaitingDesktop.value = null; assetsRequested = ''
     processingBefore = null; observedBatch = ''; saving.value = false; notice.value = ''
     acceptedSignature = signature(snapshotDraftImages(draft.value))
     if (!opened || !id) { checking.value = false; return }
@@ -170,6 +212,7 @@ export function useDraftImageWorkbench(options: {
           draft: draft.value, draftContext: options.productContext.value, draftTab: 'images',
           draftImageAction: { action: 'translate', imageIds: targets, prompt, translationRequestId: requestId },
         } } })
+        awaitDesktop(requestId)
         return
       }
       processingBefore = snapshotDraftImages(draft.value)
@@ -189,7 +232,7 @@ export function useDraftImageWorkbench(options: {
         checking.value = true
       } else notice.value = '提交结果尚未确认，正在查询原任务…'
     } finally {
-      if (token === epoch) { saving.value = false; clearTimeout(timer); if (busy.value) timer = setTimeout(() => void poll(token), 1000) }
+      if (token === epoch) { saving.value = false; if (!awaitingDesktop.value) clearTimeout(timer); if (busy.value) timer = setTimeout(() => void poll(token), 1000) }
     }
   }
 
@@ -256,6 +299,7 @@ export function useDraftImageWorkbench(options: {
           draft: draft.value, draftContext: options.productContext.value, draftTab: 'images',
           draftImageSetAction: action,
         } } })
+        awaitDesktop(requestId)
         return
       }
       pending.value = requestId
@@ -274,7 +318,7 @@ export function useDraftImageWorkbench(options: {
         checking.value = true
       } else notice.value = '套图提交结果尚未确认，正在查询原任务…'
     } finally {
-      if (token === epoch) { saving.value = false; clearTimeout(timer); if (busy.value) timer = setTimeout(() => void poll(token), 1000) }
+      if (token === epoch) { saving.value = false; if (!awaitingDesktop.value) clearTimeout(timer); if (busy.value) timer = setTimeout(() => void poll(token), 1000) }
     }
   }
 

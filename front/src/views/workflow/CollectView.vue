@@ -23,6 +23,7 @@ import {
 } from '@phosphor-icons/vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
+import { fetchOneBoundQuota, type OneBoundQuotaView } from '@/api/alibabaAuthorization'
 import { manageLinks, type CollectionLink, type LinkMode } from '@/api/workflow/collectionLinks'
 import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
 import { businessStorageKey } from '@/utils/accountTransport'
@@ -123,6 +124,7 @@ const busy = computed(() => saving.value || quickAdding.value || store.running |
 const dialogError = ref('')
 const notice = ref('')
 const actionError = ref('')
+const oneboundQuota = ref<OneBoundQuotaView | null>(null)
 const activeError = computed(() => actionError.value || store.runError || store.syncError || props.error)
 const inputLineCount = computed(() => urlInput.value.split(/\r?\n/).map(line => line.trim()).filter(Boolean).length)
 const currentMode = computed<LinkMode>({
@@ -222,11 +224,19 @@ function scheduleNextPoll() {
   }, delayMs)
 }
 
+async function loadOneBoundQuota() {
+  try { oneboundQuota.value = await fetchOneBoundQuota() }
+  catch { /* 额度只读提示不可用时不阻塞采集列表。 */ }
+}
+
 async function refresh(manual = false) {
   if (refreshing) return
   refreshing = true
   if (manual) manualRefreshing.value = true
-  try { await store.refreshLinks() } catch { /* 状态栏显示同步错误。 */ }
+  try {
+    await store.refreshLinks()
+    void loadOneBoundQuota()
+  } catch { /* 状态栏显示同步错误。 */ }
   finally {
     refreshing = false
     manualRefreshing.value = false
@@ -380,6 +390,23 @@ function run(rows: CollectionLink[]) {
   if (busy.value || !rows.length) return
   actionError.value = ''
   notice.value = ''
+  const apiCount = rows.filter(row => row.mode === 'api').length
+  if (apiCount > 0 && oneboundQuota.value?.active_provider === 'onebound') {
+    const keyStatus = oneboundQuota.value.key
+    if (keyStatus?.disabled) {
+      actionError.value = keyStatus.disabled_message || '万邦企业 Key 已暂停使用，请联系管理员处理。'
+      return
+    }
+    if (keyStatus?.expired) {
+      actionError.value = `万邦企业 Key 已于 ${keyStatus.expires} 到期，请联系管理员续费或更换 Key。`
+      return
+    }
+    const buyer = oneboundQuota.value.buyer
+    if (buyer && buyer.balance < apiCount) {
+      actionError.value = `万邦采集额度不足：当前余额 ${buyer.balance} 次，本次预计需要 ${apiCount} 次。请减少 API 采集条数、改用浏览器采集，或经万邦下单付款后获得额度。`
+      return
+    }
+  }
   const targets = rows.map(({ id, revision }) => ({ id, revision }))
   if (rows.some(row => row.mode === 'browser')) {
     if (!hasLocalOperations()) {
@@ -389,7 +416,8 @@ function run(rows: CollectionLink[]) {
     actionError.value = desktopOperationReason()
     if (actionError.value) return
   }
-  void store.runLinks(targets)
+  const pending = store.runLinks(targets)
+  void Promise.resolve(pending).finally(() => void loadOneBoundQuota())
 }
 function runRow(row: CollectionLink) {
   selectedId.value = row.id
@@ -511,6 +539,17 @@ function runRow(row: CollectionLink) {
             {{ quickAdding ? '加入中…' : '快速加入' }}
           </button>
         </div>
+
+        <span
+          v-if="oneboundQuota?.active_provider === 'onebound' && oneboundQuota.buyer"
+          data-testid="collect-onebound-quota"
+          class="inline-flex shrink-0 items-center rounded-lg border px-2 py-1 text-xs font-medium tabular-nums"
+          :class="oneboundQuota.buyer.balance <= 0
+            ? 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300'
+            : 'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300'"
+        >
+          万邦余额 {{ oneboundQuota.buyer.balance }} 次
+        </span>
 
         <button
           type="button"

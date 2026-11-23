@@ -3,6 +3,8 @@ import { desktopOperationReason, hasLocalOperations, modelOperationReason } from
 import { vDesktop } from '@/utils/desktopHandoffDirective'
 import { launchDesktop, useDesktopHandoffContext, receivedDesktopHandoff, acknowledgeDesktopHandoff } from '@/utils/desktopHandoff'
 import { computed, inject, reactive, ref, watch } from 'vue'
+import { getActivePinia } from 'pinia'
+import { useAccountStore } from '@/stores/account'
 import ApiModelPicker from './ApiModelPicker.vue'
 import { testAiModel } from '@/api/workflow/settings'
 import PageHeader from '@/components/layout/PageHeader.vue'
@@ -67,6 +69,9 @@ const form = reactive({
 })
 
 const selectedStorePlatform = ref<Marketplace>('mercadolibre')
+const activePinia = getActivePinia()
+const accountStore = activePinia ? useAccountStore(activePinia) : null
+const isAdmin = computed(() => Boolean(accountStore?.isAdmin))
 type AuthSettingsTab = 'ai_models' | 'ai_bindings' | 'stores' | 'research' | 'image_hosting' | 'crossborderbus' | 'alibaba'
 const activeAuthSettingsTab = ref<AuthSettingsTab>('ai_models')
 const authRoute = inject(routeLocationKey, undefined)
@@ -2283,8 +2288,8 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
 
         <template v-if="activeAuthSettingsTab === 'alibaba'">
           <div class="space-y-4">
-            <AlibabaSettingsPanel provider="alibaba" />
-            <AlibabaSettingsPanel provider="alibaba_crossborder" />
+            <AlibabaSettingsPanel v-if="isAdmin" provider="alibaba" />
+            <AlibabaSettingsPanel v-if="isAdmin" provider="alibaba_crossborder" />
             <AlibabaSettingsPanel provider="onebound" />
           </div>
         </template>

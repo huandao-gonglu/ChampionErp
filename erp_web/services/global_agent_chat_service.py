@@ -41,6 +41,7 @@ GLOBAL_CHAT_PROFILE = AiAgentExecutionProfile(
     result_version="global_chat.v2",
     allow_write=True,
     python_tools=True,
+    python_retries=4,
     user_input_tool=True,
 )
 

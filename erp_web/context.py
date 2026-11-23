@@ -162,6 +162,7 @@ class AppContext:
         self._order_notifications = None
         self._order_procurement = None
         self._alibaba_self_purchases = None
+        self._onebound_quota = None
         self._fulfillment = None
         self._yandex_logistics = None
         self._pricing_cache = None
@@ -328,6 +329,16 @@ class AppContext:
 
                     self._alibaba_self_purchases = AlibabaSelfPurchaseStore(self.paths.data_dir / "alibaba-self-purchases.sqlite3")
         return self._alibaba_self_purchases
+
+    @property
+    def onebound_quota(self):
+        if self._onebound_quota is None:
+            with self._lazy_lock:
+                if self._onebound_quota is None:
+                    from erp_web.stores.onebound_quota_store import OneBoundQuotaStore
+
+                    self._onebound_quota = OneBoundQuotaStore(self.shared_paths.data_dir / "onebound-quota.sqlite3")
+        return self._onebound_quota
 
     @property
     def order_notifications(self):

@@ -144,7 +144,7 @@ defineExpose({ restoreAction })
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <article v-for="result in results" :key="result.page.key" class="rounded-xl border border-slate-200 p-3 dark:border-dark-700" :data-set-page="result.page.key">
             <a v-if="result.asset" :href="imageUrl(result.asset)" target="_blank" rel="noopener" :aria-label="`查看套图 ${result.page.title}`"><img :src="imageUrl(result.asset)" :alt="result.page.title" class="aspect-square w-full rounded-lg object-contain" /></a>
-            <div v-else class="flex aspect-square items-center justify-center rounded-lg bg-slate-50 p-4 text-center text-sm dark:bg-dark-800">{{ result.item?.outcome_unknown ? '结果待核对' : result.item?.status === 'failed' ? result.item.error : result.item?.status === 'running' ? '生成中…' : '等待生成' }}</div>
+            <div v-else class="flex aspect-square items-center justify-center rounded-lg bg-slate-50 p-4 text-center text-sm dark:bg-dark-800">{{ result.item?.outcome_unknown ? '结果待核对' : result.item?.status === 'failed' ? result.item.error : result.item?.status === 'running' ? '生成中…' : result.item?.status === 'success' ? '正在读取结果…' : '等待生成' }}</div>
             <p class="mt-3 font-medium">{{ result.page.title }}</p>
             <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ targetLabel(result.page) }}</p>
             <p v-if="result.item?.status === 'success' && !result.asset" class="text-sm text-rose-600">结果素材缺失，请重新读取。</p>

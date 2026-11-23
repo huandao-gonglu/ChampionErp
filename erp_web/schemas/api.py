@@ -13,6 +13,7 @@ class OperationAvailability(TypedDict):
     desktop_reason: str
     blocked_use_cases: dict[str, str]
     desktop_use_cases: list[str]
+    delegated_use_cases: list[str]
 
 
 class DesktopHandoffCreated(TypedDict):

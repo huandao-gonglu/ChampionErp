@@ -4,6 +4,7 @@ import logging
 from erp_web.services.alibaba_authorization_service import alibaba_runtime_config
 from erp_web.context import get_context
 from erp_web.services.alibaba_self_purchase_service import AlibabaSelfPurchaseService, account_scope
+from erp_web.services.onebound_quota_service import credit_paid_order
 from erp_web.stores.order_address_note_store import OrderAddressNoteStore
 from erp_web.services.alibaba_purchase_sync_service import sync_purchases
 
@@ -11,7 +12,10 @@ from erp_web.services.alibaba_purchase_sync_service import sync_purchases
 def create_service(context):
     return AlibabaSelfPurchaseService(context.alibaba_self_purchases,
         lambda: alibaba_runtime_config(context.config), context.order_procurement,
-        address_notes=OrderAddressNoteStore(context.order_notifications.store), receiving=context.fulfillment.receiving)
+        address_notes=OrderAddressNoteStore(context.order_notifications.store), receiving=context.fulfillment.receiving,
+        quota_credit=lambda config, order_number, total_fen: credit_paid_order(
+            context.onebound_quota, config, order_number, total_fen,
+        ))
 
 
 def options(query):

@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import ManagedSettingsPanel from '../ManagedSettingsPanel.vue'
+import { fetchOneBoundQuota, restoreOneBoundKey } from '@/api/alibabaAuthorization'
 import { fetchManagedSettings, saveManagedSettings, type ManagedSettings } from '@/api/managedSettings'
 
 vi.mock('@/api/managedSettings', () => ({ fetchManagedSettings: vi.fn(), saveManagedSettings: vi.fn() }))
+vi.mock('@/api/alibabaAuthorization', () => ({ fetchOneBoundQuota: vi.fn(), restoreOneBoundKey: vi.fn() }))
 enableAutoUnmount(afterEach)
 const saved: ManagedSettings = {
   ok: true, revision: 'revision-1',
@@ -11,13 +13,17 @@ const saved: ManagedSettings = {
   exchange_rates: { exchange_rate_api_url: 'https://rates.example/api', exchange_rate_timeout_seconds: '10', exchange_rate_cache_ttl_seconds: '3600' },
   alibaba: { app_key: '123', redirect_uri: 'https://erp.example/auth/alibaba/callback', secret_configured: true },
   alibaba_crossborder: { app_key: '', redirect_uri: '', secret_configured: false },
-  onebound: { api_key: '', secret_configured: false },
+  onebound: { api_key: '', secret_configured: false, initial_grant: 200 },
   crossborderbus_secret_configured: true,
 }
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(fetchManagedSettings).mockResolvedValue(structuredClone(saved))
   vi.mocked(saveManagedSettings).mockResolvedValue(structuredClone(saved))
+  vi.mocked(fetchOneBoundQuota).mockResolvedValue({
+    ok: true, configured: false, is_admin: true, active_provider: 'alibaba', authorized: false,
+    buyer: null, buyers: [], key: null, entries: [],
+  })
 })
 
 it('管理员读取仅展示配置状态，空密钥保存时沿用已有值', async () => {
@@ -30,8 +36,10 @@ it('管理员读取仅展示配置状态，空密钥保存时沿用已有值', a
   expect(payload.alibaba_crossborder).not.toHaveProperty('secret_configured')
   expect(payload.alibaba).toEqual({ app_key: saved.alibaba.app_key, redirect_uri: saved.alibaba.redirect_uri })
   expect(payload.alibaba_api_application).toBe('alibaba')
-  expect(payload.onebound).toEqual({ api_key: '' })
+  expect(payload.onebound).toEqual({ api_key: '', initial_grant: 200 })
   expect(payload).not.toHaveProperty('crossborderbus_client_secret')
+  expect(wrapper.text()).toContain('管理员本人使用的 1688 方案')
+  expect(wrapper.text()).toContain('普通用户固定使用万邦')
   expect(wrapper.text()).toContain('共享设置已保存')
 })
 
@@ -42,11 +50,12 @@ it('管理员可以选择万邦并保存独立企业凭据', async () => {
   const section = wrapper.get('[aria-label="万邦企业配置"]')
   await section.get('input[autocomplete="off"]').setValue('vendor-key')
   await section.get('input[type="password"]').setValue('vendor-secret')
+  await section.get('input[type="number"]').setValue('350')
   expect(saveManagedSettings).not.toHaveBeenCalled()
   await wrapper.get('header button[type="submit"]').trigger('click')
   await flushPromises()
   expect(saveManagedSettings).toHaveBeenCalledWith(expect.objectContaining({
-    alibaba_api_application: 'onebound', onebound: { api_key: 'vendor-key', api_secret: 'vendor-secret' },
+    alibaba_api_application: 'onebound', onebound: { api_key: 'vendor-key', api_secret: 'vendor-secret', initial_grant: 350 },
   }))
   expect((section.get('input[type="password"]').element as HTMLInputElement).value).toBe('')
 })
@@ -100,4 +109,32 @@ it('顶部保存会提示无效字段，保存失败保留修改并可以重试'
     alibaba_api_application: 'alibaba_crossborder',
   }))
   await flushPromises()
+})
+
+it('万邦企业 Key 停用时展示恢复按钮，点击后恢复使用', async () => {
+  const disabledKey = {
+    configured: true, today_snapshot: 10, today_estimated: 10, daily_max: 1000, reserve: 50,
+    expires: '2030-01-01', days_until_expiry: 1000, expiring_soon: false, expired: false,
+    observed_at: 1700000000, disabled: true, disabled_code: 'ONEBOUND_ACCOUNT_DISABLED',
+    disabled_message: '万邦账户余额不足（4016）', disabled_at: 1700000001, exhausted_until: null, initial_grant: 200,
+  }
+  vi.mocked(fetchOneBoundQuota).mockResolvedValue({
+    ok: true, configured: true, is_admin: true, active_provider: 'onebound', authorized: true,
+    buyer: null, buyers: [], key: disabledKey, entries: [],
+  })
+  vi.mocked(restoreOneBoundKey).mockResolvedValue({
+    ok: true, restored: true,
+    quota: {
+      ok: true, configured: true, is_admin: true, active_provider: 'onebound', authorized: true,
+      buyer: null, buyers: [], key: { ...disabledKey, disabled: false, disabled_code: '', disabled_message: '' }, entries: [],
+    },
+  })
+  const wrapper = mount(ManagedSettingsPanel)
+  await flushPromises()
+  expect(wrapper.text()).toContain('万邦账户余额不足（4016）')
+  const restoreBtn = wrapper.findAll('button').find(b => b.text().includes('恢复使用'))!
+  await restoreBtn.trigger('click')
+  await flushPromises()
+  expect(restoreOneBoundKey).toHaveBeenCalledTimes(1)
+  expect(wrapper.text()).toContain('已恢复万邦企业 Key 使用')
 })

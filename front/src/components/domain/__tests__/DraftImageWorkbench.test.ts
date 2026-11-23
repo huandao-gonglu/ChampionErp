@@ -33,7 +33,7 @@ function fixture() {
 
 describe('草稿图片 V2 工作台', () => {
   it('图片模型使用桌面端时，网页仍可移出和添加共用图', async () => {
-    setOperationAvailability({ desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
+    setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
     const { wrapper, controller } = fixture()
     await wrapper.get('input[aria-label="选择处理图片 common"]').setValue(true)
     await button(wrapper, '移出共用区（1）').trigger('click')
@@ -57,13 +57,13 @@ describe('草稿图片 V2 工作台', () => {
   it('按绑定分别限制修图和套图规划，已有素材仍可选中', async () => {
     const { wrapper, draft } = fixture()
     await wrapper.get('[data-region="sku"] input[aria-label="选择处理图片 red"]').setValue(true)
-    setOperationAvailability({ desktop_use_cases: [], desktop_reason: '使用桌面端', blocked_use_cases: { 'image.translate': 'Gemini Canvas 需要桌面端' } })
+    setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: [], desktop_reason: '使用桌面端', blocked_use_cases: { 'image.translate': 'Gemini Canvas 需要桌面端' } })
     await flushPromises()
     expect(button(wrapper, 'AI 修改').attributes('disabled')).toBeDefined()
     expect(button(wrapper, '翻译图片').attributes('disabled')).toBeDefined()
     expect(button(wrapper, '生成套图').attributes('disabled')).toBeUndefined()
     expect(wrapper.text()).toContain('Gemini Canvas 需要桌面端')
-    setOperationAvailability({ desktop_use_cases: [], desktop_reason: '', blocked_use_cases: { 'image.plan': '套图规划需要 API 模型' } })
+    setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: [], desktop_reason: '', blocked_use_cases: { 'image.plan': '套图规划需要 API 模型' } })
     await flushPromises()
     expect(button(wrapper, 'AI 修改').attributes('disabled')).toBeUndefined()
     expect(button(wrapper, '生成套图').attributes('disabled')).toBeUndefined()

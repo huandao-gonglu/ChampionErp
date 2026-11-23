@@ -20,7 +20,7 @@ from erp_web.services import image_service, image_translate_service
 from erp_web.services.image_batch_service import run_image_batch
 from erp_web.runtime_units.image_processing import process_selected_images
 from erp_web.services.capability_errors import BusinessCapabilityError
-from erp_web.services.desktop_connection_service import desktop_unavailable_reason
+from erp_web.services.desktop_connection_service import delegate_desktop_connection, desktop_unavailable_reason
 from erp_web.services.operation_availability import require_model_platform
 from erp_web.schemas.image_sets import MAX_IMAGE_SET_REFERENCES, ImageSetPlan
 from erp_web.services import image_set_service
@@ -468,18 +468,28 @@ def generate_draft_image_set_payload(body: dict[str, Any]) -> ResponseWithStatus
 
 
 ImagePayloadHandler = Callable[[dict[str, Any]], ResponseWithStatus]
+
+
+def _delegated(handler: ImagePayloadHandler) -> ImagePayloadHandler:
+    """网页手动图片操作没有本机连接时，借用本账号唯一在线桌面在后台执行。"""
+    def run(body: dict[str, Any]) -> ResponseWithStatus:
+        with delegate_desktop_connection():
+            return handler(body)
+    return run
+
+
 IMAGE_PAYLOAD_HANDLERS: dict[str, ImagePayloadHandler] = {
     "/api/draft-images/plan-set": plan_draft_image_set_payload,
-    "/api/draft-images/generate-set": generate_draft_image_set_payload,
+    "/api/draft-images/generate-set": _delegated(generate_draft_image_set_payload),
     "/api/draft-images/state": draft_image_state_payload,
-    "/api/draft-images/process": process_draft_images_payload,
+    "/api/draft-images/process": _delegated(process_draft_images_payload),
     "/api/image-processing/continue": continue_image_operation,
     "/api/image-pool/upload": upload_images_payload,
     "/api/image-pool/save": save_image_pool_payload,
     "/api/image-pool/action": apply_image_action_payload,
     "/api/image-pool/sync-generated": sync_generated_images_payload,
-    "/api/image-translate": translate_images_payload,
-    "/api/image-edit": edit_images_payload,
+    "/api/image-translate": _delegated(translate_images_payload),
+    "/api/image-edit": _delegated(edit_images_payload),
 }
 
 

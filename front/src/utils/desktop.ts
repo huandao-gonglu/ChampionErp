@@ -27,9 +27,10 @@ export function modelOperationReason(useCase: string): string {
   return availability.value.blocked_use_cases[useCase] || ''
 }
 
-/** 网页入口转为桌面交接，配置错误仍由原入口解释。 */
+/** 网页入口转为桌面交接，配置错误仍由原入口解释；本账号有可代执行的在线桌面时直接提交。 */
 export function modelRequiresDesktop(useCase: string): boolean {
-  return !hasLocalOperations() && (availability.value?.desktop_use_cases || []).includes(useCase)
+  if (hasLocalOperations() || !(availability.value?.desktop_use_cases || []).includes(useCase)) return false
+  return !(availability.value?.delegated_use_cases || []).includes(useCase)
 }
 
 const localFields = new Set(['command', 'profile', 'sandbox', 'browser_mode', 'browser_profile', 'browser_port', 'browser_url', 'browser_proxy'])

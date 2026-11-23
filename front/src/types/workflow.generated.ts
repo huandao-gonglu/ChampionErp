@@ -42,6 +42,59 @@ export interface BackendAlibabaAuthorizationStatus {
   needs_reauthorization: boolean
 }
 
+export interface BackendOneBoundQuotaEntry {
+  id: string
+  member_id: string
+  kind: "grant" | "earn" | "spend"
+  category: "" | "trade" | "auth" | "collect"
+  amount: number
+  ref: string
+  created: number
+}
+
+export interface BackendOneBoundBuyerQuota {
+  member_id: string
+  account_name: string
+  balance: number
+  granted: number
+  earned: number
+  spent_total: number
+  spent_trade: number
+  spent_auth: number
+  spent_collect: number
+}
+
+export interface BackendOneBoundKeyQuotaStatus {
+  configured: boolean
+  today_snapshot: number | null
+  today_estimated: number
+  daily_max: number | null
+  reserve: number
+  expires: string
+  days_until_expiry: number | null
+  expiring_soon: boolean
+  expired: boolean
+  observed_at: number | null
+  disabled: boolean
+  disabled_code: string
+  disabled_message: string
+  disabled_at: number | null
+  exhausted_until: number | null
+  initial_grant: number
+}
+
+export interface BackendOneBoundQuotaView {
+  ok: boolean
+  configured: boolean
+  is_admin: boolean
+  active_provider: string
+  authorized: boolean
+  buyer: BackendOneBoundBuyerQuota | null
+  buyers: Array<BackendOneBoundBuyerQuota>
+  key: BackendOneBoundKeyQuotaStatus | null
+  entries: Array<BackendOneBoundQuotaEntry>
+}
+
 export interface BackendForbiddenCategory {
   category_id: string
   name: string
@@ -63,6 +116,7 @@ export interface BackendPublicEnterpriseApplication {
 export interface BackendPublicOneBoundApplication {
   api_key: string
   secret_configured: boolean
+  initial_grant: number
 }
 
 export interface BackendPublicExchangeRateSettings {
@@ -414,6 +468,7 @@ export interface BackendOperationAvailability {
   desktop_reason: string
   blocked_use_cases: Record<string, string>
   desktop_use_cases: Array<string>
+  delegated_use_cases: Array<string>
 }
 
 export interface BackendDesktopHandoffCreated {

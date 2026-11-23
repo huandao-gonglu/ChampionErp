@@ -13,8 +13,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request
 
+from erp_web.context import peek_context
 from erp_web.schemas.alibaba_authorization import AlibabaAuthorizationStatus, AuthorizationAttempt
 from erp_web.schemas.external_requests import ExternalRequestBlocked
+from erp_web.schemas.onebound_quota import DEFAULT_INITIAL_GRANT
+from erp_web.services import onebound_quota_service
 from erp_web.services.alibaba_api_client import OneBoundAlibabaProvider, alibaba_provider
 from erp_web.services.alibaba_credentials import application_fingerprint, buyer_scope, legacy_account_scope, onebound_buyer_scope
 from erp_web.services.external_request_context import credential_fingerprint, request_context
@@ -87,9 +90,23 @@ class AlibabaAuthorizationService:
         self.store = config_store
         self.owner_id = owner_id
 
+    def _enterprise_workspace(self) -> bool:
+        return self.store.shared_config is self.store
+
+    def business_provider(self) -> str:
+        return self.store.alibaba_api_application() if self._enterprise_workspace() else 'onebound'
+
+    def _require_provider(self, provider=None) -> str:
+        """个人空间固定仅允许使用万邦；企业自用与跨境应用仅限管理员本人。"""
+        resolved = provider or self.business_provider()
+        if resolved != 'onebound' and not self._enterprise_workspace():
+            raise PermissionError('企业自用与跨境应用仅限管理员使用')
+        return resolved
+
     def status(self, provider=None) -> AlibabaAuthorizationStatus:
-        application = self.store.alibaba_application(provider)
-        state = self.store.alibaba_credentials(application['application_type'])
+        resolved = self._require_provider(provider)
+        application = self.store.alibaba_application(resolved)
+        state = self.store.alibaba_credentials(resolved)
         auth = _authorization(state, application)
         configured = _configured(application)
         can_authorize = configured
@@ -111,7 +128,7 @@ class AlibabaAuthorizationService:
                 attempt = 'waiting'
         unverified_directory = auth.get('directory_verified') is False
         return {'ok': True, 'application_type': application['application_type'],
-                'active': application['application_type'] == self.store.alibaba_api_application(),
+                'active': application['application_type'] == self.business_provider(),
                 'application_configured': configured, 'can_authorize': can_authorize,
                 'authorized': bool(auth.get('access_token') and configured and not unverified_directory
                                    and not (application['application_type'] == 'onebound' and expired)),
@@ -123,7 +140,8 @@ class AlibabaAuthorizationService:
 
     def start(self, provider=None):
         with _AUTH_LOCK:
-            application = self.store.alibaba_application(provider)
+            resolved = self._require_provider(provider)
+            application = self.store.alibaba_application(resolved)
             if not _configured(application):
                 raise ValueError('1688 授权服务暂未配置，请联系管理员')
             redirect = _redirect(application)
@@ -150,13 +168,16 @@ class AlibabaAuthorizationService:
 
     def callback(self, code, state):
         with _AUTH_LOCK:
-            application = self.store.alibaba_application(_callback_provider(state))
+            resolved = self._require_provider(_callback_provider(state))
+            application = self.store.alibaba_application(resolved)
             if application['application_type'] == 'onebound':
                 raise ValueError('请在 ERP 的万邦授权卡粘贴完整回调地址')
             return self._complete(application, code, state)
 
     def complete_from_url(self, callback_url: str, provider=None):
         """解析粘贴的地址，通过当前账号的待完成记录兑换授权码。"""
+        if provider is not None:
+            self._require_provider(provider)
         base, separator, query = callback_url.strip().partition('?')
         if not separator or '#' in callback_url or len(callback_url) > 16384:
             raise ValueError('请粘贴与本次授权回调地址一致的完整 URL')
@@ -169,7 +190,8 @@ class AlibabaAuthorizationService:
             if len(values) != 1 or not values[0].strip():
                 raise ValueError('完整回调地址必须包含唯一的 code 和 state')
         code, state = params['code'][0], params['state'][0]
-        application = self.store.alibaba_application(provider or _callback_provider(state))
+        resolved = self._require_provider(provider or _callback_provider(state))
+        application = self.store.alibaba_application(resolved)
         if base != _redirect(application):
             raise ValueError('请粘贴与本次授权回调地址一致的完整 URL')
         if application['application_type'] == 'onebound':
@@ -207,6 +229,15 @@ class AlibabaAuthorizationService:
             raise
         self.store.update_alibaba_credentials(
             {'authorization': auth, 'pending': {}}, expected=consumed, application=application, provider=provider)
+        if provider == 'onebound' and auth.get('member_id'):
+            app_ctx = peek_context()
+            if app_ctx is not None:
+                onebound_quota_service.ensure_buyer_grant(
+                    app_ctx.onebound_quota,
+                    application['api_key'],
+                    auth['member_id'],
+                    initial_grant=application.get('initial_grant', DEFAULT_INITIAL_GRANT),
+                )
         return self.status(provider)
 
     @staticmethod
@@ -267,8 +298,9 @@ class AlibabaAuthorizationService:
 
     def runtime_config(self):
         with _AUTH_LOCK:
-            application = self.store.alibaba_application()
-            snapshot = self.store.alibaba_credentials(application['application_type'])
+            resolved = self.business_provider()
+            application = self.store.alibaba_application(resolved)
+            snapshot = self.store.alibaba_credentials(resolved)
             auth = _authorization(snapshot, application)
             if application['application_type'] == 'onebound':
                 if not (_configured(application) and auth.get('access_token')):
@@ -292,7 +324,8 @@ class AlibabaAuthorizationService:
                     raise ValueError('1688 账号授权已到期，请重新连接账号')
                 payload = self._token(application, {'grant_type': 'refresh_token', 'refresh_token': auth['refresh_token']})
                 refreshed = self._parse_token(application, payload, previous=auth)
-                self.store.update_alibaba_credentials({'authorization': refreshed}, expected=snapshot, application=application)
+                self.store.update_alibaba_credentials({'authorization': refreshed}, expected=snapshot,
+                                                      application=application, provider=resolved)
                 auth = refreshed
             timeout = self.store.load_app_config().get('1688_api', {}).get('timeout_seconds', '20')
             return {'timeout_seconds': timeout, **application, 'access_token': auth.get('access_token', ''),
@@ -304,6 +337,7 @@ class AlibabaAuthorizationService:
         alibaba_provider({**application, 'access_token': token}).list_addresses()
 
     def bind_self_use_token(self, token):
+        self._require_provider('alibaba')
         token = token.strip() if isinstance(token, str) else ''
         if not token or len(token) > 4096 or any(c.isspace() for c in token) or '://' in token:
             raise ValueError('请粘贴企业自用应用「授权配置」中的已授权 Token')
@@ -380,5 +414,33 @@ class AlibabaAuthorizationService:
         return payload
 
 
+    def restore_onebound_key(self, quota_store, *, clear_auth_block=None) -> bool:
+        if not self._enterprise_workspace():
+            raise PermissionError('仅管理员可恢复万邦企业 Key')
+        application = self.store.alibaba_application('onebound')
+        if not _configured(application):
+            raise ValueError('万邦企业 API 尚未配置')
+        return onebound_quota_service.restore_key(
+            quota_store,
+            application['api_key'],
+            clear_auth_block=clear_auth_block,
+        )
+
+
 def alibaba_runtime_config(config_store):
     return AlibabaAuthorizationService(config_store).runtime_config()
+
+
+def onebound_quota_view(context):
+    service = AlibabaAuthorizationService(context.config, owner_id=context.user_id)
+    status = service.status('onebound')
+    application = context.config.alibaba_application('onebound')
+    return onebound_quota_service.build_quota_view(
+        context.onebound_quota,
+        is_admin=service._enterprise_workspace(),
+        active_provider=service.business_provider(),
+        application=application,
+        authorized=bool(status['authorized']),
+        member_id=status['member_id'],
+        account_name=status['account_name'],
+    )

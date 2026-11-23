@@ -181,9 +181,14 @@ def confirm_many(results, config):
                 values[index]['check_error'] = '平台未返回店铺商品状态，请稍后查询。'
                 continue
             inner = values[index].get('result') or values[index]
-            inner['checkpoint']['evidence']['campaign_observation'] = {
+            observation = {
                 'status': offer.get('status') or 'NO_RECORD', 'at': leaf.collect_time_iso(),
             }
+            if campaign_errors := leaf._feedback_items(offer.get('errors')):
+                observation['campaign_errors'] = campaign_errors
+            if campaign_warnings := leaf._feedback_items(offer.get('warnings')):
+                observation['campaign_warnings'] = campaign_warnings
+            inner['checkpoint']['evidence']['campaign_observation'] = observation
             values[index].pop('check_error', None)
         elif {'mappings', 'offers', 'quarantine'} <= set(facts[index]):
             try:

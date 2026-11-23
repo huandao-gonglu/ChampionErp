@@ -207,6 +207,8 @@ class _Recorder:
         self.quarantine: list[dict[str, Any]] = []
         self.card_errors = [{"message": "内容被拒绝"}]
         self.card_warnings = []
+        self.campaign_errors: list[dict[str, Any]] = []
+        self.campaign_warnings: list[dict[str, Any]] = []
         self.cards_missing = False
 
     def count(self, name: str) -> int:
@@ -243,7 +245,12 @@ class _Recorder:
 
     def fetch_campaign_offer(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
         self._record("fetch_yandex_campaign_offer", *args)
-        return [{"offerId": "SKU-001", "status": self.mapping_status}]
+        offer: dict[str, Any] = {"offerId": "SKU-001", "status": self.mapping_status}
+        if self.campaign_errors:
+            offer["errors"] = deepcopy(self.campaign_errors)
+        if self.campaign_warnings:
+            offer["warnings"] = deepcopy(self.campaign_warnings)
+        return [offer]
 
     def fetch_quarantine(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
         self._record("fetch_yandex_price_quarantine", *args)
@@ -1877,3 +1884,70 @@ def test_missing_card_details_does_not_confirm_success_or_failure(remote):
     payload = build_yandex_publish_payload(_product(), config, _record())
     with pytest.raises(ValueError, match='未返回一致的卡片详情'):
         _drive_to_terminal(publish_yandex_payload(payload, config), config)
+
+
+def test_confirmation_disabled_automatically_surfaces_campaign_errors_and_warnings(remote):
+    remote.mapping_status = "DISABLED_AUTOMATICALLY"
+    remote.campaign_errors = [
+        {
+            "message": "Товар не подходит для продажи из-за рубежа",
+            "comment": "Товары этой категории не могут продаваться из-за рубежа на Маркете",
+        }
+    ]
+    remote.campaign_warnings = [{"message": "Обратите внимание", "comment": "Проверьте категорию"}]
+    config = _config()
+    payload = build_yandex_publish_payload(_product(), config, _record())
+
+    terminal = _drive_to_terminal(publish_yandex_payload(payload, config), config)
+
+    assert terminal["ok"] is False
+    assert terminal["status"] == "real_publish_failed"
+    assert terminal["error_code"] == "YANDEX_CAMPAIGN_DISABLED_AUTOMATICALLY"
+    assert "DISABLED_AUTOMATICALLY" in terminal["error"]
+    assert "Товар не подходит для продажи из-за рубежа" in terminal["error"]
+    assert "Товары этой категории не могут продаваться из-за рубежа на Маркете" in terminal["error"]
+    assert terminal["error_map"]["raw"].startswith("Товар не подходит")
+    assert any("Товар не подходит" in line for line in terminal["error_map"]["field_errors"]["campaign_status"])
+    confirmation = terminal["checkpoint"]["evidence"]["confirmation"]
+    assert confirmation["campaign_errors"] == remote.campaign_errors
+    assert confirmation["campaign_warnings"] == remote.campaign_warnings
+    assert remote.campaign_warnings[0] in terminal["warnings"]
+
+
+def test_confirmation_published_records_campaign_warnings_without_pending_leak(remote):
+    remote.mapping_status = "CHECKING"
+    remote.campaign_warnings = [{"message": "Временное предупреждение"}]
+    config = _config()
+    payload = build_yandex_publish_payload(_product(), config, _record())
+
+    pending = _drive_to_terminal(publish_yandex_payload(payload, config), config)
+    assert pending["status"] == "publish_pending_confirmation"
+    assert pending["result"]["checkpoint"]["evidence"]["confirmation"]["campaign_warnings"] == remote.campaign_warnings
+    assert all(w.get("message") != "Временное предупреждение" for w in pending["result"]["checkpoint"]["warnings"])
+
+    remote.mapping_status = "PUBLISHED"
+    final_warning = {"message": "Финальное предупреждение", "comment": "Уточните описание"}
+    remote.campaign_warnings = [final_warning]
+    terminal = poll_yandex_publish_status(pending, config)
+
+    assert terminal["status"] == "real_publish_success"
+    assert final_warning in terminal["warnings"]
+    assert all(w.get("message") != "Временное предупреждение" for w in terminal["warnings"])
+    assert terminal["checkpoint"]["evidence"]["confirmation"]["campaign_warnings"] == [final_warning]
+
+
+def test_confirmation_card_failure_includes_card_and_campaign_errors(remote):
+    remote.mapping_status = "PUBLISHED"
+    remote.card_status = "HAS_CARD_CAN_UPDATE_ERRORS"
+    remote.card_errors = [{"message": "Не заполнено поле", "comment": "Укажите материал"}]
+    remote.campaign_errors = [{"message": "Ограничение магазина"}]
+    config = _config()
+    payload = build_yandex_publish_payload(_product(), config, _record())
+
+    terminal = _drive_to_terminal(publish_yandex_payload(payload, config), config)
+
+    assert terminal["status"] == "real_publish_failed"
+    assert terminal["error_code"] == "YANDEX_CARD_UPDATE_REJECTED"
+    assert "Не заполнено поле：Укажите материал" in terminal["error"]
+    assert "Ограничение магазина" in terminal["error"]
+    assert terminal["checkpoint"]["evidence"]["confirmation"]["campaign_errors"] == remote.campaign_errors

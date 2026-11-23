@@ -20,6 +20,7 @@ SCHEMA_MODULES = (
     "erp_web.schemas.agent_instructions",
     "erp_shared.desktop",
     "erp_web.schemas.alibaba_authorization",
+    "erp_web.schemas.onebound_quota",
     "erp_web.schemas.forbidden_categories",
     "erp_web.schemas.managed_settings",
     "erp_web.schemas.wechat_channel",

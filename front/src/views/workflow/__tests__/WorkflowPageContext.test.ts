@@ -272,7 +272,7 @@ it('网页确认翻译后桌面等待任务状态再提交，重复唤起复用�
   } } })
   let wrapper = mountView()
   try {
-    setOperationAvailability({ desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
+    setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
     await flushPromises()
     wrapper.getComponent(DraftBoxPanel).vm.$emit('edit', saved.draftsIndex[0], 'images')
     await flushPromises()
@@ -361,7 +361,7 @@ it('网页规划并编辑套图后交接桌面，桌面等待状态后打开套�
   } } })
   let wrapper = mountView()
   try {
-    setOperationAvailability({ desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
+    setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
     await flushPromises()
     wrapper.getComponent(DraftBoxPanel).vm.$emit('edit', saved.draftsIndex[0], 'images')
     await flushPromises()
@@ -451,7 +451,7 @@ it('套图交接期间草稿已更新时保留规划方案在抽屉中，核对�
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', name: 'WorkflowHome', component: WorkflowView }] })
   await router.push('/?tab=drafts')
   window.championDesktop = { localOperations: true, openLicenses: vi.fn() }
-  setOperationAvailability({ desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
+  setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
   const wrapper = shallowMount(WorkflowView, { attachTo: document.body, global: { plugins: [pinia, router], stubs: {
     DraftWorkspacePanel: false, DraftImageWorkbench: false, DraftImageSetDialog: false, WorkspaceDialog: false, Teleport: true,
   } } })
@@ -524,7 +524,7 @@ it('网页端套图结果页点击单页重做，桌面端等待原批次后按�
   } } })
   let wrapper = mountView()
   try {
-    setOperationAvailability({ desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
+    setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
     await flushPromises()
     wrapper.getComponent(DraftBoxPanel).vm.$emit('edit', saved.draftsIndex[0], 'images')
     await flushPromises()

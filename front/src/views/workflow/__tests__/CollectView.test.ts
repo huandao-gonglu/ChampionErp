@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import CollectView from '../CollectView.vue'
 import { createDefaultCollectForm } from '@/constants/initialState'
 import { launchDesktop } from '@/utils/desktopHandoff'
+import * as alibabaApi from '@/api/alibabaAuthorization'
 import * as api from '@/api/workflow/collectionLinks'
 import { useWorkflowCollectionStore } from '@/stores/workflow/collection'
 import { setAccountIdentity, businessStorageKey } from '@/utils/accountTransport'
@@ -11,6 +12,9 @@ import { COLLECT_QUEUE_STORAGE_KEY } from '@/utils/collectQueue'
 
 vi.mock('@/api/workflow/collectionLinks', () => ({
   listLinks: vi.fn(), manageLinks: vi.fn(), runLink: vi.fn(), verifyLink: vi.fn(), linkHistory: vi.fn(),
+}))
+vi.mock('@/api/alibabaAuthorization', () => ({
+  fetchOneBoundQuota: vi.fn(),
 }))
 vi.mock('@/utils/desktopHandoff', () => ({ launchDesktop: vi.fn() }))
 
@@ -44,6 +48,10 @@ beforeEach(() => {
   setActivePinia(createPinia())
   vi.mocked(api.listLinks).mockResolvedValue([browser, apiRow])
   vi.mocked(api.linkHistory).mockResolvedValue([])
+  vi.mocked(alibabaApi.fetchOneBoundQuota).mockResolvedValue({
+    ok: true, configured: false, is_admin: true, active_provider: 'alibaba', authorized: false,
+    buyer: null, buyers: [], key: null, entries: [],
+  })
 })
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); setAccountIdentity('') })
 
@@ -357,4 +365,27 @@ it('批量采集中调用 stopRun 后在当前条完成后停止后续队列，�
   expect(api.runLink).toHaveBeenCalledTimes(1)
   expect(store.runProgress).toBeNull()
   expect(store.running).toBe(false)
+})
+
+it('万邦采集额度不足时在开始前本地拦截提示，不启动队列且不自动切为浏览器采集', async () => {
+  const api1: api.CollectionLink = { ...apiRow, id: 'p1', revision: 1, status: 'pending' }
+  const api2: api.CollectionLink = { ...apiRow, id: 'p2', revision: 2, status: 'pending', url: 'https://detail.1688.com/offer/2.html' }
+  vi.mocked(api.listLinks).mockResolvedValue([api1, api2])
+  vi.mocked(alibabaApi.fetchOneBoundQuota).mockResolvedValue({
+    ok: true, configured: true, is_admin: false, active_provider: 'onebound', authorized: true,
+    buyer: { member_id: 'buyer-a', account_name: '买家甲', balance: 1, granted: 1, earned: 0, spent_total: 0, spent_trade: 0, spent_auth: 0, spent_collect: 0 },
+    buyers: [], key: null, entries: [],
+  })
+  const store = useWorkflowCollectionStore()
+  const runSpy = vi.spyOn(store, 'runLinks').mockResolvedValue(undefined)
+  const wrapper = mount(CollectView, { props: { form: createDefaultCollectForm(), loading: false, error: '' } })
+  try {
+    await flushPromises()
+    expect(wrapper.get('[data-testid="collect-onebound-quota"]').text()).toContain('万邦余额 1 次')
+    const startBtn = wrapper.findAll('button').find(b => b.text().includes('开始待采集'))!
+    await startBtn.trigger('click')
+    expect(runSpy).not.toHaveBeenCalled()
+    expect(launchDesktop).not.toHaveBeenCalled()
+    expect(wrapper.get('[role="alert"]').text()).toContain('当前余额 1 次，本次预计需要 2 次')
+  } finally { wrapper.unmount() }
 })

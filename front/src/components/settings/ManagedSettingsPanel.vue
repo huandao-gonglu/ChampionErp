@@ -1,23 +1,43 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { fetchOneBoundQuota, restoreOneBoundKey, type OneBoundQuotaView } from '@/api/alibabaAuthorization'
 import { fetchManagedSettings, saveManagedSettings, type ManagedSettings } from '@/api/managedSettings'
 import { testApiConfig } from '@/api/workflow/settings'
 
 const settings = ref<ManagedSettings | null>(null)
+const oneboundQuota = ref<OneBoundQuotaView | null>(null)
 const secrets = ref({ alibaba: '', alibaba_crossborder: '', onebound: '', crossborderbus: '' })
 const applications = [
   { key: 'alibaba', title: '1688 企业自用应用' },
   { key: 'alibaba_crossborder', title: '1688 跨境 ERP 服务商应用' },
 ] as const
-const operation = ref<'load' | 'save' | 'test' | null>(null)
+const operation = ref<'load' | 'save' | 'test' | 'restore' | null>(null)
 const error = ref('')
 const notice = ref('')
 
+async function loadOneBoundQuota() {
+  try { oneboundQuota.value = await fetchOneBoundQuota() }
+  catch { /* 额度只读状态不可用时不阻塞共享设置管理。 */ }
+}
 async function load() {
   operation.value = 'load'
   error.value = notice.value = ''
-  try { settings.value = await fetchManagedSettings() }
+  try {
+    settings.value = await fetchManagedSettings()
+    void loadOneBoundQuota()
+  }
   catch (cause) { error.value = cause instanceof Error ? cause.message : '共享设置读取失败' }
+  finally { operation.value = null }
+}
+async function restoreKey() {
+  if (operation.value) return
+  operation.value = 'restore'
+  error.value = notice.value = ''
+  try {
+    const result = await restoreOneBoundKey()
+    oneboundQuota.value = result.quota
+    notice.value = result.restored ? '已恢复万邦企业 Key 使用' : '万邦企业 Key 当前已处于可用状态'
+  } catch (cause) { error.value = cause instanceof Error ? cause.message : '恢复万邦企业 Key 失败' }
   finally { operation.value = null }
 }
 async function save() {
@@ -39,12 +59,14 @@ async function save() {
       },
       onebound: {
         api_key: value.onebound.api_key,
+        initial_grant: value.onebound.initial_grant,
         ...(secrets.value.onebound.trim() ? { api_secret: secrets.value.onebound.trim() } : {}),
       },
       ...(secrets.value.crossborderbus.trim() ? { crossborderbus_client_secret: secrets.value.crossborderbus.trim() } : {}),
     })
     secrets.value = { alibaba: '', alibaba_crossborder: '', onebound: '', crossborderbus: '' }
     notice.value = '共享设置已保存'
+    void loadOneBoundQuota()
   } catch (cause) { error.value = cause instanceof Error ? cause.message : '共享设置保存失败' }
   finally { operation.value = null }
 }
@@ -92,13 +114,13 @@ onMounted(load)
       </section>
       <section class="space-y-4 rounded-lg border border-accent-200 p-4 dark:border-dark-700">
         <h4 class="font-semibold">1688 API</h4>
-        <label class="block text-sm">当前使用的应用
-          <select v-model="settings.alibaba_api_application" class="input mt-2 w-full" aria-label="当前使用的 1688 应用">
+        <label class="block text-sm">管理员本人使用的 1688 方案
+          <select v-model="settings.alibaba_api_application" class="input mt-2 w-full" aria-label="管理员本人使用的 1688 方案">
             <option v-for="application in applications" :key="application.key" :value="application.key">{{ application.title }}</option>
             <option value="onebound">万邦 1688 API</option>
           </select>
         </label>
-        <p class="muted text-sm">商品采集、采购、支付和物流查询使用所选方案及当前用户对应的买家授权。每套方案可在「1688 授权」中单独管理，切换时保留各方案的授权。</p>
+        <p class="muted text-sm">仅决定管理员本人的商品采集、采购、支付和物流查询方案；普通用户固定使用万邦 1688 API。每套方案可在「1688 授权」中单独管理，切换时保留各方案的授权。</p>
       </section>
       <p class="text-sm text-amber-700 dark:text-amber-300">更换企业应用凭据后，对应的用户授权将失效，需要重新连接账号。已保存的密钥留空可继续使用。</p>
       <section v-for="application in applications" :key="application.key" class="space-y-4 rounded-lg border border-accent-200 p-4 dark:border-dark-700">
@@ -112,6 +134,18 @@ onMounted(load)
         <p class="muted text-sm">API Key 和 API Secret 用于企业接入万邦。每位用户的 1688 买家授权单独保存。</p>
         <label class="block text-sm">API Key<input v-model="settings.onebound.api_key" maxlength="256" autocomplete="off" class="input mt-2 w-full" /></label>
         <label class="block text-sm">API Secret<input v-model="secrets.onebound" type="password" maxlength="4096" autocomplete="new-password" :placeholder="settings.onebound.secret_configured ? '已配置，填写可更换' : '尚未配置'" class="input mt-2 w-full" /></label>
+        <label class="block text-sm">新买家基础额度（次）
+          <input v-model.number="settings.onebound.initial_grant" type="number" min="0" max="100000" step="1" required class="input mt-2 w-full" />
+        </label>
+        <div
+          v-if="oneboundQuota?.key?.disabled"
+          class="flex flex-wrap items-center justify-between gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200"
+        >
+          <span>{{ oneboundQuota.key.disabled_message || '万邦企业 Key 已暂停使用' }}</span>
+          <button type="button" class="btn btn-secondary" :disabled="operation !== null" @click="restoreKey">
+            {{ operation === 'restore' ? '恢复中…' : '已处理，恢复使用' }}
+          </button>
+        </div>
       </section>
       <section class="space-y-4 rounded-lg border border-accent-200 p-4 dark:border-dark-700">
         <h4 class="font-semibold">跨境巴士企业应用</h4>

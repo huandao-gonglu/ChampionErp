@@ -107,7 +107,7 @@ describe('共用套图规划与采用', () => {
     expect(controller.applySet).not.toHaveBeenCalled()
   })
   it('设计内容缺失时不提交套图，补全后确认生成交由工作台交接桌面', async () => {
-    setOperationAvailability({ desktop_use_cases: ['image.translate'], desktop_reason: '需要本机', blocked_use_cases: {} })
+    setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: ['image.translate'], desktop_reason: '需要本机', blocked_use_cases: {} })
     const { wrapper, controller } = await fixture()
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -126,7 +126,7 @@ describe('共用套图规划与采用', () => {
     }), 'planned-version')
   })
   it('结果页单张重做在网页需要桌面时交由工作台携带参数交接，不裸唤桌面', async () => {
-    setOperationAvailability({ desktop_use_cases: ['image.translate'], desktop_reason: '需要本机', blocked_use_cases: {} })
+    setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: ['image.translate'], desktop_reason: '需要本机', blocked_use_cases: {} })
     const { wrapper, controller } = await fixture(snapshot())
     await wrapper.get('button[aria-label="重做 主图"]').trigger('click')
     expect(launchDesktop).not.toHaveBeenCalled()

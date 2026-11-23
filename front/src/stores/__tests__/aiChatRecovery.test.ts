@@ -12,7 +12,10 @@ vi.mock('@/api/aiWork', () => ({
 
 class FakeEventSource {
   static urls: string[] = []
-  constructor(url: string) { FakeEventSource.urls.push(url) }
+  static instances: FakeEventSource[] = []
+  onmessage?: () => void
+  onerror?: () => void
+  constructor(url: string) { FakeEventSource.urls.push(url); FakeEventSource.instances.push(this) }
   close() {}
 }
 const savedId = `conversation_global_chat_${'ab'.repeat(16)}`
@@ -33,6 +36,7 @@ describe('普通聊天选择恢复', () => {
     vi.spyOn(localStorage, 'removeItem').mockImplementation(key => { saved.delete(key) })
     mocks.fetchUiMessages.mockReset().mockResolvedValue(detail())
     FakeEventSource.urls = []
+    FakeEventSource.instances = []
     vi.stubGlobal('EventSource', FakeEventSource)
     vi.stubGlobal('fetch', vi.fn())
     reload()
@@ -148,6 +152,44 @@ describe('普通聊天选择恢复', () => {
       headers: { 'x-vercel-ai-ui-message-stream': 'v1' },
     }))
     await vi.waitFor(() => expect(store.isBusy).toBe(false))
+    store.disconnectEvents()
+  })
+
+  it('输出流中途断开后，后台继续完成的历史会清除过时的 network error', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"type":"start"}\n\n'))
+        controller.error(new TypeError('network error'))
+      },
+    })
+    vi.mocked(fetch).mockResolvedValue(new Response(body, { headers: { 'x-vercel-ai-ui-message-stream': 'v1' } }))
+    const store = useAiChatStore()
+    const id = store.startConversation()
+    mocks.fetchUiMessages.mockResolvedValue({
+      ...detail(id), history_version: 3, run_active: false,
+      messages: [...detail(id).messages, { id: 'reply', role: 'assistant', parts: [{ type: 'text', text: '后台已继续完成' }] }],
+    })
+    store.input = '开始处理'
+    store.sendMessage()
+    await vi.waitFor(() => expect(store.historyVersion).toBe(3))
+    expect(store.messages.at(-1)?.id).toBe('reply')
+    expect(store.error).toBeUndefined()
+    expect(store.status).toBe('ready')
+    store.disconnectEvents()
+  })
+
+  it('请求被拒绝的 HTTP 错误在重读历史后继续保留', async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ error: '目标草稿无效', error_code: 'AI_CHAT_TARGET_INVALID' }), { status: 400 }))
+    const store = useAiChatStore()
+    store.input = '开始处理'
+    store.sendMessage()
+    await vi.waitFor(() => expect(store.error?.message).toBe('目标草稿无效'))
+    const id = store.activeConversationId!
+    mocks.fetchUiMessages.mockResolvedValue({ ...detail(id), history_version: 0, messages: [] })
+    store.refreshHistory()
+    await vi.waitFor(() => expect(mocks.fetchUiMessages).toHaveBeenCalled())
+    await Promise.resolve()
+    expect(store.error?.message).toBe('目标草稿无效')
     store.disconnectEvents()
   })
 })

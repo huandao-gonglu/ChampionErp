@@ -42,7 +42,7 @@ function fixture() {
   const work = scope.run(() => useDraftImageWorkbench({ draft, productContext, active, save,
     accept: result => { if (result.draft) draft.value = result.draft; if ('product' in result) product.value = result.product },
   }))!
-  return { draft, product, active, response, work, save }
+  return { draft, product, productContext, active, response, work, save }
 }
 function batch(terminal = false): ImageBatchSnapshot {
   return { conversation_id: 'batch', draft_id: 'd', product_id: 'p', prompt: '修改', created_at: '', updated_at: '',
@@ -62,7 +62,7 @@ afterEach(() => { scopes.forEach(scope => scope.stop()); scopes.length = 0; vi.c
 
 describe('图片工作台操作与恢复', () => {
   it('当前端不能修图时可读原任务，翻译、编辑和重做均不保存草稿或创建批次', async () => {
-    setOperationAvailability({ desktop_use_cases: [], desktop_reason: '需要桌面端', blocked_use_cases: { 'image.translate': 'Gemini Canvas 需要桌面端' } })
+    setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: [], desktop_reason: '需要桌面端', blocked_use_cases: { 'image.translate': 'Gemini Canvas 需要桌面端' } })
     const { work, save } = fixture()
     await flushPromises()
     await work.start('translate', ['common'])
@@ -363,8 +363,101 @@ describe('图片工作台操作与恢复', () => {
     expect(processDraftImages).not.toHaveBeenCalled()
     expect(work.notice.value).toContain('尚未开始处理')
   })
+  it('交接桌面后网页持续跟随原请求：等待期间不显示旧批次失败文案，桌面创建任务后展示新进度', async () => {
+    setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
+    const { work, draft, response } = fixture()
+    await flushPromises()
+    const oldFailed = batch(true); oldFailed.conversation_id = 'old-translate'
+    oldFailed.items.forEach(item => Object.assign(item, { status: 'failed', error: '桌面连接已断开', started_at: '' }))
+    work.batch.value = oldFailed
+    const plan: ImageSetPlan = { style: '简洁白底', pages: [
+      { key: 'main', title: '主图', role: 'main', prompt: '主图展示', source_image_ids: ['common'] },
+    ] }
+    await work.generateSet(plan, 'v1')
+    const requestId = (vi.mocked(launchDesktop).mock.calls[0][0]!.state!.workflow as { draftImageSetAction: { requestId: string } }).draftImageSetAction.requestId
+    expect(work.notice.value).toContain('等待桌面端')
+
+    // 桌面尚未提交：服务端对该标识返回空，网页保持等待提示，不展示旧批次失败文案。
+    vi.mocked(fetchDraftImageState).mockResolvedValue(response(draft.value, null))
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(fetchDraftImageState).toHaveBeenLastCalledWith('d', requestId, draft.value.updatedAt)
+    expect(work.notice.value).toContain('等待桌面端')
+    expect(work.notice.value).not.toContain('尚未执行')
+
+    // 桌面创建任务后，网页按同一标识进入进度，完成后展示终态。
+    const running = { ...batch(), conversation_id: requestId, image_set: plan }
+    vi.mocked(fetchDraftImageState).mockResolvedValue(response(draft.value, running))
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(work.batch.value?.conversation_id).toBe(requestId)
+    expect(work.busy.value).toBe(true)
+    vi.mocked(fetchDraftImageState).mockResolvedValue(response(draft.value, { ...batch(true), conversation_id: requestId, image_set: plan }))
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(work.busy.value).toBe(false)
+    expect(generateDraftImageSet).not.toHaveBeenCalled()
+  })
+  it('套图结果只进素材池、草稿版本不变时，轮询发现缺图后补读素材一次，且不覆盖本地草稿', async () => {
+    const { work, draft, productContext, response, active } = fixture()
+    await flushPromises()
+    const plan: ImageSetPlan = { style: '简洁', pages: [
+      { key: 'main', title: '主图', role: 'main', prompt: '主图', source_image_ids: ['common'] },
+    ] }
+    const done = { ...batch(true), conversation_id: 'set-1', image_set: plan }
+    done.items = [{ ...done.items[0], status: 'success', error: '', source_id: 'main', result_asset_ids: ['generated-1'] }]
+    vi.mocked(fetchDraftImageState).mockImplementation(async (_id, _request, version) => {
+      if (version) return { unchanged: true, batch: done } as never
+      return { ...response(draft.value, done), imagePool: [{ id: 'generated-1' }] as DraftImageState['imagePool'] }
+    })
+    draft.value.title = '未保存的本地标题'
+    active.value = false; await nextTick()
+    active.value = true; await flushPromises()
+    expect(work.batch.value?.conversation_id).toBe('set-1')
+    expect(productContext.value.imagePool.map(image => image.id)).toEqual(['generated-1'])
+    expect(draft.value.title).toBe('未保存的本地标题')
+    const fullReads = () => vi.mocked(fetchDraftImageState).mock.calls.filter(call => !call[2]).length
+    expect(fullReads()).toBe(1)
+    // 素材已存在后，再次轮询不重复补读。
+    active.value = false; await nextTick()
+    active.value = true; await flushPromises()
+    expect(fullReads()).toBe(1)
+  })
+  it('交接请求过期后停止等待并提示重新发起', async () => {
+    setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
+    const { work, draft, response } = fixture()
+    await flushPromises()
+    await work.generateSet({ style: '简洁', pages: [
+      { key: 'main', title: '主图', role: 'main', prompt: '主图', source_image_ids: ['common'] },
+    ] }, 'v1')
+    vi.mocked(fetchDraftImageState).mockResolvedValue(response(draft.value, null))
+    await vi.advanceTimersByTimeAsync(601_000)
+    expect(work.notice.value).toContain('已过期')
+    vi.mocked(fetchDraftImageState).mockClear()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(fetchDraftImageState).not.toHaveBeenCalled()
+  })
+  it('本账号有可代执行的在线桌面时，网页直接提交翻译和套图，不唤起桌面', async () => {
+    setOperationAvailability({ delegated_use_cases: ['image.translate'], desktop_use_cases: ['image.translate'], desktop_reason: '需要本机', blocked_use_cases: {} })
+    const { work, draft, response, save } = fixture()
+    await flushPromises()
+    vi.mocked(processDraftImages).mockResolvedValue(response(draft.value, batch()))
+    await work.start('translate', ['common'])
+    expect(save).toHaveBeenCalledOnce()
+    expect(processDraftImages).toHaveBeenCalledOnce()
+    expect(launchDesktop).not.toHaveBeenCalled()
+    expect(work.notice.value).not.toContain('等待桌面端')
+    const finished = batch(true)
+    vi.mocked(fetchDraftImageState).mockResolvedValue(response(draft.value, finished))
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(work.busy.value).toBe(false)
+    const plan: ImageSetPlan = { style: '简洁', pages: [
+      { key: 'main', title: '主图', role: 'main', prompt: '主图', source_image_ids: ['common'] },
+    ] }
+    vi.mocked(generateDraftImageSet).mockResolvedValue(response(draft.value, { ...batch(), conversation_id: 'set', image_set: plan }))
+    await work.generateSet(plan, draft.value.updatedAt)
+    expect(generateDraftImageSet).toHaveBeenCalledOnce()
+    expect(launchDesktop).not.toHaveBeenCalled()
+  })
   it('网页端需要桌面执行修图时，套图生成和单页重做携带完整动作交接桌面', async () => {
-    setOperationAvailability({ desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
+    setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
     const { work, draft } = fixture()
     await flushPromises()
     const plan: ImageSetPlan = { style: '简洁白底', pages: [
@@ -407,7 +500,7 @@ describe('图片工作台操作与恢复', () => {
   })
   it('桌面端恢复套图遇到版本变化、忙碌或旧批次变化时停止并说明，重做过期缓存时先刷新', async () => {
     window.championDesktop = { localOperations: true, openLicenses: vi.fn() }
-    setOperationAvailability({ desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
+    setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: ['image.translate'], desktop_reason: '', blocked_use_cases: {} })
     try {
       const { work, draft, response } = fixture()
       await flushPromises()

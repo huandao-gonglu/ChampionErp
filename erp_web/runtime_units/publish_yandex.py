@@ -874,6 +874,7 @@ def _terminal_failure(
         "error_map": mapped,
         "plan": deepcopy(plan),
         "checkpoint": checkpoint.model_dump(),
+        "warnings": deepcopy(checkpoint.warnings),
         "checked_at": collect_time_iso(),
     }
 
@@ -1132,6 +1133,46 @@ def _quarantined_offer(
     return None
 
 
+def _feedback_items(rows: Any) -> list[dict[str, Any]]:
+    """提取 Yandex 响应中的 errors/warnings 原文条目，过滤空项。"""
+
+    if not isinstance(rows, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        if isinstance(row, dict):
+            if any(str(row.get(key) or "").strip() for key in ("message", "comment", "code")):
+                items.append(deepcopy(row))
+        elif str(row or "").strip():
+            items.append({"message": str(row).strip()})
+    return items
+
+
+def _format_feedback_lines(items: list[dict[str, Any]]) -> list[str]:
+    """将平台反馈条目格式化为去重后的可读文案。"""
+
+    lines: list[str] = []
+    for row in items:
+        message = str(row.get("message") or "").strip()
+        comment = str(row.get("comment") or "").strip()
+        if message and comment and comment != message:
+            text = f"{message}：{comment}"
+        else:
+            text = message or comment or str(row.get("code") or "").strip()
+        if text and text not in lines:
+            lines.append(text)
+    return lines
+
+
+def _append_warnings(
+    checkpoint: YandexPublishCheckpoint,
+    items: list[dict[str, Any]],
+) -> None:
+    for item in items:
+        if item not in checkpoint.warnings:
+            checkpoint.warnings.append(deepcopy(item))
+
+
 def _confirmation_readback(
     plan: dict[str, Any],
     checkpoint: YandexPublishCheckpoint,
@@ -1189,22 +1230,33 @@ def _confirmation_readback(
         card_status = str(nested_offer.get("cardStatus") or "").strip()
         group_id = str(nested_offer.get("groupId") or "")
     campaign_status = ""
+    campaign_errors: list[dict[str, Any]] = []
+    campaign_warnings: list[dict[str, Any]] = []
     if offers:
         first_offer = offers[0] if isinstance(offers[0], dict) else {}
         campaign_status = str(first_offer.get("status") or "").strip().upper()
+        campaign_errors = _feedback_items(first_offer.get("errors"))
+        campaign_warnings = _feedback_items(first_offer.get("warnings"))
 
-    checkpoint.evidence["confirmation"] = {
+    confirmation_evidence: dict[str, Any] = {
         "campaign_status": campaign_status,
         "card_status": card_status,
         "group_id": group_id,
         "at": collect_time_iso(),
     }
+    if campaign_errors:
+        confirmation_evidence["campaign_errors"] = deepcopy(campaign_errors)
+    if campaign_warnings:
+        confirmation_evidence["campaign_warnings"] = deepcopy(campaign_warnings)
+    checkpoint.evidence["confirmation"] = confirmation_evidence
     checkpoint.last_response_summary = {
         "step": "confirmation",
         "status": campaign_status or "NO_RECORD",
         "checked_at": collect_time_iso(),
     }
 
+    card_errors: list[dict[str, Any]] = []
+    card_warnings: list[dict[str, Any]] = []
     # 在售商品的卡片错误枚举也可能只包含内容警告，必须读取详情再裁决。
     # 真实 errors 仍然阻断确认，不能仅凭在售状态认定本次内容全部生效。
     if campaign_status == _SUCCESS_CAMPAIGN_STATUS and card_status == "HAS_CARD_CAN_UPDATE_ERRORS":
@@ -1215,30 +1267,41 @@ def _confirmation_readback(
         if card is None or card.get("cardStatus") != card_status:
             raise ValueError("Yandex 未返回一致的卡片详情，保留原发布状态，请稍后查询。")
         checkpoint.evidence["confirmation"]["card_details"] = deepcopy(card)
+        card_errors = _feedback_items(card.get("errors"))
+        card_warnings = _feedback_items(card.get("warnings"))
         if not card.get("errors") and card.get("warnings"):
-            for warning in card["warnings"]:
-                if warning not in checkpoint.warnings:
-                    checkpoint.warnings.append(deepcopy(warning))
+            _append_warnings(checkpoint, card_warnings)
+            _append_warnings(checkpoint, campaign_warnings)
             checkpoint.phase = "terminal"
             return _terminal_success(plan, checkpoint, campaign_status=campaign_status, card_status=card_status)
 
     if card_status in _CARD_STATUS_FAILED:
+        _append_warnings(checkpoint, card_warnings)
+        _append_warnings(checkpoint, campaign_warnings)
+        error_lines = _format_feedback_lines([*card_errors, *campaign_errors])
+        detail_text = "；".join(error_lines)
+        summary = (
+            f"Yandex 未接受本次商品变更（cardStatus={card_status}）：{detail_text}"
+            if detail_text
+            else (
+                f"Yandex 未接受本次商品变更（cardStatus={card_status}），"
+                "请根据卖家后台的卡片错误提示修正后重新发布。"
+            )
+        )
         return _terminal_failure(
             plan,
             checkpoint,
             {
-                "summary": (
-                    f"Yandex 未接受本次商品变更（cardStatus={card_status}），"
-                    "请根据卖家后台的卡片错误提示修正后重新发布。"
-                ),
+                "summary": summary,
                 "field_errors": {
                     "card_status": [
-                        f"card 状态：{card_status}；campaign 状态：{campaign_status or '未知'}"
+                        f"card 状态：{card_status}；campaign 状态：{campaign_status or '未知'}",
+                        *error_lines,
                     ]
                 },
                 "error_code": "YANDEX_CARD_UPDATE_REJECTED",
                 "retryable": False,
-                "raw": "",
+                "raw": detail_text,
             },
         )
     if card_status in _CARD_STATUS_PROCESSING:
@@ -1248,21 +1311,28 @@ def _confirmation_readback(
         if card_status and card_status not in _CARD_STATUS_ACCEPTED:
             # Campaign 已上架但卡片状态要求补充内容/重新放置等，属于
             # 官方枚举中的非接受态，不能自动确认成功。
+            _append_warnings(checkpoint, campaign_warnings)
+            error_lines = _format_feedback_lines(campaign_errors)
+            detail_text = "；".join(error_lines)
+            summary = (
+                f"Yandex Campaign 状态为 {campaign_status}，但卡片状态为 "
+                f"{card_status}（需要补充内容或在店铺重新放置商品），"
+                "请在卖家后台处理后重试。"
+            )
+            if detail_text:
+                summary = f"{summary}（{detail_text}）"
             return _terminal_failure(
                 plan,
                 checkpoint,
                 {
-                    "summary": (
-                        f"Yandex Campaign 状态为 {campaign_status}，但卡片状态为 "
-                        f"{card_status}（需要补充内容或在店铺重新放置商品），"
-                        "请在卖家后台处理后重试。"
-                    ),
-                    "field_errors": {"card_status": [card_status]},
+                    "summary": summary,
+                    "field_errors": {"card_status": [card_status, *error_lines]},
                     "error_code": "YANDEX_CARD_STATUS_UNEXPECTED",
                     "retryable": False,
-                    "raw": "",
+                    "raw": detail_text,
                 },
             )
+        _append_warnings(checkpoint, campaign_warnings)
         checkpoint.phase = "terminal"
         return _terminal_success(
             plan,
@@ -1272,11 +1342,16 @@ def _confirmation_readback(
         )
     if campaign_status in _FAILED_CAMPAIGN_STATUSES or campaign_status == _NO_STOCKS_CAMPAIGN_STATUS:
         # NO_STOCKS 不能视为成功：FBY 之外库存未到位、或 FBY 尚未入库。
+        _append_warnings(checkpoint, campaign_warnings)
+        error_lines = _format_feedback_lines(campaign_errors)
+        detail_text = "；".join(error_lines)
         reason = (
             "Yandex 商品无库存，发布未确认成功"
             if campaign_status == _NO_STOCKS_CAMPAIGN_STATUS
             else f"Yandex 店铺商品状态异常：{campaign_status}"
         )
+        if detail_text:
+            reason = f"{reason}（{detail_text}）"
         return _terminal_failure(
             plan,
             checkpoint,
@@ -1284,27 +1359,34 @@ def _confirmation_readback(
                 "summary": reason,
                 "field_errors": {
                     "campaign_status": [
-                        f"campaign 状态：{campaign_status}；card 状态：{card_status or '未知'}"
+                        f"campaign 状态：{campaign_status}；card 状态：{card_status or '未知'}",
+                        *error_lines,
                     ]
                 },
                 "error_code": f"YANDEX_CAMPAIGN_{campaign_status}"
                 if campaign_status
                 else "YANDEX_CAMPAIGN_STATUS_INVALID",
                 "retryable": False,
-                "raw": "",
+                "raw": detail_text,
             },
         )
     if campaign_status in _PENDING_CAMPAIGN_STATUSES:
         return _pending_result(plan, checkpoint)
+    _append_warnings(checkpoint, campaign_warnings)
+    error_lines = _format_feedback_lines(campaign_errors)
+    detail_text = "；".join(error_lines)
+    summary = f"Yandex 店铺商品状态不受支持：{campaign_status}"
+    if detail_text:
+        summary = f"{summary}（{detail_text}）"
     return _terminal_failure(
         plan,
         checkpoint,
         {
-            "summary": f"Yandex 店铺商品状态不受支持：{campaign_status}",
-            "field_errors": {"campaign_status": [campaign_status]},
+            "summary": summary,
+            "field_errors": {"campaign_status": [campaign_status, *error_lines]},
             "error_code": "YANDEX_CAMPAIGN_STATUS_INVALID",
             "retryable": False,
-            "raw": "",
+            "raw": detail_text,
         },
     )
 

@@ -19,6 +19,7 @@
 | **Ozon 主动限速** | 每 `Client-Id` 进程内默认并发 **3**、**15 RPS**（保守低于公开资料 50 RPS 上限，为多系统共用留余量）；见 `Ratelimit-Remaining: 0` 暂停内存令牌桶至下一秒（或 Reset 头），不落库 |
 | **Yandex 主动限速** | 按官方规则对同 `campaign/business` 最多放行 **4 并发**；见 `X-RateLimit-Resource-Remaining: 0` 按 `X-RateLimit-Resource-Until` 暂停内存接口窗口 |
 | **Mercado Libre** | 每账号默认并发 **4**，不猜测官方 RPS |
+| **万邦 1688** | 识别 HTTP 200 的 `error_code`：4013 冷却至北京时间次日 00:00 并持久化到 `onebound-quota.sqlite3`；4016/4007/4005 内存熔断并持久停用，管理员在设置中点「恢复使用」（`POST /api/alibaba/onebound/key/restore`，不发探测）解除；4008 走纯内存退避；4006/4012 单接口 60s 防重撞；4009 维护中对写入保留 `outcome_unknown`；发送前经 `before_send` 校验两层额度与分级放行 |
 | **429 / 420 / Ozon `code 8`** | 纯内存共享冷却：有有效 `Retry-After` 按其等待；无恢复时间按**轮次**退避 `2s → 5s → 15s → 60s`（并发在途的晚到 429 不重复升级）；到期单飞放行，超任务 deadline 快速失败停止，**不落库、不要求人工点恢复** |
 | **401 / 凭据失效** | 内存按 `credential_id` 熔断（不阻断刷新后的新凭据）；Ozon/Yandex 同步将匹配店铺的 `auth_status` 标为异常，引导到「授权配置」更换并测试 |
 | **Ozon 403 / `code 7`** | 单接口 403 仅报错缺权限并设 60s 内存防重撞，不锁整店；命中 `/v1/seller/info`、明确停用文案、**同 `credential_id` 此前成功过的只读接口突报 403**、或 10 分钟内同凭据无成功且 **≥ 3 个不同接口 403** 时，升级为整号熔断并持久化到店铺 `auth_status` |

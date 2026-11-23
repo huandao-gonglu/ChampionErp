@@ -324,3 +324,93 @@ def test_missing_canvas_connection_uses_only_matching_public_preset(tmp_path, mo
     config.update({binding["id"]: {"browser_profile": "mine"}})
     with pytest.raises(ValueError, match="已变化"):
         config.model(binding)
+
+
+def _delegation_context(monkeypatch, broker):
+    from types import SimpleNamespace
+    import erp_web.context as context_module
+    monkeypatch.setattr(context_module, 'get_context', lambda: SimpleNamespace(desktop_connections=broker))
+
+
+def test_web_image_delegation_only_uses_the_single_online_desktop(monkeypatch):
+    from erp_web.services.desktop_connection_service import current_desktop_connection, delegate_desktop_connection
+    broker = DesktopConnections()
+    _delegation_context(monkeypatch, broker)
+    try:
+        assert broker.delegate_connection() == ''
+        first = broker.connect()['connection_id']
+        assert broker.delegate_connection() == first
+        with delegate_desktop_connection():
+            assert current_desktop_connection() == first
+        # 多台在线时不猜设备，网页改走交接；请求自带连接时沿用原连接。
+        second = broker.connect()['connection_id']
+        assert broker.delegate_connection() == ''
+        with delegate_desktop_connection():
+            assert current_desktop_connection() == ''
+        with bind_desktop_connection(second), delegate_desktop_connection():
+            assert current_desktop_connection() == second
+        broker.disconnect(second)
+        assert broker.delegate_connection() == first
+    finally:
+        broker.close()
+
+
+def test_delegated_desktop_only_accepts_canvas_image_operations(monkeypatch):
+    from erp_web.services.desktop_connection_service import delegate_desktop_connection
+    broker = DesktopConnections()
+    _delegation_context(monkeypatch, broker)
+    key = broker.connect()['connection_id']
+    model = {'id': 'canvas', 'connection_type': 'browser', 'browser_provider': 'gemini'}
+    try:
+        with delegate_desktop_connection():
+            for operation, params in (('browser.status', {}), ('collect.read', {'product_url': URL}),
+                                      ('auth.open', {'url': 'https://example.com'}), ('cli.run', {'model': model, 'prompt': '测试'})):
+                with pytest.raises(DesktopUnavailable):
+                    broker.call(operation, params, timeout=1)
+            assert broker.poll(key, wait_seconds=0)['calls'] == []
+
+            def caller():
+                return broker.call('canvas.check', {'model': model, 'force_login': False, 'timeout_seconds': 5}, timeout=3)
+            from contextvars import copy_context
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(copy_context().run, caller)
+                call = broker.poll(key, wait_seconds=1)['calls'][0]
+                assert call['operation'] == 'canvas.check'
+                broker.complete(key, {'id': call['id'], 'ok': True, 'result': {'ok': True}})
+                assert future.result(timeout=2) == {'ok': True}
+        # 离开委派范围后恢复为无连接，不残留到后续请求。
+        with pytest.raises(DesktopUnavailable):
+            broker.call('canvas.check', {'model': model, 'force_login': False, 'timeout_seconds': 5}, timeout=1)
+    finally:
+        broker.close()
+
+
+def test_operation_availability_lists_delegated_canvas_image_use_case(monkeypatch):
+    from erp_web.services import operation_availability as availability
+    canvas = {'id': 'canvas', 'connection_type': 'browser', 'browser_provider': 'gemini'}
+    monkeypatch.setattr(availability.ai_model_config, 'resolve_ai_model', lambda config, use_case: canvas)
+    monkeypatch.setattr(availability, 'delegate_connection_id', lambda: 'online-desktop')
+    assert availability.delegated_use_cases({}, ['image.translate'], connection_id='') == ['image.translate']
+    # 当前请求已来自桌面、没有在线桌面或模型不是 Canvas 时，不声明代执行。
+    assert availability.delegated_use_cases({}, ['image.translate'], connection_id='this-desktop') == []
+    assert availability.delegated_use_cases({}, ['global.chat'], connection_id='') == []
+    monkeypatch.setattr(availability, 'delegate_connection_id', lambda: '')
+    assert availability.delegated_use_cases({}, ['image.translate'], connection_id='') == []
+    monkeypatch.setattr(availability, 'delegate_connection_id', lambda: 'online-desktop')
+    monkeypatch.setattr(availability.ai_model_config, 'resolve_ai_model', lambda config, use_case: {'id': 'cli', 'connection_type': 'cli'})
+    assert availability.delegated_use_cases({}, ['image.translate'], connection_id='') == []
+
+
+def test_only_web_manual_image_routes_delegate_to_online_desktop(monkeypatch):
+    from erp_web.facades import image_facade
+    from erp_web.services.desktop_connection_service import current_desktop_connection
+    delegated = {path for path, handler in image_facade.IMAGE_PAYLOAD_HANDLERS.items() if handler.__qualname__.startswith('_delegated.')}
+    assert delegated == {'/api/draft-images/process', '/api/draft-images/generate-set', '/api/image-translate', '/api/image-edit'}
+    broker = DesktopConnections()
+    _delegation_context(monkeypatch, broker)
+    try:
+        key = broker.connect()['connection_id']
+        assert image_facade._delegated(lambda body: (current_desktop_connection(), 200))({}) == (key, 200)
+        assert current_desktop_connection() == ''
+    finally:
+        broker.close()

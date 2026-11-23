@@ -124,6 +124,8 @@ class AiAgentExecutionProfile(Generic[OutputT]):
     result_version: str = "v1"
     allow_write: bool = False
     python_tools: bool = False
+    # run_code 的类型检查失败只消耗一次模型修正，单独放宽，不影响其他工具和输出校验的重试。
+    python_retries: int = 2
     user_input_tool: bool = False
 
     def __post_init__(self) -> None:
@@ -647,7 +649,7 @@ class AiAgentFactory:
                 HandleDeferredToolCalls(handler=handle_configured_tool_approvals),
                 PrepareTools(_prepare_tools_within_usage_limit),
                 *(build_python_capabilities(
-                    toolset, max_tool_calls=profile.max_tool_calls, retries=profile.retries,
+                    toolset, max_tool_calls=profile.max_tool_calls, retries=profile.python_retries,
                     max_output_bytes=profile.max_tool_output_bytes,
                 ) if profile.python_tools else []),
             ],

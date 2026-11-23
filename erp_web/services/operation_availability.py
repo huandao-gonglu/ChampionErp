@@ -2,7 +2,7 @@
 
 from . import ai_model_config
 from .chat_images import chat_image_reason
-from .desktop_connection_service import desktop_unavailable_reason
+from .desktop_connection_service import current_desktop_connection, delegate_connection_id, desktop_unavailable_reason
 from erp_web.schemas.requests import RequestValidationError
 from erp_web.schemas.api import OperationAvailability
 
@@ -49,6 +49,15 @@ def require_model_platform(config, use_case, *, require_model=False):
         raise RequestValidationError(reason, status_code=409, error_code='OPERATION_UNAVAILABLE')
 
 
+def delegated_use_cases(config, desktop_use_cases, *, connection_id=None):
+    """网页手动发起时可由本账号唯一在线桌面代为执行的用例；只开放 Canvas 图片修改。"""
+    key = current_desktop_connection() if connection_id is None else connection_id
+    if key or 'image.translate' not in desktop_use_cases or not delegate_connection_id():
+        return []
+    from .gemini_canvas_runtime import is_canvas_model
+    return ['image.translate'] if is_canvas_model(ai_model_config.resolve_ai_model(config, 'image.translate')) else []
+
+
 def operation_availability(config, *, connection_id=None) -> OperationAvailability:
     desktop_reason = desktop_unavailable_reason(connection_id)
     blocked = {}
@@ -64,4 +73,5 @@ def operation_availability(config, *, connection_id=None) -> OperationAvailabili
     image_reason = chat_image_reason(config)
     if image_reason:
         blocked["global.chat.images"] = image_reason
-    return {'desktop_reason': desktop_reason, 'blocked_use_cases': blocked, 'desktop_use_cases': desktop_use_cases}
+    return {'desktop_reason': desktop_reason, 'blocked_use_cases': blocked, 'desktop_use_cases': desktop_use_cases,
+            'delegated_use_cases': delegated_use_cases(config, desktop_use_cases, connection_id=connection_id)}

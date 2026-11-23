@@ -2,7 +2,7 @@ import { beforeEach, vi } from 'vitest'
 import { setOperationAvailability } from '@/utils/desktop'
 
 // 独立挂载的组件不启动 App；提供已完成平台查询、模型均由 API 运行的状态。
-beforeEach(() => setOperationAvailability({ desktop_use_cases: [], desktop_reason: '', blocked_use_cases: {} }))
+beforeEach(() => setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: [], desktop_reason: '', blocked_use_cases: {} }))
 
 // jsdom 不提供布局观察；需要模拟尺寸变化的用例单独替换此实现。
 globalThis.ResizeObserver = class {

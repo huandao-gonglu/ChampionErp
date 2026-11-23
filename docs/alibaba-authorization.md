@@ -2,7 +2,7 @@
 
 ## 目标与当前边界
 
-授权设置分别显示企业自用、跨境 ERP、万邦三张授权卡。每位用户在每套方案下的授权独立保存。管理员切换业务供应商时，只改变商品、采购、支付和物流使用的方案，其他授权和已发起的分方案授权不受影响。页面标出当前用于业务的方案。
+1688 接入方案按登录账号空间解析：管理员（根空间）使用在共享设置中保存的方案（企业自用、跨境 ERP 或万邦），普通用户（个人空间）在任何前台、后台任务与 AI 工具路径下固定使用万邦，无法发起或读取企业自用与跨境 ERP 授权（访问企业应用授权接口返回 403）。授权设置对管理员显示企业自用、跨境 ERP、万邦三张授权卡，对普通用户只显示万邦卡。每位用户在每套方案下的授权独立保存；普通用户历史上曾保存的企业自用或跨境凭据保留不删，但不再读取。管理员切换方案只影响管理员本人，保留各方案已有授权。
 
 两套官方应用分别发起 1688 OAuth 和续期，可以提前授权尚未启用的方案。状态、发起和手动完成接口接受 `provider`；官方浏览器回调通过 state 定位发起的用户及方案，并在该方案的记录中校验一次性 state、回调和应用指纹。未指定方案的入口按当前选中方案发起请求，新授权都绑定发起时的方案；升级前已发起的旧 state 仍按原方式验证。
 
@@ -18,7 +18,17 @@ POST `/api/alibaba/authorization/start` 通过 `provider: onebound` 生成万邦
 
 ## 管理员配置与个人凭据
 
-「系统设置 → 管理员共享设置 → 1688 API」维护两套官方 AppKey、AppSecret、回调地址及万邦 Key、Secret，并选择业务接入。企业凭据归根库 `enterprise_applications / active`，设置由管理员维护，Secret 留在服务端。密钥留空沿用原值，配置 revision 防止覆盖并发更新。更换企业凭据使对应旧授权失效。
+「系统设置 → 管理员共享设置 → 1688 API」维护两套官方 AppKey、AppSecret、回调地址及万邦 Key、Secret、新买家基础额度（默认 200 次），并选择管理员本人使用的 1688 方案。企业凭据归根库 `enterprise_applications / active`，设置由管理员维护，Secret 留在服务端。密钥留空沿用原值，配置 revision 防止覆盖并发更新。更换企业凭据使对应旧授权失效；仅调整万邦新买家基础额度不会使现有买家授权失效。
+
+## 万邦额度记账、分级放行与 Key 恢复
+
+企业共享额度库位于根空间 `data/onebound-quota.sqlite3`（WAL、`0600`，由 `stores/onebound_quota_store.py` 与 `services/onebound_quota_service.py` 维护），分两层治理：
+
+- **平台层（企业万邦 Key 指纹）**：响应体 `api_info` 按白名单解析 `today`、`max`、`expires` 更新 `key_snapshots`；结合快照之后本地发出的次数估算 `today_estimated`，每日保留额度为 `max(50, max × 5%)`（`trade` 与 `auth` 可使用保留额度，`collect` 达到 `max - reserve` 即本地拦截）；`expires` 在 7 天内提示管理员，过期则整 Key 拒绝。
+- **用户层（企业 Key 指纹 + 1688 买家 `member_id`）**：同一买家被多个 ERP 用户授权时共用一份余额。新买家首次获得一次默认基础额度（`grant`）；经万邦自采购下单并确认付款后（免密支付成功回执或对账确认已付款状态）按 `floor(实付元) × 2` 幂等入账（`earn`，按订单号去重，取消/退款不扣回）；所有万邦请求在 `RequestContext.before_send` 原子先扣后发（`spend`，发出即计消耗）。
+- **调用分级**：交易接口（`trade`）与授权接口（`auth`）在买家余额不足时仍照常放行并记账（余额可为负），避免无法下单导致额度死锁；`shop_bind_list` 对同一买家 10 分钟内最多触发 1 次；商详采集及未列出的接口按 `collect` 处理，余额不足时本地拒绝并提示用户可改用浏览器采集（不自动切换）。
+- **错误码与跨重启恢复**：`platform_request_policy.py` 识别万邦 HTTP 200 的 `error_code`：4013 进入北京时间次日 00:00 冷却并持久化 `exhausted_until`；4016（余额不足）/ 4007（账户停用）/ 4005（Key 或签名无效）内存熔断并持久写入 `key_state`，管理员充值或修正后通过 `POST /api/alibaba/onebound/key/restore`（不发探测请求）人工恢复；4008 走纯内存退避；4006 / 4012 单接口 60 秒防重撞；4009 维护中对写入保留结果未知语义；网关明确拒绝（4013/4016/4007/4005/4008/4006/4012/4003 等）仍转换为 `OneBoundApiRejected`，保证下单占位可安全释放。
+- **统一只读查询**：`BusinessQuery` `alibaba.onebound_quota`（`/api/business-queries/alibaba.onebound_quota`）供万邦授权卡、采集面板预估和 AI 共用。普通用户仅见自己授权买家的余额、构成与流水；管理员额外可见 Key 用量、到期日、停用状态和全部买家，并可按 `entries` 分页读取流水。
 
 尚未保存时可读取 `ERP_ALIBABA_*`、`ERP_ALIBABA_CROSSBORDER_*`、`ERP_ONEBOUND_API_KEY`、`ERP_ONEBOUND_API_SECRET`。个人 `credentials:alibaba` 的 `state`、`crossborder`、`onebound` 保留原通道凭据，不借其他用户或其他应用的 Token 补齐当前通道。
 

@@ -115,9 +115,11 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 
 `ConfigStore` 持有管理员所选方案、企业凭据及个人通道授权。`AlibabaAuthorizationService` 负责官方 OAuth、续期、万邦自助授权和本地公开状态。个人万邦授权要求登录 1688 并经服务端核验买家信息。
 
-商品、采购、支付和物流经 `alibaba_runtime_config` 使用当前通道的个人凭据。每套方案有单独的授权卡，状态与授权操作显式指定方案。官方回调按发起时的用户及方案验证。企业自用卡的管理员可通过 `POST /api/alibaba/authorization/self-use-token` 绑定开放平台签发的 Token。企业自用回调返回非正有效期时验证实际凭据后再保存。
+商品、采购、支付和物流经 `alibaba_runtime_config` 按当前账号空间解析 1688 方案：管理员（根空间）使用共享设置所选方案，普通用户（个人空间）在任何前台、后台任务和 AI 路径下固定使用万邦，访问企业自用或跨境授权入口返回 403，旧企业凭据保留不删但不再读取。每套方案有单独的授权卡（普通用户仅见万邦卡），状态与授权操作显式指定方案。官方回调按发起时的用户及方案验证。企业自用卡的管理员可通过 `POST /api/alibaba/authorization/self-use-token` 绑定开放平台签发的 Token。企业自用回调返回非正有效期时验证实际凭据后再保存。
 
-万邦卡发起授权后，用户粘贴万邦回跳地址至 `POST /api/alibaba/authorization/onebound/complete`。完成入口只使用当前登录账号的待完成记录，按企业配置核对固定回跳地址与 `state`，兑换一次性授权码后用外层 `access_token` 核对 1688 会员 ID 和登录名。核验成功后将 Token、身份和有效期保存至该用户的 `onebound` 凭据。等待网络期间允许发起新授权，迟到回执须通过凭据快照校验才能写入。旧 Session 凭据保留原协议。
+万邦卡发起授权后，用户粘贴万邦回跳地址至 `POST /api/alibaba/authorization/onebound/complete`。完成入口只使用当前登录账号的待完成记录，按企业配置核对固定回跳地址与 `state`，兑换一次性授权码后用外层 `access_token` 核对 1688 会员 ID 和登录名。核验成功后将 Token、身份和有效期保存至该用户的 `onebound` 凭据，并为新买家发放一次默认基础额度。等待网络期间允许发起新授权，迟到回执须通过凭据快照校验才能写入。旧 Session 凭据保留原协议。
+
+万邦两层额度与持久化状态由企业共享库 `stores/onebound_quota_store.py`（`shared_paths.data_dir / onebound-quota.sqlite3`）和 `services/onebound_quota_service.py` 维护：`onebound_api_transport.py` 通过 `RequestContext.before_send` 原子执行平台层（Key 停用/过期/每日上限与 `max(50, max×5%)` 保留额度）与买家层（按企业 Key 指纹 + `member_id` 共用余额）先扣后发，`trade`/`auth` 始终放行并记账，`collect` 余额不足或触达保留线时本地拒绝；响应中的 `api_info` 按白名单更新快照；自采购服务在免密支付成功与对账确认已付款时按 `floor(实付元) × 2` 幂等入账（不扣回）；`shop_bind_list` 对同一买家 10 分钟限频一次；管理员通过 `POST /api/alibaba/onebound/key/restore` 清除 4016/4007/4005 持久停用与内存熔断；页面与 AI 共用 `BusinessQuery` `alibaba.onebound_quota`。
 
 `alibaba_provider(config)` 按配置选择企业自用、跨境 ERP 或万邦实现。`AlibabaProvider` 定义商品、采购、支付和物流的业务方法，平台报文在供应商适配内转换，调用方使用 `schemas/alibaba_provider.py` 及既有业务 Schema。采购预览以业务形状保存，已有记录按原字段读取。万邦通过 `1688/custom` 转发 `fastCreateOrder` 和 `preparePay`，使用已保存且核验通过的顶层 `session`，沿用现有采购和支付的占位、回执与对账。买家 Token 统一使用外层 `access_token`，`_o_args` 只包含业务参数。
 
@@ -164,6 +166,13 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 每条聊天输入的设备引用保存在服务端收件箱。主 Agent 在模型请求边界应用新输入，
 通过原生消息的输入 ID 恢复来源；同批混合来源不授予本机能力。审批和领域 Job 只用原调用
 的 Deferred metadata，审批窗口、后台扫描和微信连接的启动端都不能换设备。
+
+唯一例外是网页手动图片操作的同账号代执行：`image_facade` 对草稿图片处理、套图生成及商品图片翻译/修改入口
+套用 `delegate_desktop_connection`。请求未携带桌面连接、且本账号只有一台会话有效的在线桌面时，
+借用该连接在后台执行；`DesktopConnections.call` 在委派范围内只放行 `canvas.check` / `canvas.edit`，
+采集、授权、CLI 与本机配置仍须桌面本机发起。可用性在 `delegated_use_cases` 中声明（仅 Canvas 的 `image.translate`），
+前端 `modelRequiresDesktop` 据此直接提交；没有或多台在线桌面时仍走桌面交接。AI 工具、审批恢复与
+`/api/image-processing/continue` 不使用代执行。回归见 `tests/test_desktop_split.py`。
 
 `source_collect_workflows.collect_browser_url` 调用本机 `collect.read`，后端才读目标商品、
 规范化、登记图片并经 `ProductStore` 保存。采集页面按已保存 URL 的方式执行。浏览器采集由桌面打开商品页，1688 API 采集由后端解析商品编号并使用当前账号授权。独立接口 `/api/collect-1688` 仍支持显式提交 URL 与模式。
@@ -236,7 +245,7 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
   AI HTTP 402 按 `*_PAYMENT_REQUIRED` 记录余额或计费问题，不自动重试。
   Pydantic AI 仍独占模型/Agent 生命周期，不新增模型请求旁路。
 - `services/platform_request_policy.py` 优先按 HTTP 状态码与平台结构化业务 `code` 纯解析拒绝、限流与响应配额头（Ozon `Ratelimit-Remaining`、Yandex `X-RateLimit-Resource-Remaining/Until`），不通用推断任意 JSON 的 `success` / `status`。
-  1688 物流查询 HTTP 200 的 `500_2` 为正常空物流；请求级业务拒绝仅在内存中保护同操作原参数，不累计接口故障熔断。
+  1688 物流查询 HTTP 200 的 `500_2` 为正常空物流；万邦 HTTP 200 的 `error_code`（4013/4008/4016/4007/4005/4006/4012/4009/4003/2000）按平台契约分类，`sys/shop_bind_list` 的 2000 视为空结果；请求级业务拒绝仅在内存中保护同操作原参数，不累计接口故障熔断。
   Ozon 403 `code 7` 默认仅单接口短防重撞，不锁整店；命中 `/v1/seller/info`、明确停用文案、同凭据曾成功的只读接口突报 403 或 10 分钟内无成功且 ≥3 不同接口 403 时，升级为整号熔断并持久化到店铺 `auth_status`。401/账号受限统一在「授权配置 → 测试连接」验证通过后自动恢复。
 - `stores/external_request_store.py` 用独立 `external-requests.sqlite3`（schema v3，单表 `external_attempts`）做纯观测审计、24 小时写入 `outcome_unknown` 跨重启防重放与同凭据只读历史核验；v1/v2 旧库自动无损迁入 v3，并将旧账号封禁承接到店铺 `auth_status`。
 - 默认不自动重试；显式只读预算最多 3 次，写入未知禁止重放。平台适配器解释业务，管理器不推进领域任务。

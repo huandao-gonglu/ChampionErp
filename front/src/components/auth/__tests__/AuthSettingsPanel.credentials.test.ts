@@ -1,6 +1,8 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as settingsApi from '@/api/workflow/settings'
+import { useAccountStore } from '@/stores/account'
 import AuthSettingsPanel from '../AuthSettingsPanel.vue'
 import { launchDesktop, receivedDesktopHandoff } from '@/utils/desktopHandoff'
 vi.mock('@/utils/desktopHandoff', async importOriginal => ({ ...await importOriginal<object>(), launchDesktop: vi.fn(), acknowledgeDesktopHandoff: vi.fn() }))
@@ -318,14 +320,25 @@ describe('AuthSettingsPanel 桌面浏览器连接预置', () => {
 })
 
 describe('AuthSettingsPanel credential lifecycle', () => {
-  it('1688 使用独立账号连接面板，普通配置不再提交企业密钥或 Token', async () => {
-    const wrapper = mountPanel()
-    await wrapper.get('[data-testid="auth-settings-tab-alibaba"]').trigger('click')
-    expect(wrapper.findAll('alibaba-settings-panel-stub').map(card => card.attributes('provider')))
-      .toEqual(['alibaba', 'alibaba_crossborder', 'onebound'])
-    expect(wrapper.find('[data-testid="transient-1688-access-token"]').exists()).toBe(false)
-    const payload = await save(wrapper)
+  it('1688 授权按角色展示卡片：普通用户只显示万邦，管理员显示全部三张卡', async () => {
+    setActivePinia(createPinia())
+    const account = useAccountStore()
+    account.user = { id: 'u1', email: 'u@example.com', display_name: '普通用户', role: 'user', status: 'enabled', created_at: 0, updated_at: 0 }
+    const userWrapper = mountPanel()
+    await userWrapper.get('[data-testid="auth-settings-tab-alibaba"]').trigger('click')
+    expect(userWrapper.findAll('alibaba-settings-panel-stub').map(card => card.attributes('provider')))
+      .toEqual(['onebound'])
+    expect(userWrapper.find('[data-testid="transient-1688-access-token"]').exists()).toBe(false)
+    const payload = await save(userWrapper)
     expect(payload).not.toHaveProperty('1688_api')
+    userWrapper.unmount()
+
+    account.user = { id: 'a1', email: 'a@example.com', display_name: '管理员', role: 'admin', status: 'enabled', created_at: 0, updated_at: 0 }
+    const adminWrapper = mountPanel()
+    await adminWrapper.get('[data-testid="auth-settings-tab-alibaba"]').trigger('click')
+    expect(adminWrapper.findAll('alibaba-settings-panel-stub').map(card => card.attributes('provider')))
+      .toEqual(['alibaba', 'alibaba_crossborder', 'onebound'])
+    adminWrapper.unmount()
   })
 
   it('异步配置尚未返回时可渲染空平台状态', async () => {

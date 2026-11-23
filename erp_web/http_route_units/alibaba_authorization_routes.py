@@ -2,7 +2,7 @@
 from html import escape
 from urllib.parse import parse_qs
 
-from erp_web.facades.alibaba_authorization_facade import authorization_payload
+from erp_web.facades.alibaba_authorization_facade import authorization_payload, restore_onebound_key_payload
 from erp_web.schemas.requests import validate_request_payload
 
 
@@ -30,12 +30,19 @@ def _self_use_token(handler):
     handler.send_json(payload, status)
 
 
+def _restore_onebound_key(handler):
+    validate_request_payload(handler.read_body(), endpoint=handler.path)
+    payload, status = restore_onebound_key_payload()
+    handler.send_json(payload, status)
+
+
 POST_HANDLERS = {
     '/api/alibaba/authorization/self-use-token': _self_use_token,
     '/api/alibaba/authorization/onebound/complete': _complete_onebound,
     '/api/alibaba/authorization/complete': _complete,
     '/api/alibaba/authorization/start': _start,
     '/api/alibaba/crossborder/authorization/start': _start,
+    '/api/alibaba/onebound/key/restore': _restore_onebound_key,
 }
 GET_API_ROUTES = frozenset({'/api/alibaba/authorization', '/api/alibaba/crossborder/authorization'})
 GET_HANDLED_PATHS = GET_API_ROUTES | {'/auth/alibaba/callback'}

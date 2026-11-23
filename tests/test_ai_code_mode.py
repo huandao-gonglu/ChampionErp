@@ -443,6 +443,28 @@ def test_large_script_summary_is_bounded_without_losing_nested_receipts(tmp_path
     assert len(ui.call_store.current_turn_receipts(CONVERSATION)) == 1
 
 
+def test_run_code_type_errors_get_more_corrections_than_other_tools(tmp_path):
+    assert global_agent_chat_service.GLOBAL_CHAT_PROFILE.retries == 2
+    assert global_agent_chat_service.GLOBAL_CHAT_PROFILE.python_retries == 4
+    finals = []
+
+    async def model(messages, info):
+        failures = [p for m in messages for p in m.parts if isinstance(p, RetryPromptPart)]
+        returns = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart) and p.tool_name == "run_code"]
+        if returns:
+            finals.append(returns[-1].content)
+            yield "已完成。"
+        elif len(failures) < 3:
+            # 线上曾连续三次引用上一轮变量或未导入的类型，原上限 2 会中止整轮。
+            yield {0: code_delta(f"value: Any = missing_{len(failures)}\nvalue", f"bad{len(failures)}")}
+        else:
+            yield {0: code_delta("1 + 1", "good")}
+
+    ui = service(tmp_path, FunctionModel(stream_function=model))
+    asyncio.run(ui.prepare_run(body()).stream(lambda _: None))
+    assert finals == [2]
+
+
 def test_run_code_stops_unbounded_computation(tmp_path, monkeypatch):
     from erp_web.services import ai_agent_factory
 

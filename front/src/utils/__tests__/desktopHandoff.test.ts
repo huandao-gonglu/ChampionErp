@@ -66,7 +66,7 @@ describe('网页直接打开桌面并等待客户端确认', () => {
     setOperationAvailability({
       desktop_reason: connected ? '' : '请从桌面端发起。',
       blocked_use_cases: connected ? {} : { 'copy.generate': '请从桌面端发起。' },
-      desktop_use_cases: connected ? [] : ['copy.generate'],
+      delegated_use_cases: [], desktop_use_cases: connected ? [] : ['copy.generate'],
     })
     const reason = modelOperationReason('copy.generate')
     if (connected) expect(reason).toBe('')
@@ -120,7 +120,7 @@ describe('网页直接打开桌面并等待客户端确认', () => {
   })
 
   it('本机模型按钮接管网页点击，避免向业务入口提交一次失败请求', async () => {
-    setOperationAvailability({ desktop_reason: '需要本机', blocked_use_cases: { 'copy.generate': '需要本机模型' }, desktop_use_cases: ['copy.generate'] })
+    setOperationAvailability({ desktop_reason: '需要本机', blocked_use_cases: { 'copy.generate': '需要本机模型' }, delegated_use_cases: [], desktop_use_cases: ['copy.generate'] })
     const action = vi.fn()
     const wrapper = mount({ directives: { desktop: vDesktop }, template: `<button v-desktop="'copy.generate'" @click="action">生成</button>`, setup: () => ({ action }) })
     wrapper.get('button').element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))

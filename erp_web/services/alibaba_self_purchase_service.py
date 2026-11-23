@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
+_PAID_ORDER_STATUSES = frozenset({'waitsellersend', 'waitbuyerreceive', 'waitbuyerreceives', 'confirm_goods', 'success'})
 
 from erp_web.product_model.alibaba_purchase_model import alibaba_offer_id
 from erp_web.schemas.alibaba_self_purchase import SelfPurchasePreviewRequest, SelfPurchaseCreateRequest, SelfPurchaseRecordRequest, SelfPurchasePayRequest, SelfPurchasePaymentStatusRequest, ParsePurchaseAddressRequest, BatchPurchasePreviewRequest
@@ -75,11 +79,20 @@ def _frozen_purchase(payload):
 
 
 class AlibabaSelfPurchaseService:
-    def __init__(self, store, config_provider, procurement, *, address_notes, receiving, client_factory=alibaba_provider):
+    def __init__(self, store, config_provider, procurement, *, address_notes, receiving, client_factory=alibaba_provider, quota_credit=None):
         self.store, self.config_provider, self.procurement = store, config_provider, procurement
         self.client_factory = client_factory
         self.address_notes = address_notes
         self.receiving = receiving
+        self.quota_credit = quota_credit
+
+    def _credit_quota(self, config, order_number, total_fen):
+        if not callable(self.quota_credit) or not order_number or total_fen is None:
+            return
+        try:
+            self.quota_credit(config, order_number, total_fen)
+        except Exception:
+            logger.exception("万邦采购付款额度入账失败")
 
     @staticmethod
     def _target(order_id, line_key):
@@ -405,7 +418,9 @@ class AlibabaSelfPurchaseService:
         row = self.store.finish(row["id"], account_scope(config), state, result)
         row = self._attach(row, account_scope(config), cancelled=order.status["status"] in {"cancel", "terminated"})
         payment = row.get('payment') or {}
-        if payment.get('state') in {'submitting', 'unknown'} and order.status['status'] in {'waitsellersend', 'waitbuyerreceive', 'waitbuyerreceives', 'confirm_goods', 'success'}:
+        if order.status['status'] in _PAID_ORDER_STATUSES:
+            self._credit_quota(config, numbers[0], order.total_fen)
+        if payment.get('state') in {'submitting', 'unknown'} and order.status['status'] in _PAID_ORDER_STATUSES:
             row = self.store.finish_payment(row['id'], account_scope(config), payment['request_id'], 'settled',
                                             '订单已进入发货或收货阶段，停止再次支付；实际渠道和账期以 1688 为准')
         return {"ok": True, "record": public_record(row)}
@@ -461,6 +476,8 @@ class AlibabaSelfPurchaseService:
                 '1688 已拒绝本次支付，请检查授权配置后重试' if rejected else
                 f'{payment_label(channel)}未取得确认回执，请查询原订单，勿重复支付')
         row = self.store.finish_payment(row['id'], scope, payment['request_id'], state, message)
+        if state == 'succeeded':
+            self._credit_quota(config, number, payment['amount_fen'])
         return {'ok': True, 'record': public_record(row)}
 
     def cashier(self, body):

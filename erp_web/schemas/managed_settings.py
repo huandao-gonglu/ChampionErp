@@ -18,9 +18,13 @@ class PublicEnterpriseApplication(TypedDict):
     secret_configured: bool
 
 
+from erp_web.schemas.onebound_quota import MAX_INITIAL_GRANT
+
+
 class PublicOneBoundApplication(TypedDict):
     api_key: str
     secret_configured: bool
+    initial_grant: int
 
 
 class PublicExchangeRateSettings(TypedDict):
@@ -160,6 +164,7 @@ class OneBoundApplicationSettings(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
     api_key: str = Field(max_length=256)
     api_secret: str | None = Field(default=None, max_length=4096)
+    initial_grant: int | None = Field(default=None, ge=0, le=MAX_INITIAL_GRANT)
 
 
 class ManagedSettingsRequest(BaseModel):

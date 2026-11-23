@@ -2,7 +2,7 @@
 from erp_web.context import get_context
 from erp_web.schemas.managed_settings import ALIBABA_APPLICATION_TYPES
 from erp_web.schemas.external_requests import ExternalRequestBlocked
-from erp_web.services.alibaba_authorization_service import AlibabaAuthorizationService
+from erp_web.services.alibaba_authorization_service import AlibabaAuthorizationService, onebound_quota_view
 
 
 def authorization_payload(action, body=None):
@@ -25,7 +25,24 @@ def authorization_payload(action, body=None):
         if action == 'callback':
             return service.callback((body or {}).get('code', ''), (body or {}).get('state', '')), 200
         raise ValueError('不支持的 1688 授权操作')
+    except PermissionError as exc:
+        return {'ok': False, 'error': str(exc)}, 403
     except ExternalRequestBlocked as exc:
         return {'ok': False, 'error': f'1688 授权请求已暂停：{exc}，请检查授权配置后重试'}, 409
+    except ValueError as exc:
+        return {'ok': False, 'error': str(exc)}, 400
+
+
+def restore_onebound_key_payload():
+    context = get_context()
+    service = AlibabaAuthorizationService(context.config, owner_id=context.user_id)
+    try:
+        restored = service.restore_onebound_key(
+            context.onebound_quota,
+            clear_auth_block=context.external_requests.clear_auth_block,
+        )
+        return {'ok': True, 'restored': restored, 'quota': onebound_quota_view(context)}, 200
+    except PermissionError as exc:
+        return {'ok': False, 'error': str(exc)}, 403
     except ValueError as exc:
         return {'ok': False, 'error': str(exc)}, 400
