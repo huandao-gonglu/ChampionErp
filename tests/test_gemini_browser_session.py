@@ -87,3 +87,38 @@ def test_capability_check_reuses_existing_login(monkeypatch, bridge, tmp_path, p
     provider.BrowserAiProvider().test_model(tmp_path, model, {"probe_capabilities": probe})
     assert [name for name, _ in bridge] == ["open", "release_canvas"]
     assert run_probe.called == probe
+
+
+def test_auth_state_extracts_google_email_and_non_interactive_check_raises(monkeypatch, bridge, tmp_path):
+    monkeypatch.setattr(session.browser_ai_runtime, "_evaluate", lambda *_args, **_kw: {
+        "signedIn": True, "loginRequired": False, "email": "seller@gmail.com", "name": "Seller",
+    })
+    with session.connect_gemini_page(tmp_path, MODEL, allow_interactive=False) as page:
+        assert page.account_email == "seller@gmail.com"
+        assert page.account_name == "Seller"
+    assert [name for name, _ in bridge] == ["open", "release_canvas"]
+
+    bridge.clear()
+    monkeypatch.setattr(session.browser_ai_runtime, "_evaluate", lambda *_args, **_kw: {
+        "signedIn": False, "loginRequired": True, "email": "", "name": "",
+    })
+    with pytest.raises(session.CanvasLoginRequired):
+        with session.connect_gemini_page(tmp_path, MODEL, allow_interactive=False):
+            pytest.fail("非交互检查不应进入已登录分支")
+    assert [name for name, _ in bridge] == ["open"]
+
+
+def test_downstream_model_error_still_releases_healthy_canvas_page(monkeypatch, bridge, tmp_path):
+    monkeypatch.setattr(session, "_auth_state", lambda _: "signed_in")
+    with pytest.raises(RuntimeError, match="429"):
+        with session.connect_gemini_page(tmp_path, MODEL) as page:
+            assert page.reusable is True
+            raise RuntimeError("HTTP 429")
+    assert [name for name, _ in bridge] == ["open", "release_canvas"]
+
+    bridge.clear()
+    with pytest.raises(RuntimeError, match="timeout"):
+        with session.connect_gemini_page(tmp_path, MODEL) as page:
+            page.reusable = False
+            raise RuntimeError("timeout")
+    assert [name for name, _ in bridge] == ["open"]

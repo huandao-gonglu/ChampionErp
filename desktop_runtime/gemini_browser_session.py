@@ -19,10 +19,16 @@ class CanvasPreparationTimeout(TimeoutError):
     outcome_unknown = False
 
 
-_AUTH_SCRIPT = """(() => {
+class CanvasLoginRequired(RuntimeError):
+    """非交互状态检查发现尚未登录 Google 账号。"""
+    code = "CANVAS_LOGIN_REQUIRED"
+    outcome_unknown = False
+
+
+_AUTH_SCRIPT = r"""(() => {
     const links = [...document.querySelectorAll('a[href]')];
     // 分享页可能收起账号头像；登录判断不能依赖它的布局宽度。
-    const account = links.some(e => {
+    const accountLink = links.find(e => {
         try { const u = new URL(e.href); return u.hostname === 'accounts.google.com'
             && u.pathname === '/SignOutOptions'; } catch { return false; }
     });
@@ -38,8 +44,48 @@ _AUTH_SCRIPT = """(() => {
                 && rect.width > 100 && rect.height > 50 && rect.right > 0 && rect.bottom > 0
                 && rect.left < innerWidth && rect.top < innerHeight
         });
-    return {signedIn: !challenge && location.hostname === 'gemini.google.com' && account,
-        loginRequired: challenge || location.hostname === 'accounts.google.com' || signIn};
+    const signedIn = !challenge && location.hostname === 'gemini.google.com' && Boolean(accountLink);
+    let email = '';
+    let name = '';
+    if (signedIn) {
+        const emailPattern = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
+        const labelCandidates = [];
+        for (const el of [accountLink, accountLink?.parentElement, accountLink?.querySelector('img')]) {
+            if (!el) continue;
+            for (const attr of ['aria-label', 'title', 'alt']) {
+                const text = (el.getAttribute?.(attr) || '').trim();
+                if (text) labelCandidates.push(text);
+            }
+        }
+        for (const label of labelCandidates) {
+            const match = label.match(emailPattern);
+            if (match) {
+                email = match[0];
+                const before = label.slice(0, match.index)
+                    .replace(/^(?:Google\s*(?:账号|帳號|Account)\s*[:：]?\s*)/i, '')
+                    .replace(/[\s()（）\n]+$/g, '')
+                    .trim();
+                if (before && before.length <= 100) name = before;
+                break;
+            }
+        }
+        if (!email) {
+            const wizEmail = typeof window.WIZ_global_data?.oPEP7c === 'string' ? window.WIZ_global_data.oPEP7c.trim() : '';
+            if (emailPattern.test(wizEmail)) email = wizEmail.match(emailPattern)[0];
+        }
+        if (!email) {
+            const headerNode = document.querySelector('[role="banner"] [aria-label*="@"], header [aria-label*="@"], [data-email*="@"]');
+            const raw = (headerNode?.getAttribute?.('data-email') || headerNode?.getAttribute?.('aria-label') || '').trim();
+            const match = raw.match(emailPattern);
+            if (match) email = match[0];
+        }
+    }
+    return {
+        signedIn,
+        loginRequired: challenge || location.hostname === 'accounts.google.com' || signIn,
+        email,
+        name,
+    };
 })()"""
 
 
@@ -52,6 +98,12 @@ def _auth_state(cdp) -> str:
         raise
     if isinstance(value, dict):
         if value.get("signedIn"):
+            email = str(value.get("email") or "").strip()
+            name = str(value.get("name") or "").strip()
+            if email:
+                cdp.account_email = email
+            if name:
+                cdp.account_name = name
             return "signed_in"
         if value.get("loginRequired"):
             return "login_required"
@@ -78,16 +130,22 @@ def _wait_auth_state(
 
 
 @contextmanager
-def connect_gemini_page(app_dir, model, timeout: int = 45, *, force_login: bool = False):
+def connect_gemini_page(
+    app_dir, model, timeout: int = 45, *, force_login: bool = False, allow_interactive: bool = True,
+):
     url = browser_ai_runtime.browser_ai_url(model)
     page_id = request('open', kind='gemini', url=url, profile=model.get('browser_profile') or 'default',
                       proxy=normalize_browser_proxy(model.get('browser_proxy')), timeout=timeout)
     page = EmbeddedPage(page_id)
     # 页面由本次管道调用持有，异常、取消和执行器退出均由桌面端释放。
     if force_login:
+        if not allow_interactive:
+            raise CanvasLoginRequired("当前 Google 账号需要重新登录。")
         page.show()
         request('navigate', page=page_id, url='https://accounts.google.com/ServiceLogin?continue=' + quote(url, safe=''))
     if force_login or _wait_auth_state(page, timeout) != 'signed_in':
+        if not allow_interactive:
+            raise CanvasLoginRequired("当前 Google 账号未登录或登录已过期，请重新登录。")
         if not force_login:
             page.show()
         _wait_auth_state(page, LOGIN_WAIT_SECONDS, wait_for_login=True)
@@ -97,8 +155,15 @@ def connect_gemini_page(app_dir, model, timeout: int = 45, *, force_login: bool 
             request('navigate', page=page_id, url=url)
             _wait_auth_state(page, LOGIN_WAIT_SECONDS, wait_for_login=True)
         page.hide()
-    yield page
-    request('release_canvas', page=page_id)
+    try:
+        yield page
+    finally:
+        # 仅释放仍健康的页面回空闲池；超时/连接中断等已失活页面交由桌面 finish 关闭。
+        if getattr(page, 'reusable', True):
+            try:
+                request('release_canvas', page=page_id)
+            except Exception:
+                pass
 
 
-__all__ = ["connect_gemini_page"]
+__all__ = ["CanvasLoginRequired", "CanvasPreparationTimeout", "connect_gemini_page"]

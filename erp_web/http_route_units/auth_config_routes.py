@@ -48,6 +48,33 @@ def handle_ai_config_save(handler: JsonRequestHandler) -> None:
     )
 
 
+def handle_canvas_account_login(handler: JsonRequestHandler) -> None:
+    _send(
+        handler,
+        auth_config_facade.canvas_account_login_payload(
+            validate_request_payload(handler.read_body(), endpoint=handler.path)
+        ),
+    )
+
+
+def handle_canvas_account_logout(handler: JsonRequestHandler) -> None:
+    _send(
+        handler,
+        auth_config_facade.canvas_account_logout_payload(
+            validate_request_payload(handler.read_body(), endpoint=handler.path)
+        ),
+    )
+
+
+def handle_canvas_account_toggle(handler: JsonRequestHandler) -> None:
+    _send(
+        handler,
+        auth_config_facade.canvas_account_toggle_payload(
+            validate_request_payload(handler.read_body(), endpoint=handler.path)
+        ),
+    )
+
+
 def handle_system_settings_save(handler: JsonRequestHandler) -> None:
     _send(handler, auth_config_facade.save_system_settings_payload(
         validate_request_payload(handler.read_body(), endpoint=handler.path),
@@ -174,6 +201,9 @@ POST_HANDLERS: dict[str, PostHandler] = {
     "/api/system-settings": handle_system_settings_save,
     "/api/system-settings/watermark-preview": handle_watermark_preview,
     "/api/ai-config/save": handle_ai_config_save,
+    "/api/ai-config/canvas/account-login": handle_canvas_account_login,
+    "/api/ai-config/canvas/account-logout": handle_canvas_account_logout,
+    "/api/ai-config/canvas/account-toggle": handle_canvas_account_toggle,
     "/api/mercadolibre/auth-link": handle_mercadolibre_auth_link,
     "/api/mercadolibre/auth-checklist": handle_mercadolibre_auth_checklist,
     "/api/open-auth-link": handle_open_auth_link,

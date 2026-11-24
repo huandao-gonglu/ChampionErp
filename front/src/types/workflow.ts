@@ -75,6 +75,8 @@ export {
   type BackendCollectionLinkEvent,
   type BackendAiCapabilityProfile,
   type BackendAiModelConfig,
+  type BackendCanvasAccountSummary,
+  type BackendCanvasAccountStatus,
   type BackendAiReasoningSettings,
   type BackendAiBrowserPreset,
   type BackendAiGenerationSettings,

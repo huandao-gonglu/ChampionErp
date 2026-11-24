@@ -15,9 +15,11 @@ from erp_shared.desktop import validate_action
 from .capability_errors import BusinessCapabilityError
 
 _connection = ContextVar('desktop_connection', default='')
-# 网页手动图片操作借用本账号在线桌面时只开放 Canvas 图片动作；采集、授权和本机配置仍须由桌面本机发起。
+_connection_session = ContextVar('desktop_connection_session', default='')
+# 网页手动图片操作借用本账号在线桌面时只开放 Canvas 图片动作与只读账号状态；采集、授权写入和本机配置仍须由桌面本机发起。
 _delegated = ContextVar('desktop_delegated', default=False)
-DELEGATED_OPERATIONS = frozenset({'canvas.check', 'canvas.edit'})
+DELEGATED_OPERATIONS = frozenset({'canvas.check', 'canvas.edit', 'canvas.accounts'})
+RECONNECTABLE_OPERATIONS = frozenset({'canvas.check', 'canvas.edit', 'canvas.accounts'})
 
 
 class DesktopUnavailable(BusinessCapabilityError):
@@ -35,6 +37,7 @@ def server_worker_context():
     """常驻服务继承业务空间，但不能继承碰巧启动它的请求所绑定的设备。"""
     context = copy_context()
     context.run(_connection.set, '')
+    context.run(_connection_session.set, '')
     context.run(_delegated.set, False)
     return context
 
@@ -51,13 +54,15 @@ def desktop_unavailable_reason(connection_id=None):
 
 
 @contextmanager
-def bind_desktop_connection(connection_id):
+def bind_desktop_connection(connection_id, *, session_hash=''):
     token = _connection.set(connection_id or '')
+    session_token = _connection_session.set(session_hash or '')
     flag = _delegated.set(False)
     try:
         yield
     finally:
         _delegated.reset(flag)
+        _connection_session.reset(session_token)
         _connection.reset(token)
 
 
@@ -102,7 +107,8 @@ class _Connection:
 
 
 class DesktopConnections:
-    LEASE_SECONDS = 45
+    LEASE_SECONDS = 60
+    RECONNECT_WAIT_SECONDS = 8.0
 
     def __init__(self, *, session_validator=None):
         self.session_validator = session_validator
@@ -120,6 +126,7 @@ class DesktopConnections:
                 raise DesktopUnavailable('登录会话已失效，请重新登录。')
             key = secrets.token_urlsafe(32)
             self.connections[key] = _Connection(session_hash=session_hash)
+            self.condition.notify_all()
             return {'ok': True, 'connection_id': key}
 
     def _get(self, key):
@@ -137,6 +144,7 @@ class DesktopConnections:
             connection = self._get(key)
             if self.session_validator is not None and connection.session_hash != session_hash:
                 raise DesktopUnavailable('桌面连接不属于当前登录会话。')
+            connection.touched = time.monotonic()
         return key
 
     def is_connected(self, key):
@@ -207,19 +215,23 @@ class DesktopConnections:
     def complete(self, key, reply):
         with self.condition:
             connection = self._get(key)
+            connection.touched = time.monotonic()
             call = connection.calls.get(reply['id'])
             if call is None or not call.sent or call.done.is_set():
                 # 取消、过期和重复回执不改变任何领域结果。
                 return {'ok': True, 'accepted': False}
             call.reply = reply
             call.done.set()
+            self.condition.notify_all()
             return {'ok': True, 'accepted': True}
 
     def accept_asset(self, key, call_id, asset):
         from erp_web.context import get_context
         from .desktop_asset_service import save_collected_asset
         with self.condition:
-            call = self._get(key).calls.get(call_id)
+            connection = self._get(key)
+            connection.touched = time.monotonic()
+            call = connection.calls.get(call_id)
             if call is None or not call.sent or call.done.is_set() or call.message['operation'] != 'collect.read':
                 raise DesktopUnavailable('本机采集调用已结束，不再接受素材。')
         saved = save_collected_asset(get_context().paths.app_dir, asset)
@@ -228,6 +240,47 @@ class DesktopConnections:
                 raise DesktopUnavailable('本机调用已结束，不再接受素材。')
             call.assets[asset['url']] = saved
         return {'ok': True}
+
+    def _find_replacement(self, *, delegated: bool, session_hash: str) -> str:
+        if delegated:
+            live = [item for item in list(self.connections) if self._live(item)]
+            return live[0] if len(live) == 1 else ''
+        if not session_hash:
+            return ''
+        if self.session_validator is not None and not self.session_validator(session_hash):
+            return ''
+        live = [
+            item for item in list(self.connections)
+            if self._live(item) and self.connections[item].session_hash == session_hash
+        ]
+        return live[0] if len(live) == 1 else ''
+
+    def _acquire_connection(self, key: str, *, operation: str, check, deadline: float):
+        """获取可用连接；仅对尚未发出的 Canvas 新调用允许等待同一登录会话短时重连。"""
+        with self.condition:
+            try:
+                return key, self._get(key)
+            except DesktopUnavailable:
+                if operation not in RECONNECTABLE_OPERATIONS:
+                    raise
+                delegated = _delegated.get()
+                session_hash = _connection_session.get()
+                if not delegated and not session_hash:
+                    raise
+                wait_deadline = min(time.monotonic() + self.RECONNECT_WAIT_SECONDS, time.monotonic() + max(0.0, deadline - time.time()))
+                while not self.stopped.is_set():
+                    replacement = self._find_replacement(delegated=delegated, session_hash=session_hash)
+                    if replacement:
+                        _connection.set(replacement)
+                        return replacement, self.connections[replacement]
+                    if session_hash and self.session_validator is not None and not self.session_validator(session_hash):
+                        raise DesktopUnavailable('登录会话已失效，请重新登录。')
+                    remaining = wait_deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise DesktopUnavailable()
+                    self.condition.wait(min(0.25, remaining))
+                    check()
+                raise DesktopUnavailable()
 
     def call(self, operation, params, *, timeout=180):
         from .external_request_context import request_context
@@ -254,8 +307,9 @@ class DesktopConnections:
             if time.time() >= deadline:
                 raise DesktopUnavailable('等待本机操作超时；已发送的操作需要核对。', outcome_unknown=call.sent)
         check()
+        active_key, connection = self._acquire_connection(key, operation=operation, check=check, deadline=deadline)
         with self.condition:
-            connection = self._get(key)
+            connection = self._get(active_key)
             connection.calls[call.message['id']] = call
             connection.queue.append(call.message)
             self.condition.notify_all()
@@ -275,7 +329,7 @@ class DesktopConnections:
         finally:
             with self.condition:
                 connection.calls.pop(call.message['id'], None)
-                if not call.done.is_set() and call.sent and key in self.connections:
+                if not call.done.is_set() and call.sent and active_key in self.connections:
                     connection.queue.append({'id': call.message['id'], 'cancel': True})
                     self.condition.notify_all()
                 # 未投递的取消项及时移除，不积累传输队列。
@@ -323,6 +377,7 @@ def desktop_request(func):
             key = ''
         if not getattr(handler, 'desktop_scope_allowed', True):
             key = ''
+        session_hash = ''
         if key:
             from erp_web.context import get_context
             from erp_web.http_request import validate_request_metadata
@@ -331,13 +386,14 @@ def desktop_request(func):
                 validate_request_metadata(handler)
                 from .account_request import current_session
                 session = current_session()
-                get_context().desktop_connections.validate_connection(key, session_hash=session.token_hash if session else '')
+                session_hash = session.token_hash if session else ''
+                get_context().desktop_connections.validate_connection(key, session_hash=session_hash)
             except RequestValidationError as exc:
                 handler.send_json({'ok': False, 'error': str(exc), 'error_code': exc.error_code}, exc.status_code)
                 return
             except DesktopUnavailable as exc:
                 handler.send_json({'ok': False, 'error': str(exc), 'error_code': exc.code}, 409)
                 return
-        with bind_desktop_connection(key):
+        with bind_desktop_connection(key, session_hash=session_hash):
             return func(handler, *args, **kwargs)
     return wrapped

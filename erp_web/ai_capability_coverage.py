@@ -907,6 +907,27 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
     ),
     AiCapabilityCoverageEntry(
         method="POST",
+        path="/api/ai-config/canvas/account-login",
+        business_domain="授权基础设施",
+        disposition="excluded",
+        reason="Gemini Canvas 本机 Google 账号登录与状态核验，凭据流程不包装为能力。",
+    ),
+    AiCapabilityCoverageEntry(
+        method="POST",
+        path="/api/ai-config/canvas/account-logout",
+        business_domain="授权基础设施",
+        disposition="excluded",
+        reason="Gemini Canvas 本机 Google 账号退出与分区清理，凭据流程不包装为能力。",
+    ),
+    AiCapabilityCoverageEntry(
+        method="POST",
+        path="/api/ai-config/canvas/account-toggle",
+        business_domain="配置基础设施",
+        disposition="excluded",
+        reason="Gemini Canvas 本机 Google 账号启用开关，配置管理基础设施。",
+    ),
+    AiCapabilityCoverageEntry(
+        method="POST",
         path="/api/save-settings",
         business_domain="配置基础设施",
         disposition="excluded",

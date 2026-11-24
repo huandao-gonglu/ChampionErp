@@ -37,11 +37,12 @@ def service_status() -> dict[str, str]:
 
 
 def check_batch_connection(app_dir: Path, config: dict) -> int:
-    """预检后返回可并行发送的图片数，同一 Canvas 会话逐张使用。"""
+    """预检后返回可并行发送的图片数；Canvas 按已启用 Google 账号数并行（最多 3 路）。"""
     model = ai_gateway.resolve_model_for_use_case(app_dir, config, "image.translate")
     if gemini_canvas_runtime.is_canvas_model(model):
-        gemini_canvas_runtime.check_canvas_connection(app_dir, model)
-        return 1
+        checked = gemini_canvas_runtime.check_canvas_connection(app_dir, model)
+        ready = int((checked or {}).get("ready_accounts") or 1) if isinstance(checked, dict) else 1
+        return max(1, min(3, ready))
     return 3
 
 

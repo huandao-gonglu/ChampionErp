@@ -6,6 +6,7 @@ import { computed, inject, reactive, ref, watch } from 'vue'
 import { getActivePinia } from 'pinia'
 import { useAccountStore } from '@/stores/account'
 import ApiModelPicker from './ApiModelPicker.vue'
+import GeminiCanvasSettingsCard from './GeminiCanvasSettingsCard.vue'
 import { testAiModel } from '@/api/workflow/settings'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import ImageHostingSettingsPanel from '@/components/auth/ImageHostingSettingsPanel.vue'
@@ -14,7 +15,7 @@ import AlibabaSettingsPanel from '@/components/auth/AlibabaSettingsPanel.vue'
 import CrossborderBusSettingsPanel from '@/components/auth/CrossborderBusSettingsPanel.vue'
 import { routeLocationKey } from 'vue-router'
 import { CAPABILITY_PROBE_DESCRIPTIONS } from '@/constants/aiCapabilityProbe'
-import type { AuthResult, Marketplace, MarketplaceOption, MercadoLibreAuthChecklist, MercadoLibreTestMode, UnknownRecord } from '@/types/workflow'
+import type { AuthResult, BackendCanvasAccountStatus, Marketplace, MarketplaceOption, MercadoLibreAuthChecklist, MercadoLibreTestMode, UnknownRecord } from '@/types/workflow'
 import {
   MERCADOLIBRE_FULLY_MANAGED_UNSUPPORTED_MESSAGE,
   mercadoLibreAccountSiteId,
@@ -82,6 +83,7 @@ const selectedAiModelIndex = ref(0)
 const aiModels = ref<UnknownRecord[]>([])
 const aiSettingsError = ref('')
 const aiUseCaseBindings = ref<Record<string, UnknownRecord>>({})
+const canvasStatus = ref<BackendCanvasAccountStatus>({ scope: 'web_offline', desktop_online: false, accounts: [] })
 const API_CONNECTION_TYPE = 'api'
 const CLI_CONNECTION_TYPE = 'cli'
 const BROWSER_CONNECTION_TYPE = 'browser'
@@ -333,6 +335,7 @@ function normalizeAiModelRow(value: unknown, index: number): UnknownRecord {
   return {
     id: firstText(record.id, fallbackId),
     ...(record.system_managed === true ? { system_managed: true } : {}),
+    ...(record.canvas_managed === true ? { canvas_managed: true } : {}),
     local_connection_id: firstText(record.local_connection_id),
     local_config_fingerprint: firstText(record.local_config_fingerprint),
     name: firstText(record.name, record.id, `AI 模型 ${index + 1}`),
@@ -357,7 +360,7 @@ function normalizeAiModelRow(value: unknown, index: number): UnknownRecord {
     ...(connectionType === API_CONNECTION_TYPE && typeof record.thinking_enabled === 'boolean'
       ? { thinking_enabled: record.thinking_enabled }
       : {}),
-    capabilities: asStringArray(record.capabilities),
+    capabilities: record.canvas_managed === true ? ['image_edit'] : asStringArray(record.capabilities),
     capability_profiles: normalizeCapabilityProfiles(record.capability_profiles),
     cli_tool: cliTool,
     command: firstText(record.command, record.cli_command, connectionType === CLI_CONNECTION_TYPE ? cliToolDefaultCommand(cliTool) : ''),
@@ -470,6 +473,14 @@ function fillFromProps() {
   lastIncomingAiModels = JSON.parse(JSON.stringify(incoming)) as UnknownRecord[]
   selectedAiModelIndex.value = Math.min(selectedAiModelIndex.value, Math.max(aiModels.value.length - 1, 0))
   aiUseCaseBindings.value = normalizeUseCaseBindings(props.aiConfig.ai_use_case_bindings || props.appConfig.ai_use_case_bindings)
+  const rawCanvasStatus = asRecord(props.aiConfig.canvas_status)
+  if (Object.keys(rawCanvasStatus).length) {
+    canvasStatus.value = {
+      scope: firstText(rawCanvasStatus.scope, desktopShell ? 'desktop' : 'web_offline'),
+      desktop_online: rawCanvasStatus.desktop_online === true,
+      accounts: Array.isArray(rawCanvasStatus.accounts) ? rawCanvasStatus.accounts as BackendCanvasAccountStatus['accounts'] : [],
+    }
+  }
   form.mlAppId = String(ml.app_id || '')
   form.mlClientSecret = String(ml.client_secret || ml.app_secret || '')
   form.mlRedirectUri = String(ml.redirect_uri || DEFAULT_ML_REDIRECT_URI)
@@ -482,6 +493,55 @@ function fillFromProps() {
 watch(() => [props.appConfig, props.aiConfig, props.storeConfig], fillFromProps, { immediate: true, deep: true })
 
 const selectedAiModel = computed(() => aiModels.value[selectedAiModelIndex.value] || null)
+const orderedAiModelEntries = computed(() => {
+  const entries = aiModels.value.map((model, index) => ({ model, index }))
+  const rank = (model: UnknownRecord) => model.system_managed === true ? 0 : model.canvas_managed === true ? 1 : 2
+  return [...entries].sort((a, b) => rank(a.model) - rank(b.model))
+})
+const selectedFixedCanvas = computed(() => selectedAiModel.value?.canvas_managed === true)
+const isCanvasBoundToImageTranslate = computed(() => {
+  if (!selectedFixedCanvas.value || !selectedAiModel.value) return false
+  return useCaseBindingField('image.translate', 'model_id') === firstText(selectedAiModel.value.id)
+})
+
+function canvasSidebarSummary(): string {
+  const list = canvasStatus.value.accounts || []
+  const enabledCount = list.filter(item => item.enabled !== false).length
+  const signedInCount = list.filter(item => item.status === 'signed_in').length
+  if (!desktopShell && !canvasStatus.value.desktop_online) return '固定 · 需桌面端登录'
+  if (!list.length) return '固定 · 未登录 Google 账号'
+  if (signedInCount > 0) return `固定 · 已登录 ${signedInCount} / ${list.length} 个账号`
+  return `固定 · ${enabledCount} 个账号待核验`
+}
+
+function handleCanvasFieldUpdate(field: string, value: string | boolean) {
+  if (!selectedAiModel.value || !selectedFixedCanvas.value || aiControlsLocked.value) return
+  if (!desktopShell) {
+    handleCanvasHandoffDesktop()
+    return
+  }
+  selectedAiModel.value[field] = value
+}
+
+function handleCanvasAccountsUpdated(status: BackendCanvasAccountStatus) {
+  canvasStatus.value = status
+}
+
+function handleCanvasBindImageTranslate() {
+  if (!selectedFixedCanvas.value || !selectedAiModel.value) return
+  const modelId = firstText(selectedAiModel.value.id)
+  if (!modelId) return
+  setUseCaseBinding('image.translate', modelId)
+  saveAiSettings('bindings')
+}
+
+function handleCanvasHandoffDesktop() {
+  const modelId = firstText(selectedAiModel.value?.id)
+  void launchDesktop({
+    target: '/?tab=auth&auth_section=ai_models',
+    state: { modelSettings: { selectedModelId: modelId } },
+  })
+}
 const aiUseCases = computed(() => Array.isArray(props.aiConfig.ai_use_cases) ? props.aiConfig.ai_use_cases.map(asRecord) : [])
 const cliToolOptions = computed(() => normalizeCliToolOptions(props.aiConfig.cli_tools))
 const browserPresets = computed(() => {
@@ -679,9 +739,18 @@ function aiPayload(bindings: UnknownRecord): UnknownRecord {
         delete row.browser_proxy
         delete row.extra
       } else if (row.connection_type === BROWSER_CONNECTION_TYPE) {
-        row.provider = firstText(row.provider, '浏览器 AI')
-        row.browser_provider = firstText(row.browser_provider)
-        row.browser_mode = firstText(row.browser_mode, BROWSER_MODE_MANAGED_PROFILE)
+        if (row.canvas_managed === true) {
+          row.provider = 'Gemini Canvas'
+          row.browser_provider = 'gemini'
+          row.browser_mode = BROWSER_MODE_MANAGED_PROFILE
+          row.browser_profile = firstText(row.browser_profile, 'canvas')
+          row.browser_url = firstText(row.browser_url, 'https://gemini.google.com/share/a3adc37e7008')
+          row.capabilities = ['image_edit']
+        } else {
+          row.provider = firstText(row.provider, '浏览器 AI')
+          row.browser_provider = firstText(row.browser_provider)
+          row.browser_mode = firstText(row.browser_mode, BROWSER_MODE_MANAGED_PROFILE)
+        }
         row.base_url = ''
         row.base_url_env = ''
         row.api_key = ''
@@ -1206,13 +1275,6 @@ function addAiModel() {
   selectedAiModelIndex.value = aiModels.value.length - 1
 }
 
-function addBrowserModel(event: Event) {
-  const select = event.target as HTMLSelectElement
-  const id = select.value
-  select.value = ''
-  addBrowserPreset(id)
-}
-
 function addBrowserPreset(id: string) {
   const preset = browserPresets.value.find(item => item.id === id)
   if (!preset || aiControlsLocked.value) return
@@ -1243,7 +1305,7 @@ function addBrowserPreset(id: string) {
 function duplicateSelectedAiModel() {
   if (aiControlsLocked.value) return
   const current = selectedAiModel.value
-  if (!current) return
+  if (!current || current.canvas_managed === true) return
   const sourceId = firstText(current.id)
   const cloned = normalizeAiModelRow({
     ...current,
@@ -1262,7 +1324,7 @@ function duplicateSelectedAiModel() {
 function removeSelectedAiModel() {
   if (aiControlsLocked.value) return
   const current = selectedAiModel.value
-  if (!current || current.system_managed || aiModels.value.length <= 1) return
+  if (!current || current.system_managed || current.canvas_managed === true || aiModels.value.length <= 1) return
   const removedId = String(current.id || '')
   aiModels.value.splice(selectedAiModelIndex.value, 1)
   for (const [useCaseId, binding] of Object.entries(aiUseCaseBindings.value)) {
@@ -1730,12 +1792,8 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
             </div>
             <div class="flex flex-wrap gap-2">
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="addAiModel">添加模型</button>
-              <select data-testid="add-web-model" aria-label="添加网页模型" class="input w-auto py-1.5 text-sm" :disabled="aiControlsLocked || !browserPresets.length || (desktopShell && !localOperations)" value="" @change="addBrowserModel">
-                <option value="" disabled>添加网页模型</option>
-                <option v-for="preset in browserPresets" :key="preset.id" :value="preset.id">{{ preset.label }}</option>
-              </select>
-              <button v-desktop="!selectedAiModelIsApi" class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModel || localModelBlocked" @click="duplicateSelectedAiModel">复制当前模型</button>
-              <button v-desktop="!selectedAiModelIsApi" class="btn btn-outline py-1.5 text-sm text-rose-700" type="button" :disabled="aiControlsLocked || selectedSystemModel || localModelBlocked || aiModels.length <= 1" @click="removeSelectedAiModel">删除当前模型</button>
+              <button v-desktop="!selectedAiModelIsApi" class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModel || selectedFixedCanvas || localModelBlocked" @click="duplicateSelectedAiModel">复制当前模型</button>
+              <button v-desktop="!selectedAiModelIsApi" class="btn btn-outline py-1.5 text-sm text-rose-700" type="button" :disabled="aiControlsLocked || selectedSystemModel || selectedFixedCanvas || localModelBlocked || aiModels.length <= 1" @click="removeSelectedAiModel">删除当前模型</button>
               <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="saveAiSettings('models')">保存 AI 设置</button>
             </div>
           </div>
@@ -1743,20 +1801,38 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
           <div class="mt-4 grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
             <div class="space-y-2">
               <button
-                v-for="(model, index) in aiModels"
-                :key="String(model.id || index)"
+                v-for="entry in orderedAiModelEntries"
+                :key="String(entry.model.id || entry.index)"
                 type="button"
                 class="w-full rounded-lg border px-3 py-2 text-left text-sm transition"
-                :class="selectedAiModelIndex === index ? 'border-primary-300 bg-white text-primary-700 shadow-sm dark:border-primary-500/40 dark:bg-primary-500/10 dark:text-primary-100' : 'border-accent-200 bg-white text-accent-700 hover:bg-accent-50 dark:border-dark-700 dark:bg-dark-900/70 dark:text-accent-200'"
+                :class="selectedAiModelIndex === entry.index ? 'border-primary-300 bg-white text-primary-700 shadow-sm dark:border-primary-500/40 dark:bg-primary-500/10 dark:text-primary-100' : 'border-accent-200 bg-white text-accent-700 hover:bg-accent-50 dark:border-dark-700 dark:bg-dark-900/70 dark:text-accent-200'"
                 :disabled="aiControlsLocked"
-                @click="selectedAiModelIndex = index"
+                :data-testid="entry.model.canvas_managed === true ? 'model-tab-gemini-canvas' : undefined"
+                @click="selectedAiModelIndex = entry.index"
               >
-                <span class="block truncate font-semibold">{{ model.name || model.id || '未命名模型' }}</span>
-                <span class="mt-1 block truncate text-xs text-accent-500 dark:text-accent-400">{{ model.system_managed ? '系统 · New API' : aiModelProviderLabel(model) }} · {{ model.model || '未选模型' }}</span>
+                <span class="block truncate font-semibold">{{ entry.model.name || entry.model.id || '未命名模型' }}</span>
+                <span class="mt-1 block truncate text-xs text-accent-500 dark:text-accent-400">
+                  {{ entry.model.canvas_managed === true ? canvasSidebarSummary() : `${entry.model.system_managed ? '系统 · New API' : aiModelProviderLabel(entry.model)} · ${entry.model.model || '未选模型'}` }}
+                </span>
               </button>
             </div>
 
-            <fieldset v-if="selectedAiModel" v-desktop="!selectedAiModelIsApi" class="ai-model-form min-w-0 space-y-3" :disabled="localModelBlocked">
+            <GeminiCanvasSettingsCard
+              v-if="selectedAiModel && selectedFixedCanvas"
+              :model="selectedAiModel"
+              :canvas-status="canvasStatus"
+              :is-bound-to-image-translate="isCanvasBoundToImageTranslate"
+              :desktop-shell="desktopShell"
+              :local-operations="localOperations"
+              :desktop-reason="desktopReason"
+              :locked="aiControlsLocked"
+              @update-field="handleCanvasFieldUpdate"
+              @accounts-updated="handleCanvasAccountsUpdated"
+              @bind-image-translate="handleCanvasBindImageTranslate"
+              @handoff-desktop="handleCanvasHandoffDesktop"
+            />
+
+            <fieldset v-else-if="selectedAiModel" v-desktop="!selectedAiModelIsApi" class="ai-model-form min-w-0 space-y-3" :disabled="localModelBlocked">
               <p v-if="selectedSystemModel" class="text-sm text-accent-500 dark:text-accent-400">系统模型通过 New API 调用，使用当前账号的额度。</p>
               <p v-if="desktopShell && !localOperations && !selectedAiModelIsApi" role="status" class="text-sm text-amber-700 dark:text-amber-300">{{ desktopReason }}</p>
               <p v-if="aiSettingsError" role="alert" class="text-sm text-rose-700 dark:text-rose-300">{{ aiSettingsError }}</p>

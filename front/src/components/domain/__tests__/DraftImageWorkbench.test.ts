@@ -207,4 +207,31 @@ describe('草稿图片 V2 工作台', () => {
     expect(controller.start).toHaveBeenCalledWith('translate', ['red'], '')
     expect(wrapper.text()).toContain('勾选图片开始处理')
   })
+  it('套图结果页支持一键重试全部失败项', async () => {
+    setOperationAvailability({ delegated_use_cases: [], desktop_use_cases: [], desktop_reason: '', blocked_use_cases: {} })
+    const { wrapper, draft, batch, controller } = fixture()
+    draft.updatedAt = '2026-11-23T00:00:00Z'
+    batch.value = {
+      conversation_id: 'set-1', terminal: true, total: 3, completed: 3, success: 1, failed: 2,
+      image_set: {
+        style: '明亮极简',
+        pages: [
+          { key: 'p1', title: '主图', role: 'main', scope: 'common', source_image_ids: ['common'], prompt: 'p1' },
+          { key: 'p2', title: '卖点图', role: 'detail', scope: 'common', source_image_ids: ['common'], prompt: 'p2' },
+          { key: 'p3', title: '场景图', role: 'scene', scope: 'common', source_image_ids: ['common'], prompt: 'p3' },
+        ],
+      },
+      items: [
+        { source_id: 'p1', status: 'success', result_asset_ids: ['result'], result_urls: [] },
+        { source_id: 'p2', status: 'failed', error: '网络超时', result_urls: [] },
+        { source_id: 'p3', status: 'failed', error: '结果待核对', outcome_unknown: true, result_urls: [] },
+      ],
+    } as unknown as ImageBatchSnapshot
+    await button(wrapper, '生成套图').trigger('click')
+    await flushPromises()
+    const retryAll = wrapper.get('[data-testid="retry-all-failed-pages"]')
+    expect(retryAll.text()).toContain('重试全部失败项（2）')
+    await retryAll.trigger('click')
+    expect(controller.generateSet).toHaveBeenCalledWith(undefined, '2026-11-23T00:00:00Z', ['p2', 'p3'])
+  })
 })

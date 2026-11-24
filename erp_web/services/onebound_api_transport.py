@@ -192,7 +192,7 @@ def _shop_field(row, name):
     return str(value).strip() if type(value) in {str, int} else ''
 
 
-def _onebound_shop_page(config, *, nick: str, page: int, member_id: str = '') -> tuple[list[dict], int]:
+def _onebound_shop_page(config, *, nick: str = '', page: int = 1, member_id: str = '') -> tuple[list[dict], int]:
     params = {'key': config['api_key'], 'secret': config['api_secret'], 'nick': nick, 'page': page,
               'cache': 'no', 'result_type': 'json', 'lang': 'zh-CN'}
     payload = _request_gateway(config, '/sys/shop_bind_list/', params, interface='sys/shop_bind_list',
@@ -202,26 +202,38 @@ def _onebound_shop_page(config, *, nick: str, page: int, member_id: str = '') ->
         return [], 0
     _validate_gateway_result(payload)
     result = payload.get('items')
+    if not isinstance(result, dict) or 'item' not in result or 'pagecount' not in result:
+        raise OneBoundApiError('万邦未返回有效的授权店铺分页')
+    raw_pages = result['pagecount']
+    raw_total = result.get('total_results')
+    if isinstance(raw_pages, bool) or isinstance(raw_total, bool):
+        raise OneBoundApiError('万邦未返回有效的授权店铺分页')
     try:
-        rows = result['item']
-        pages = int(result['pagecount'])
-    except (KeyError, TypeError, ValueError):
+        pages = int(raw_pages)
+        total = int(raw_total) if raw_total not in (None, '') else None
+    except (TypeError, ValueError):
         raise OneBoundApiError('万邦未返回有效的授权店铺分页') from None
-    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows) or pages < 0:
+    if pages < 0 or (total is not None and total < 0):
+        raise OneBoundApiError('万邦未返回有效的授权店铺分页')
+    rows = result['item']
+    if rows is None:
+        if pages == 0 and (total is None or total == 0):
+            return [], 0
+        raise OneBoundApiError('万邦未返回有效的授权店铺分页')
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         raise OneBoundApiError('万邦未返回有效的授权店铺分页')
     return rows, pages
 
 
-def _matching_buyer_rows(config, *, member_id: str, nick: str, require_nick: bool) -> list[dict]:
+def _matching_buyer_rows(config, *, member_id: str) -> list[dict]:
     matches = []
     page = 1
     while page <= _MAX_SHOP_PAGES:
-        rows, pages = _onebound_shop_page(config, nick=nick, page=page, member_id=member_id)
+        rows, pages = _onebound_shop_page(config, nick='', page=page, member_id=member_id)
         for row in rows:
             if (_shop_field(row, 'api_type').lower() in {'1688', '1688global', 'alibaba'}
                     and _shop_field(row, 'status') == '1'
-                    and _shop_field(row, 'memo') == member_id
-                    and (not require_nick or _shop_field(row, 'nick') == nick)):
+                    and _shop_field(row, 'memo') == member_id):
                 matches.append(row)
         if not rows or page >= pages:
             break
@@ -239,10 +251,14 @@ def fetch_onebound_buyer_token(config, *, member_id: str, account_name: str = ''
         app_ctx.onebound_quota, config['api_key'], member_id
     ):
         raise OneBoundApiUnauthorized('万邦买家授权同步过于频繁，请稍后重试或重新连接账号')
+    # 万邦 /sys/shop_bind_list/ 按中文 nick 过滤实测会返回空分页（pagecount=0, item=null）；
+    # 直接按空 nick 拉取分页并在本地按已核验 member_id（memo）匹配，避免误查空和浪费额度。
+    matches = _matching_buyer_rows(config, member_id=member_id)
     nick = str(account_name or '').strip()
-    matches = _matching_buyer_rows(config, member_id=member_id, nick=nick, require_nick=bool(nick)) if nick else []
-    if not matches:
-        matches = _matching_buyer_rows(config, member_id=member_id, nick='', require_nick=False)
+    if len(matches) > 1 and nick:
+        nick_matches = [row for row in matches if _shop_field(row, 'nick') == nick]
+        if nick_matches:
+            matches = nick_matches
     if len(matches) != 1:
         raise OneBoundApiUnauthorized('未找到唯一有效的万邦买家授权，请重新连接账号')
     row = matches[0]

@@ -351,3 +351,70 @@ def test_opening_missing_preview_resumes_in_same_window(monkeypatch):
     page.call.side_effect = call
     assert canvas._canvas_context(page) == ("", 9)
     page.hide.assert_called_once()
+
+
+def test_thought_images_are_filtered_and_multiple_images_converge_to_final_image():
+    draft_img = png("red")
+    final_img = png("blue")
+    thought_img = png("green")
+    assert "p.thought !== true" in canvas._REQUEST_SCRIPT
+    decoded = canvas._decode_results({
+        "images": [
+            {"data": base64.b64encode(thought_img).decode(), "mimeType": "image/png", "thought": True},
+            {"data": base64.b64encode(draft_img).decode(), "mimeType": "image/png"},
+            {"data": base64.b64encode(final_img).decode(), "mimeType": "image/png"},
+        ]
+    }, "src", "edit", count=1)
+    assert len(decoded) == 1
+    assert decoded[0]["bytes"] == final_img
+
+
+def test_non_json_401_and_abort_timeout_and_english_consent_are_covered(tmp_path, monkeypatch, model, source):
+    assert "response.status === 401" in canvas._REQUEST_SCRIPT
+    assert "AbortSignal.timeout" in canvas._REQUEST_SCRIPT
+    assert "created by another user" in canvas._SHARED_APP_CONTINUE_SCRIPT
+    assert "continue" in canvas._SHARED_APP_CONTINUE_SCRIPT
+
+    calls = fake_connection(monkeypatch, error=RuntimeError("websocket closed by peer"))
+    with pytest.raises(RuntimeError, match=r"结果未知.*websocket closed by peer"):
+        canvas.GeminiCanvasProvider().edit_images(AiImageEditRequest(tmp_path, model, "改为蓝色", [source]))
+    assert len(calls) == 1
+
+
+def test_multi_account_rotation_and_rate_limit_failover(tmp_path, monkeypatch, model, source):
+    blue = png("blue")
+    monkeypatch.setattr(canvas, "is_browser_bound", lambda: True)
+    monkeypatch.setattr(canvas, "list_canvas_accounts", lambda: [
+        {"id": "acct_1", "profile": "acct_1", "email": "one@gmail.com", "enabled": True, "status": "signed_in"},
+        {"id": "acct_2", "profile": "acct_2", "email": "two@gmail.com", "enabled": True, "status": "signed_in"},
+    ])
+    monkeypatch.setattr(canvas, "_sync_account_status", lambda *a, **kw: None)
+    monkeypatch.setattr(canvas, "_cooldown_until", {})
+    monkeypatch.setattr(canvas, "_rr_cursor", 0)
+
+    seen_profiles = []
+    responses = iter([
+        {"rateLimited": True, "status": 429, "error": "HTTP 429 quota"},
+        {"images": [{"data": base64.b64encode(blue).decode(), "mimeType": "image/png"}]},
+    ])
+
+    class Cdp:
+        def call(self, method, params, **kwargs):
+            return {"result": {"value": next(responses)}}
+
+    @contextmanager
+    def connect(app_dir, target_model, timeout, force_login=False):
+        seen_profiles.append(target_model.get("browser_profile"))
+        yield Cdp(), "frame", 1
+
+    monkeypatch.setattr(canvas, "_connection", connect)
+    results = canvas.GeminiCanvasProvider().edit_images(AiImageEditRequest(tmp_path, model, "改为蓝色", [source]))
+    assert seen_profiles == ["acct_1", "acct_2"]
+    assert results[0]["bytes"] == blue
+    assert "acct_1" in canvas._cooldown_until
+
+    checked = canvas.check_canvas_connection(tmp_path, model)
+    assert checked["ready_accounts"] == 1
+    canvas._cooldown_until.clear()
+    checked_both = canvas.check_canvas_connection(tmp_path, model)
+    assert checked_both["ready_accounts"] == 2

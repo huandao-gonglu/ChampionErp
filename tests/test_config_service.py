@@ -93,7 +93,8 @@ def test_browser_presets_remain_available_after_the_user_deletes_the_model(app_d
     assert model["connection_type"] == "browser"
     assert model["browser_url"].startswith("https://gemini.google.com/share/")
     assert model["browser_mode"] == "managed_profile"
-    assert model["capabilities"] == []
+    assert model["capabilities"] == ["image_edit"]
+    assert model["canvas_managed"] is True
     assert "capability_profiles" not in model and "api_key" not in model
     saved = config_service.merge_ai_config(app_dir, {}, {
         "ai_models": [*ai_model_config.default_ai_models(), model],
@@ -104,6 +105,37 @@ def test_browser_presets_remain_available_after_the_user_deletes_the_model(app_d
     public = config_service.public_ai_config(app_dir, removed)
     assert model["id"] not in {item["id"] for item in public["ai_models"]}
     assert public["browser_presets"] == [preset]
+
+
+def test_fixed_canvas_model_is_non_deletable_and_skips_auto_match(app_dir: Path) -> None:
+    from erp_web.context import get_context
+    store = get_context().config
+    loaded = store.load_app_config()
+    canvas_rows = [row for row in loaded["ai_models"] if row.get("canvas_managed")]
+    assert len(canvas_rows) == 1
+    assert canvas_rows[0]["id"] == ai_model_config.CANVAS_FIXED_MODEL_ID
+    assert canvas_rows[0]["capabilities"] == ["image_edit"]
+    # 未显式绑定时，自动匹配不误选固定本地 Canvas 模型。
+    only_text_and_canvas = {
+        "ai_models": [
+            {"id": "text_only", "connection_type": "api", "provider_id": "openai", "model": "gpt-4o", "capabilities": ["chat"]},
+            canvas_rows[0],
+        ],
+        "ai_use_case_bindings": {},
+    }
+    with pytest.raises(RuntimeError, match="没有可用 AI 模型"):
+        ai_model_config.resolve_ai_model(only_text_and_canvas, "image.translate")
+    explicit = {**only_text_and_canvas, "ai_use_case_bindings": {"image.translate": {"model_id": canvas_rows[0]["id"]}}}
+    assert ai_model_config.resolve_ai_model(explicit, "image.translate")["id"] == canvas_rows[0]["id"]
+    # 网页端不能删除本机模型；桌面端保存也不能删除内置 Gemini Canvas 模型。
+    from erp_web.schemas.requests import RequestValidationError
+    from erp_web.services.desktop_connection_service import bind_desktop_connection
+    without_canvas = [row for row in loaded["ai_models"] if not row.get("canvas_managed")]
+    with pytest.raises(RequestValidationError):
+        store.save_client_app_config({"ai_models": without_canvas}, ai_only=True)
+    with bind_desktop_connection("desktop-conn"):
+        with pytest.raises(ai_model_config.SystemModelError, match="不能删除内置的 Gemini Canvas"):
+            store.save_client_app_config({"ai_models": without_canvas}, ai_only=True)
 
 
 def test_browser_presets_never_copy_personal_browser_settings(app_dir: Path) -> None:

@@ -66,7 +66,7 @@ test('统一后端地址只接受站点地址', () => {
   }
 })
 
-test('转发与 Vue 页面生命周期无关，回传失败后不重发操作或结果', async (t) => {
+test('转发与 Vue 页面生命周期无关，回传闪断仅幂等重试上传而不重放本机执行', async (t) => {
   let polls = 0, executions = 0, results = 0
   const server = http.createServer((request, response) => {
     request.resume()
@@ -74,7 +74,12 @@ test('转发与 Vue 页面生命周期无关，回传失败后不重发操作或
     else if (request.url === '/api/desktop/poll') {
       polls += 1
       if (polls === 1) response.end(JSON.stringify({ ok: true, calls: [{ id: 'owned', operation: 'browser.status', params: {}, timeout: 5 }] }))
-      else request.on('close', () => { if (!response.writableEnded) response.destroy() })
+      else if (results >= 4) {
+        response.writeHead(409)
+        response.end(JSON.stringify({ ok: false, error_code: 'DESKTOP_UNAVAILABLE', error: '连接已失效' }))
+      } else {
+        setTimeout(() => { if (!response.writableEnded) response.end(JSON.stringify({ ok: true, calls: [] })) }, 20)
+      }
     } else if (request.url === '/api/desktop/result') {
       results += 1
       request.socket.destroy()
@@ -86,10 +91,10 @@ test('转发与 Vue 页面生命周期无关，回传失败后不重发操作或
   const disconnected = new Promise(resolve => { resolveDisconnected = resolve })
   const bridge = await connectDesktop(`http://127.0.0.1:${server.address().port}`, {
     async perform() { executions += 1; return { id: 'owned', ok: true, result: {} } }, cancel() {},
-  }, { onDisconnected: resolveDisconnected })
+  }, { onDisconnected: resolveDisconnected, resultRetryDelaysMs: [10, 10, 10] })
   t.after(() => bridge.stop())
   await disconnected
   assert.equal(executions, 1)
-  assert.equal(results, 1)
+  assert.equal(results, 4)
   assert.equal(bridge.id, '')
 })

@@ -281,10 +281,10 @@ def test_onebound_stale_access_token_syncs_rotated_buyer_token_and_retries_read(
 
     def gateway(request, *, request_context, **kwargs):
         parsed = urlsplit(request.full_url)
-        params = parse_qs(parsed.query)
+        params = parse_qs(parsed.query, keep_blank_values=True)
         calls.append((request_context.interface, params.get('access_token', [''])[0]))
         if request_context.interface == 'sys/shop_bind_list':
-            assert params.get('nick') == ['买家甲']
+            assert params.get('nick') == ['']
             return response({'items': {
                 'page': 1, 'page_size': 50, 'total_results': '2', 'pagecount': 1,
                 'item': [
@@ -363,3 +363,82 @@ def test_onebound_token_sync_rejects_mismatched_or_unchanged_buyer_token(monkeyp
             '1028620347857', 'https://detail.1688.com/offer/1028620347857.html',
         )
     assert store.alibaba_credentials()['authorization'] == initial
+
+
+def test_onebound_token_sync_handles_null_empty_shop_page_without_pagination_error(monkeypatch):
+    store = get_context().config
+    configure(store)
+    initial = {
+        'access_token': 'stale-token', 'credential_type': 'access_token',
+        'member_id': 'buyer-empty', 'account_name': '南国野兽3',
+        'expires_at': 4_000_000_000, 'account_scope': 'existing-scope',
+        'application_fingerprint': application_fingerprint(store.alibaba_application()),
+    }
+    store.update_alibaba_credentials({'authorization': initial})
+
+    def gateway(request, *, request_context, **kwargs):
+        if request_context.interface == 'sys/shop_bind_list':
+            return response({'error_code': '0000', 'items': {
+                'page': '1', 'page_size': 50, 'total_results': '0', 'pagecount': 0, 'item': None,
+            }})
+        return response({'error': 'item-not-found', 'error_code': '2000',
+                         'reason': 'Request need user authorized 接口文档：https://open.onebound.cn/help/api/1688.custom.html'})
+
+    monkeypatch.setattr(transport, 'managed_urlopen', gateway)
+    with pytest.raises(AlibabaApiError, match='未找到唯一有效的万邦买家授权'):
+        alibaba_provider(AlibabaAuthorizationService(store).runtime_config()).get_product(
+            '1028620347857', 'https://detail.1688.com/offer/1028620347857.html',
+        )
+    assert store.alibaba_credentials()['authorization'] == initial
+
+
+def test_onebound_token_sync_paginates_and_disambiguates_same_member_by_account_name(monkeypatch):
+    store = get_context().config
+    configure(store)
+    store.update_alibaba_credentials({'authorization': {
+        'access_token': 'stale-token', 'credential_type': 'access_token',
+        'member_id': 'buyer-paged', 'account_name': '南国野兽3',
+        'expires_at': 4_000_000_000, 'account_scope': 'existing-scope',
+        'application_fingerprint': application_fingerprint(store.alibaba_application()),
+    }})
+    pages_requested = []
+
+    def gateway(request, *, request_context, **kwargs):
+        params = parse_qs(urlsplit(request.full_url).query, keep_blank_values=True)
+        if request_context.interface == 'sys/shop_bind_list':
+            assert params.get('nick') == ['']
+            page = int(params['page'][0])
+            pages_requested.append(page)
+            if page == 1:
+                return response({'error_code': '0000', 'items': {
+                    'page': '1', 'page_size': 50, 'total_results': '52', 'pagecount': 2,
+                    'item': [
+                        {'shop_bind_id': '1', 'nick': '历史别名', 'session': 'old-alias-token', 'status': '1',
+                         'api_type': '1688', 'memo': 'buyer-paged', 'exp_time': '2099-01-01 00:00:00'},
+                    ],
+                }})
+            return response({'error_code': '0000', 'items': {
+                'page': '2', 'page_size': 50, 'total_results': '52', 'pagecount': 2,
+                'item': [
+                    {'shop_bind_id': '2', 'nick': '南国野兽3', 'session': 'rotated-token-2', 'status': '1',
+                     'api_type': '1688', 'memo': 'buyer-paged', 'exp_time': '2099-01-01 00:00:00'},
+                ],
+            }})
+        token = params['access_token'][0]
+        if token == 'stale-token':
+            return response({'error': 'item-not-found', 'error_code': '2000',
+                             'reason': 'Request need user authorized'})
+        assert token == 'rotated-token-2'
+        if request_context.interface == 'com.alibaba.account/alibaba.account.basic':
+            return response({'response': {'memberId': 'buyer-paged', 'loginId': '南国野兽3'}})
+        return response({'response': {'result': {'success': True, 'result': {
+            'offerId': 1028620347857, 'subject': '分页同步商品', 'images': ['https://example.test/p.jpg'],
+        }}}})
+
+    monkeypatch.setattr(transport, 'managed_urlopen', gateway)
+    product = alibaba_provider(AlibabaAuthorizationService(store).runtime_config()).get_product(
+        '1028620347857', 'https://detail.1688.com/offer/1028620347857.html',
+    )
+    assert product['product']['title'] == '分页同步商品'
+    assert pages_requested == [1, 2]
+    assert store.alibaba_credentials()['authorization']['access_token'] == 'rotated-token-2'

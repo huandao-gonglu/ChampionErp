@@ -75,9 +75,16 @@ def is_navigation_error(error):
     ))
 
 
+def is_browser_bound() -> bool:
+    return _active.get() is not None
+
+
 class EmbeddedPage:
     def __init__(self, page_id):
         self.id = page_id
+        self.reusable = True
+        self.account_email = ''
+        self.account_name = ''
 
     def call(self, method, params=None, timeout=20, *, session_id='', on_event=None):
         response = request('command', timeout=timeout, page=self.id, method=method,

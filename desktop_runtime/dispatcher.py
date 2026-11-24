@@ -10,7 +10,14 @@ from erp_shared.desktop import LocalImageEditRequest, validate_action
 from . import browser_ai_runtime, collection, embedded_collection
 from .browser_debug_service import browser_operation, finish_browser_session, open_auth_link_in_browser
 from .cli import _cli_command_parts, _run_codex_cli_text
-from .gemini_canvas_runtime import GeminiCanvasProvider, check_canvas_connection
+from .gemini_canvas_runtime import (
+    GeminiCanvasProvider,
+    check_canvas_connection,
+    list_canvas_accounts,
+    login_canvas_account,
+    logout_canvas_account,
+    toggle_canvas_account,
+)
 from .operation import remaining_seconds
 
 
@@ -21,6 +28,12 @@ def dispatch(config, operation, params):
         return {'models': config.read()}
     if operation == 'config.write':
         return config.update(params['models'])
+    if operation == 'canvas.accounts':
+        return {'accounts': list_canvas_accounts()}
+    if operation == 'canvas.account.logout':
+        return logout_canvas_account(params['profile'])
+    if operation == 'canvas.account.toggle':
+        return toggle_canvas_account(params['profile'], params['enabled'])
     if operation == 'browser.status':
         embedded = embedded_collection.status()
         external = collection.browser_status(config)
@@ -52,7 +65,7 @@ def dispatch(config, operation, params):
         if params['probe_image']:
             text = _inline_cli_probe_image(text, config.directory)
         return {'text': text}
-    if operation in {'canvas.check', 'canvas.edit'}:
+    if operation in {'canvas.check', 'canvas.edit', 'canvas.account.login'}:
         return _dispatch_browser_ai(config, operation, params, model, timeout)
     port = browser_ai_runtime.browser_ai_port(model)
     profile = browser_ai_runtime.browser_ai_profile_dir(config.directory, model)
@@ -77,8 +90,21 @@ def _dispatch_browser_ai(config, operation, params, model, timeout):
     if operation == 'browser.ai.chat':
         return asdict(browser_ai_runtime.run_browser_ai_chat(config.directory, model, params['prompt'], timeout=timeout))
     if operation == 'canvas.check':
-        check_canvas_connection(config.directory, model, timeout, force_login=params['force_login'])
-        return {'ok': True, 'profile_dir': '', 'browser_url': browser_ai_runtime.browser_ai_url(model), 'port': 0}
+        checked = check_canvas_connection(config.directory, model, timeout, force_login=params['force_login'])
+        ready_accounts = int(checked.get('ready_accounts') or 1) if isinstance(checked, dict) else 1
+        return {
+            'ok': True, 'profile_dir': '', 'browser_url': browser_ai_runtime.browser_ai_url(model),
+            'port': 0, 'ready_accounts': ready_accounts,
+        }
+    if operation == 'canvas.account.login':
+        return login_canvas_account(
+            config.directory,
+            model,
+            profile=params['profile'],
+            force_login=params['force_login'],
+            check_only=params['check_only'],
+            timeout=timeout,
+        )
     if operation == 'canvas.edit':
         with tempfile.TemporaryDirectory(prefix='champion-canvas-') as directory:
             images = []

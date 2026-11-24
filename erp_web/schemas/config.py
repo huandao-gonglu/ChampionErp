@@ -38,6 +38,7 @@ class AiModelConfig(TypedDict, total=False):
     capability_profiles: dict[str, AiCapabilityProfile]
     timeout_seconds: int
     thinking_enabled: bool  # 缺省时沿用高级请求配置或服务商默认。
+    canvas_managed: bool
     local_connection_id: str
     local_config_fingerprint: str
     browser_provider: str
@@ -48,6 +49,25 @@ class AiModelConfig(TypedDict, total=False):
     browser_proxy: str
     extra: dict[str, Any]
     enabled: bool
+
+
+class CanvasAccountSummary(TypedDict, total=False):
+    id: str
+    profile: str
+    email: str
+    name: str
+    enabled: bool
+    status: str
+    last_checked_at: str
+    last_error: str
+    cooldown_seconds: int
+    busy: bool
+
+
+class CanvasAccountStatus(TypedDict):
+    scope: str
+    desktop_online: bool
+    accounts: list[CanvasAccountSummary]
 
 
 class AiReasoningSettings(TypedDict, total=False):
@@ -151,6 +171,8 @@ __all__ = [
     "AiReasoningSettings",
     "AiUseCaseBinding",
     "AppConfig",
+    "CanvasAccountStatus",
+    "CanvasAccountSummary",
     "StoreConfig",
     "SystemSettings",
     "SystemSettingsRequest",

@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
 const { test } = require('node:test')
-const { createEmbeddedBrowser, allowedNavigation } = require('./embedded-browser.cjs')
+const { createEmbeddedBrowser, allowedNavigation, CANVAS_IDLE_MS } = require('./embedded-browser.cjs')
 
 function fixture(development = false) {
   let account = 'erp/first'
@@ -9,6 +9,8 @@ function fixture(development = false) {
   const windows = []
   const views = []
   const networkErrors = []
+  const clearedPartitions = []
+  const partitionCookies = new Map()
   class View {
     constructor({ webPreferences }) {
       assert.equal(webPreferences.nodeIntegration, false)
@@ -35,13 +37,33 @@ function fixture(development = false) {
     destroy() { this.closed = true; this.emit('closed') }
     setTitle() {}
   }
+  const storesByKey = new Map()
   const browser = createEmbeddedBrowser({ BaseWindow: Window, WebContentsView: View, parent: () => undefined,
     development, account: () => account, session: { fromPartition(key) {
       keys.push(key)
-      return { webRequest: { onErrorOccurred(handler) { networkErrors.push(handler) } }, flushStorageData() {}, cookies: { async flushStore() {} }, setPermissionRequestHandler() {}, setPermissionCheckHandler() {}, async setProxy() {} }
+      if (!storesByKey.has(key)) {
+        storesByKey.set(key, {
+          webRequest: { onErrorOccurred(handler) { networkErrors.push(handler) } },
+          flushStorageData() {},
+          async clearStorageData() { clearedPartitions.push(key); partitionCookies.set(key, []) },
+          async clearCache() {},
+          async clearAuthCache() {},
+          cookies: {
+            async flushStore() {},
+            async get() { return partitionCookies.get(key) || [] },
+          },
+          setPermissionRequestHandler() {},
+          setPermissionCheckHandler() {},
+          async setProxy() {},
+        })
+      }
+      return storesByKey.get(key)
     } } })
   const call = (action, data, id = 'request') => browser.handle(action, data, account, { id, active: () => true })
-  return { browser, windows, views, call, keys, networkErrors, switchAccount(value) { account = value; browser.reset() } }
+  return {
+    browser, windows, views, call, keys, networkErrors, clearedPartitions, partitionCookies,
+    switchAccount(value) { account = value; browser.reset() },
+  }
 }
 
 const product = { kind: '1688', url: 'https://detail.1688.com/offer/1.html' }
@@ -205,6 +227,8 @@ test('Canvas 目标或代理变化时新开页面，空闲预览到期释放', a
   assert.equal(views.length, 3)
   assert.ok(views.slice(0, 2).every(view => view.webContents.isDestroyed()))
   t.mock.timers.tick(60000)
+  assert.equal(views[2].webContents.isDestroyed(), false)
+  t.mock.timers.tick(CANVAS_IDLE_MS)
   assert.ok(views[2].webContents.isDestroyed())
 })
 
@@ -255,4 +279,31 @@ test('开发版显示 Google 登录核对页，核对结束后原窗口仍可见
   assert.equal(await pending, false)
   assert.ok(windows[1].isDestroyed())
   assert.ok(windows[0].isVisible())
+})
+
+test('Canvas 多账号按 ERP 账号隔离，支持去重、启停与取消登录清理分区', async () => {
+  const { createHash } = require('node:crypto')
+  const { call, clearedPartitions, partitionCookies, switchAccount } = fixture()
+  assert.deepEqual((await call('canvas_accounts_list', {})).accounts, [])
+  const pageA = await call('open', { ...canvas, profile: 'acct_a' }, 'login-a')
+  const partitionA = 'persist:erp-browser-' + createHash('sha256').update(JSON.stringify(['erp/first', 'gemini', 'acct_a'])).digest('hex')
+  const partitionB = 'persist:erp-browser-' + createHash('sha256').update(JSON.stringify(['erp/first', 'gemini', 'acct_b'])).digest('hex')
+  partitionCookies.set(partitionA, [{ name: 'SID', value: 'cookie-a' }])
+  partitionCookies.set(partitionB, [{ name: 'SID', value: 'cookie-b' }])
+  await call('canvas_account_upsert', { profile: 'acct_a', email: 'alice@gmail.com', name: 'Alice', status: 'signed_in' }, 'login-a')
+  await assert.rejects(call('canvas_account_logout', { profile: 'acct_a' }, 'logout-busy'), /正在执行修图任务/)
+  await call('release_canvas', { page: pageA }, 'login-a')
+  await call('canvas_account_upsert', { profile: 'acct_b', email: 'bob@gmail.com', name: 'Bob', status: 'signed_in' }, 'login-b')
+  const toggled = await call('canvas_account_set_enabled', { profile: 'acct_b', enabled: false }, 'toggle-b')
+  assert.equal(toggled.accounts.find(item => item.profile === 'acct_b').enabled, false)
+  const partitionA2 = 'persist:erp-browser-' + createHash('sha256').update(JSON.stringify(['erp/first', 'gemini', 'acct_a2'])).digest('hex')
+  partitionCookies.set(partitionA2, [{ name: 'SID', value: 'cookie-a2' }])
+  const deduped = await call('canvas_account_upsert', { profile: 'acct_a2', email: 'alice@gmail.com', name: 'Alice', status: 'signed_in' }, 'login-a2')
+  assert.deepEqual(deduped.accounts.map(item => item.profile), ['acct_b', 'acct_a2'])
+  assert.ok(clearedPartitions.includes(partitionA))
+  const afterLogout = await call('canvas_account_logout', { profile: 'acct_a2' }, 'logout-a2')
+  assert.deepEqual(afterLogout.accounts.map(item => item.profile), ['acct_b'])
+  assert.ok(clearedPartitions.includes(partitionA2))
+  switchAccount('erp/second')
+  assert.deepEqual((await call('canvas_accounts_list', {})).accounts, [])
 })

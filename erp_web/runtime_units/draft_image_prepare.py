@@ -1,6 +1,7 @@
 """草稿套图准备：保护人工内容、复用原生图片批次，并在完成后采用真实结果。"""
 
 from copy import deepcopy
+import time
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from erp_web.product_model.draft_image_model import draft_image_refs_from_pool
@@ -170,6 +171,7 @@ def _generate(request, context, product, draft, targets, fingerprint, batch_id, 
     inputs = _generation_inputs(product, draft, reference_ids)
     with image_request_slots:
         check_cancellation()
+        checked_at = time.monotonic()
         workers = image_translate_service.check_batch_connection(context.paths.app_dir, config)
         check_cancellation()
         common_plan = image_set_service.plan_image_set(
@@ -203,12 +205,19 @@ def _generate(request, context, product, draft, targets, fingerprint, batch_id, 
                 raise BusinessCapabilityError("DRAFT_IMAGES_CHANGED", "草稿图片在规划期间已更新，未启动图片生成，请重新读取。")
             context.image_batches.assert_draft_idle(draft_id)
 
+    # 若套图规划耗时接近 5 分钟保活窗口，在开画前重新预热一次 Canvas 并刷新并发数。
+    recheck = (
+        (lambda: image_translate_service.check_batch_connection(context.paths.app_dir, config))
+        if time.monotonic() - checked_at >= 240
+        else None
+    )
     run_image_batch(
         store=context.image_batches, app_dir=context.paths.app_dir,
         product_id=product["product_id"], draft_id=draft_id, request_id=batch_id,
         prompt=f"为草稿生成共用主图和 SKU 套图：{plan.style}",
         sources=[{"id": page.key} for page in plan.pages], process=process, persist=persist,
-        image_set=plan, preparation_fingerprint=fingerprint, before_create=before_create, max_workers=workers,
+        image_set=plan, preparation_fingerprint=fingerprint, before_create=before_create,
+        max_workers=workers, prepare_workers=recheck,
     )
     batch = context.image_batches.get(batch_id)
     if any(item.status != "success" or item.outcome_unknown for item in batch.items):

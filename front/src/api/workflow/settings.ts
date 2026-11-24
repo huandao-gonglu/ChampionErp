@@ -2,7 +2,8 @@ import { prepareLocalModel } from '@/utils/desktop'
 import { refreshOperationAvailability } from '@/api/operationAvailability'
 import {  apiClient } from '@/api/client'
 import type {
-
+  BackendCanvasAccountStatus,
+  BackendCanvasAccountSummary,
   Marketplace,
   MercadoLibreAuthChecklist,
   MercadoLibreTestMode,
@@ -135,6 +136,81 @@ export async function saveStoreCurrency(platform: Marketplace, listingCurrency: 
     publishReady: data.publish_ready === true,
     currencyConfiguration: asRecord(data.currencyConfiguration),
   }
+}
+
+export interface CanvasAccountActionResult {
+  ok: boolean
+  account?: BackendCanvasAccountSummary
+  accounts: BackendCanvasAccountSummary[]
+  canvasStatus: BackendCanvasAccountStatus
+  loginRequired?: boolean
+  error?: string
+}
+
+function normalizeCanvasStatus(raw: unknown): BackendCanvasAccountStatus {
+  const record = asRecord(raw)
+  const accounts = Array.isArray(record.accounts) ? record.accounts as BackendCanvasAccountSummary[] : []
+  return {
+    scope: typeof record.scope === 'string' ? record.scope : 'web_offline',
+    desktop_online: record.desktop_online === true,
+    accounts,
+  }
+}
+
+export async function loginCanvasAccount(options: {
+  model: UnknownRecord
+  profile?: string
+  forceLogin?: boolean
+  checkOnly?: boolean
+}): Promise<CanvasAccountActionResult> {
+  const prepared = await prepareLocalModel(options.model)
+  const response = await apiClient.post(
+    '/api/ai-config/canvas/account-login',
+    {
+      model: prepared,
+      profile: options.profile || '',
+      force_login: Boolean(options.forceLogin),
+      check_only: Boolean(options.checkOnly),
+    },
+    { timeout: 600_000, validateStatus: () => true },
+  )
+  const data = asRecord(response.data)
+  const canvasStatus = normalizeCanvasStatus(data.canvas_status)
+  const accounts = Array.isArray(data.accounts) ? data.accounts as BackendCanvasAccountSummary[] : canvasStatus.accounts
+  return {
+    ok: data.ok === true,
+    account: data.account && typeof data.account === 'object' ? data.account as BackendCanvasAccountSummary : undefined,
+    accounts,
+    canvasStatus: { ...canvasStatus, accounts },
+    loginRequired: data.login_required === true,
+    error: getString(data, ['error']),
+  }
+}
+
+export async function logoutCanvasAccount(profile: string): Promise<CanvasAccountActionResult> {
+  const response = await apiClient.post(
+    '/api/ai-config/canvas/account-logout',
+    { profile },
+    { validateStatus: () => true },
+  )
+  const data = asRecord(response.data)
+  ensureOk(data, getString(data, ['error'], '取消 Google 登录失败'))
+  const canvasStatus = normalizeCanvasStatus(data.canvas_status)
+  const accounts = Array.isArray(data.accounts) ? data.accounts as BackendCanvasAccountSummary[] : canvasStatus.accounts
+  return { ok: true, accounts, canvasStatus: { ...canvasStatus, accounts } }
+}
+
+export async function toggleCanvasAccount(profile: string, enabled: boolean): Promise<CanvasAccountActionResult> {
+  const response = await apiClient.post(
+    '/api/ai-config/canvas/account-toggle',
+    { profile, enabled },
+    { validateStatus: () => true },
+  )
+  const data = asRecord(response.data)
+  ensureOk(data, getString(data, ['error'], '更新 Google 账号启用状态失败'))
+  const canvasStatus = normalizeCanvasStatus(data.canvas_status)
+  const accounts = Array.isArray(data.accounts) ? data.accounts as BackendCanvasAccountSummary[] : canvasStatus.accounts
+  return { ok: true, accounts, canvasStatus: { ...canvasStatus, accounts } }
 }
 
 export async function clearStoreAuth(platform: Marketplace): Promise<StoreSettingsResult> {

@@ -253,3 +253,30 @@ def test_onebound_write_never_retries_on_unauthorized(monkeypatch):
         provider.create_order({'fullName': '收货人'}, [{'offer_id': '123', 'spec_id': 's1', 'quantity': 1}],
                               flow='general', channel='shegou', external_id='record')
     assert calls == 1 and synced == []
+
+
+@pytest.mark.parametrize('payload', [
+    {'error_code': '0000', 'items': {'page': '1', 'page_size': 50, 'total_results': '0', 'pagecount': 0, 'item': None}},
+    {'error_code': '0000', 'items': {'page': 1, 'page_size': 50, 'total_results': 0, 'pagecount': 0, 'item': []}},
+    {'error_code': '2000', 'error': 'item-not-found', 'reason': 'empty'},
+])
+def test_onebound_shop_page_accepts_empty_pagination_results(monkeypatch, payload):
+    monkeypatch.setattr(transport, 'managed_urlopen', lambda *a, **k: response(payload))
+    assert transport._onebound_shop_page(CONFIG, nick='', page=1) == ([], 0)
+
+
+@pytest.mark.parametrize('payload', [
+    {'error_code': '0000', 'items': None},
+    {'error_code': '0000', 'items': []},
+    {'error_code': '0000', 'items': {'page': '1', 'total_results': '2', 'pagecount': 1, 'item': None}},
+    {'error_code': '0000', 'items': {'page': '1', 'total_results': '2', 'pagecount': 0, 'item': None}},
+    {'error_code': '0000', 'items': {'page': '1', 'total_results': '0', 'pagecount': True, 'item': []}},
+    {'error_code': '0000', 'items': {'page': '1', 'total_results': '-1', 'pagecount': 0, 'item': []}},
+    {'error_code': '0000', 'items': {'page': '1', 'total_results': '0', 'pagecount': -1, 'item': []}},
+    {'error_code': '0000', 'items': {'page': '1', 'total_results': '1', 'pagecount': 1, 'item': 'bad'}},
+    {'error_code': '0000', 'items': {'page': '1', 'total_results': '1', 'pagecount': 1, 'item': ['bad']}},
+])
+def test_onebound_shop_page_rejects_malformed_pagination(monkeypatch, payload):
+    monkeypatch.setattr(transport, 'managed_urlopen', lambda *a, **k: response(payload))
+    with pytest.raises(transport.OneBoundApiError, match='授权店铺分页'):
+        transport._onebound_shop_page(CONFIG, nick='', page=1)

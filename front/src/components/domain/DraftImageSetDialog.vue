@@ -62,6 +62,7 @@ const selectedRefs = computed<DraftImageRef[]>(() => chosen.value.flatMap(key =>
 const selectedSkuKeys = computed(() => chosen.value.filter(key => results.value.some(result => result.page.key === key && result.page.scope === 'sku' && result.asset)))
 const commonOrder = computed(() => chosen.value.filter(key => results.value.some(result => result.page.key === key && result.page.scope !== 'sku')))
 const selectedCount = computed(() => selectedRefs.value.length + selectedSkuKeys.value.length)
+const failedPageKeys = computed(() => results.value.filter(result => result.item?.status === 'failed').map(result => result.page.key))
 function targetLabel(page: ImageSetPlan['pages'][number]) {
   return page.scope === 'sku' ? `SKU 图 · ${(page.sku_ids || []).map(id => props.skus?.find(sku => sku.skuId === id)?.name || id).join('、')}` : '共用图'
 }
@@ -138,7 +139,19 @@ defineExpose({ restoreAction })
       <template v-if="resultPlan">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <p role="status" class="text-sm">{{ batch?.terminal ? '生成结束' : '正在生成套图' }} · {{ batch?.completed }} / {{ batch?.total }} 张<span v-if="batch?.failed"> · {{ batch.failed }} 张未完成</span></p>
-          <button class="btn btn-outline" type="button" :disabled="busy" @click="newPlan">规划新套图</button>
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-if="batch?.terminal && failedPageKeys.length"
+              data-testid="retry-all-failed-pages"
+              class="btn btn-primary"
+              type="button"
+              :disabled="busy || !!generateReason"
+              @click="controller.generateSet(undefined, draft.updatedAt, failedPageKeys)"
+            >
+              重试全部失败项（{{ failedPageKeys.length }}）
+            </button>
+            <button class="btn btn-outline" type="button" :disabled="busy" @click="newPlan">规划新套图</button>
+          </div>
         </div>
         <p class="text-sm">统一风格：{{ resultPlan.style }}</p>
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">

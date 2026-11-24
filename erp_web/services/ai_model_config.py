@@ -7,11 +7,13 @@ import json
 import os
 from typing import Any
 
-from erp_shared.desktop import LOCAL_MODEL_FIELDS
-from erp_shared.browser_ai import canvas_connection_defaults
+from erp_shared.desktop import LOCAL_MODEL_FIELDS, local_configuration_fingerprint
+from erp_shared.browser_ai import canvas_connection_defaults, is_canvas_model
 from . import ai_generation_settings, ai_provider_catalog
 from erp_shared.browser_connection_config import normalize_browser_proxy
 from erp_web.schemas.config import AiBrowserPreset
+
+CANVAS_FIXED_MODEL_ID = "gemini_canvas_browser"
 
 CONNECTION_TYPE_API = "api"
 CONNECTION_TYPE_CLI = "cli"
@@ -332,6 +334,57 @@ def managed_newapi_models(internal_url: str, saved_models=()) -> list[dict[str, 
     return models
 
 
+def fixed_canvas_model(saved: dict[str, Any] | None = None) -> dict[str, Any]:
+    """内置固定的 Gemini Canvas 修图模型；不可删除，本地代理和 Google 登录态由桌面端维护。"""
+    defaults = canvas_connection_defaults()
+    existing = saved if isinstance(saved, dict) else {}
+    model_id = str(existing.get("id") or CANVAS_FIXED_MODEL_ID).strip() or CANVAS_FIXED_MODEL_ID
+    local_id = str(existing.get("local_connection_id") or model_id).strip() or model_id
+    fingerprint = str(existing.get("local_config_fingerprint") or "").strip() or local_configuration_fingerprint(defaults)
+    row: dict[str, Any] = {
+        "id": model_id,
+        "name": str(existing.get("name") or "Gemini Canvas 修图").strip() or "Gemini Canvas 修图",
+        "connection_type": CONNECTION_TYPE_BROWSER,
+        "provider": "Gemini Canvas",
+        "api_style": API_STYLE_OPENAI_COMPATIBLE,
+        "base_url": "",
+        "base_url_env": "",
+        "api_key": "",
+        "api_key_env": "",
+        "model": str(existing.get("model") or "").strip(),
+        "model_env": "",
+        "browser_provider": "gemini",
+        "local_connection_id": local_id,
+        "local_config_fingerprint": fingerprint,
+        "capabilities": [CAP_IMAGE_EDIT],
+        "timeout_seconds": existing.get("timeout_seconds") or 180,
+        "enabled": existing.get("enabled", True) is not False,
+        "canvas_managed": True,
+    }
+    for local_field in ("browser_mode", "browser_profile", "browser_port", "browser_url", "browser_proxy"):
+        if local_field in existing:
+            row[local_field] = existing[local_field]
+    if existing.get("capability_profiles"):
+        row["capability_profiles"] = normalize_capability_profiles(existing.get("capability_profiles"))
+    return row
+
+
+def ensure_fixed_canvas_model(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """确保模型列表中始终存在内置固定的 Gemini Canvas 条目，并平滑承接历史配置。"""
+    rows = [dict(row) for row in (models or []) if isinstance(row, dict)]
+    index = next(
+        (idx for idx, row in enumerate(rows) if str(row.get("id") or "") == CANVAS_FIXED_MODEL_ID),
+        None,
+    )
+    if index is None:
+        index = next((idx for idx, row in enumerate(rows) if is_canvas_model(row)), None)
+    if index is not None:
+        rows[index] = fixed_canvas_model(rows[index])
+        return rows
+    rows.append(fixed_canvas_model())
+    return rows
+
+
 def browser_model_presets() -> list[AiBrowserPreset]:
     """可重复添加的网页连接模板，不包含用户登录、代理或能力测试结果。"""
     return [{
@@ -340,10 +393,11 @@ def browser_model_presets() -> list[AiBrowserPreset]:
         "description": "通过 Gemini 网页修改图片，使用自己的 Google 账号登录。",
         "supported_capabilities": [CAP_IMAGE_EDIT],
         "model": {
-            "id": "gemini_canvas_browser", "name": "Gemini Canvas 修图",
+            "id": CANVAS_FIXED_MODEL_ID, "name": "Gemini Canvas 修图",
             "connection_type": CONNECTION_TYPE_BROWSER, "provider": "Gemini Canvas",
             "browser_provider": "gemini", **canvas_connection_defaults(),
-            "model": "", "timeout_seconds": 180, "capabilities": [], "enabled": True,
+            "model": "", "timeout_seconds": 180, "capabilities": [CAP_IMAGE_EDIT], "enabled": True,
+            "canvas_managed": True,
         },
     }]
 
@@ -452,6 +506,9 @@ def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
         browser_proxy = normalize_browser_proxy(raw.get("browser_proxy"))
         if browser_proxy:
             normalized["browser_proxy"] = browser_proxy
+    if connection_type == CONNECTION_TYPE_BROWSER and raw.get("canvas_managed") is True:
+        normalized["canvas_managed"] = True
+        normalized["capabilities"] = [CAP_IMAGE_EDIT]
     if connection_type in {CONNECTION_TYPE_CLI, CONNECTION_TYPE_BROWSER} and raw.get('local_connection_id'):
         normalized['local_connection_id'] = str(raw['local_connection_id'])
         normalized['local_config_fingerprint'] = str(raw.get('local_config_fingerprint') or '')
@@ -470,7 +527,7 @@ def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
     if extra:
         normalized["extra"] = extra
     profiles = normalized.get("capability_profiles")
-    if isinstance(profiles, dict) and profiles:
+    if isinstance(profiles, dict) and profiles and not normalized.get("canvas_managed"):
         fingerprint = model_configuration_fingerprint(normalized)
         stale_capabilities = {
             capability
@@ -729,6 +786,8 @@ def resolve_ai_model(
                 return model
         raise RuntimeError(f"AI 模型不存在或未启用: {preferred_id}")
     for model in candidates:
+        if model.get("canvas_managed"):
+            continue
         if not required or model_has_capabilities(model, required):
             return model
     raise RuntimeError(f"没有可用 AI 模型满足能力要求：{_format_capability_names(required)}")

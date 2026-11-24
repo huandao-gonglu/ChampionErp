@@ -222,8 +222,10 @@ def public_ai_config(app_dir: Path | str, app_config: dict[str, Any] | None = No
     cfg = app_config if isinstance(app_config, dict) else {}
     public = ai_model_config.public_ai_config(cfg)
     from .desktop_model_config_service import local_models_view
+    from .gemini_canvas_runtime import canvas_accounts_status
     if any(row.get("connection_type") in {"browser", "cli"} for row in public["ai_models"]):
         public['ai_models'] = local_models_view(public['ai_models'])
+    public["canvas_status"] = canvas_accounts_status()
     # 1688 应用与买家授权通过独立入口管理，不进入通用配置视图。
     public.pop("1688_api", None)
     public["storage"] = {

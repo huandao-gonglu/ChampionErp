@@ -270,6 +270,23 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
         required=("mode",),
     ),
     "/api/ai-config/save": _EMPTY,
+    "/api/ai-config/canvas/account-login": RequestContract(
+        fields={
+            "model": OBJECT,
+            "model_id": STRING,
+            "profile": STRING,
+            "force_login": BOOLEAN,
+            "check_only": BOOLEAN,
+        },
+    ),
+    "/api/ai-config/canvas/account-logout": RequestContract(
+        fields={"profile": STRING},
+        required=("profile",),
+    ),
+    "/api/ai-config/canvas/account-toggle": RequestContract(
+        fields={"profile": STRING, "enabled": BOOLEAN},
+        required=("profile", "enabled"),
+    ),
     "/api/assign-upc": RequestContract(fields={"product_id": STRING, "sku_ids": STRING_ARRAY}, required=("product_id",)),
     "/api/draft-pricing/preview": _contract(fields={"draft_id": STRING, "expected_updated_at": STRING, "target_keys": STRING_ARRAY, "common": OBJECT, "targets": OBJECT, "sku_updates": ARRAY, "target_selections": OBJECT}, required=("draft_id",)),
     "/api/draft-pricing/restore": _contract(fields={"draft_id": STRING, "expected_updated_at": STRING, "target_keys": STRING_ARRAY, "common": OBJECT, "targets": OBJECT, "sku_updates": ARRAY, "target_selections": OBJECT}, required=("draft_id",)),

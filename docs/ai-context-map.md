@@ -142,7 +142,7 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 
 `http_route_units/desktop_routes.py` → `facades/desktop_facade.py` →
 `services/desktop_connection_service.py` 只做进程内调用关联。普通调用不创建领域 Job；
-断连、取消和期限终止等待，已发送操作不重放。HTTP 的当前桌面绑定由 Electron 代理注入；
+`front/desktop/connection.cjs` 禁用 keep-alive 连接池以避免半开连接复撞，轮询瞬时故障在租期内退避重试而不误杀在途任务或主动 `/disconnect`，大体积 `/api/desktop/result` 与 `/api/desktop/asset` 回执幂等重试；后端租期 60 秒，活动回执持续续期，Canvas 尚未发出的新调用允许等待同一登录会话或委派桌面短时重连（最多 8 秒），已发送操作仍不重放、不跨账号/跨会话回落。HTTP 的当前桌面绑定由 Electron 代理注入；
 图片批次沿用原 `copy_context`，原生工具审批/Deferred 的 metadata 只补充任务执行需要的连接引用，
 现有 Job 和 Agent 生命周期仍由原 owner / Pydantic AI 负责。
 
@@ -173,10 +173,12 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 
 唯一例外是网页手动图片操作的同账号代执行：`image_facade` 对草稿图片处理、套图生成及商品图片翻译/修改入口
 套用 `delegate_desktop_connection`。请求未携带桌面连接、且本账号只有一台会话有效的在线桌面时，
-借用该连接在后台执行；`DesktopConnections.call` 在委派范围内只放行 `canvas.check` / `canvas.edit`，
-采集、授权、CLI 与本机配置仍须桌面本机发起。可用性在 `delegated_use_cases` 中声明（仅 Canvas 的 `image.translate`），
+借用该连接在后台执行；`DesktopConnections.call` 在委派范围内只放行 `canvas.check` / `canvas.edit` / 只读 `canvas.accounts`，
+采集、授权写入、CLI 与本机配置仍须桌面本机发起。可用性在 `delegated_use_cases` 中声明（仅 Canvas 的 `image.translate`），
 前端 `modelRequiresDesktop` 据此直接提交；没有或多台在线桌面时仍走桌面交接。AI 工具、审批恢复与
 `/api/image-processing/continue` 不使用代执行。回归见 `tests/test_desktop_split.py`。
+
+Gemini Canvas 作为内置固定不可删模型（`gemini_canvas_browser`，`canvas_managed=True`，自动匹配跳过，需显式绑定到 `image.translate`）展示于「授权配置 → AI 模型」左侧列表。Electron `embedded-browser.cjs` 按 ERP 账号哈希持久化多 Google 账号分区与元数据（兼容承接旧 `canvas` 分区，空闲保活 5 分钟），桌面端提供 `canvas.accounts` / `canvas.account.login` / `canvas.account.logout` / `canvas.account.toggle` 与后端 `/api/ai-config/canvas/account-{login,logout,toggle}`；登录态校验提取 Google 邮箱与名称，取消登录先核对任务未占用再彻底清空对应分区存储；多启用账号按可用数并行（上限 3 路）并在 429/401 时轮换与冷却；Canvas 请求过滤 `thought` 中间图并在单图模式收敛至最后一张有效终图，兼容中英文共享应用确认弹窗、HTTP 401 非 JSON 自动重登与 `AbortSignal.timeout`。网页端只读展示在线桌面账号摘要，任何配置/账号操作均经 `launchDesktop` 唤起桌面端。
 
 `source_collect_workflows.collect_browser_url` 调用本机 `collect.read`，后端才读目标商品、
 规范化、登记图片并经 `ProductStore` 保存。采集页面按已保存 URL 的方式执行。浏览器采集由桌面打开商品页，1688 API 采集由后端解析商品编号并使用当前账号授权。独立接口 `/api/collect-1688` 仍支持显式提交 URL 与模式。

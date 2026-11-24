@@ -1,8 +1,14 @@
 // 浏览器仅由本机执行器通过私有管道操作，不向网页开放 IPC、调试端口或 ERP 登录凭据。
 const { createHash, randomUUID } = require('node:crypto')
+const fs = require('node:fs')
+const path = require('node:path')
 
 const { openLoginEntry } = require('./verification/login-entry.cjs')
 const { panelExpression } = require('./verification/login-panel.cjs')
+
+const CANVAS_IDLE_MS = 5 * 60 * 1000
+const GOOGLE_AUTH_COOKIE_NAMES = new Set(['SID', 'SAPISID', '__Secure-1PSID', '__Secure-3PSID', 'HSID', 'SSID'])
+const PROFILE_PATTERN = /^[A-Za-z0-9._-]{1,80}$/
 
 const domains = {
   '1688': ['1688.com', 'taobao.com', 'tmall.com', 'alibaba.com', 'alipay.com'],
@@ -18,12 +24,175 @@ function allowedNavigation(kind, address) {
   } catch { return false }
 }
 
-function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, account, layoutVerificationWindow, development = false }) {
+function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, account, layoutVerificationWindow, development = false, accountsFile = '', canvasIdleMs = CANVAS_IDLE_MS }) {
   let generation = 0
   const pages = new Map()
   const stores = new Set()
+  const memoryRegistry = new Map()
   const commands = new Set(['Runtime.enable', 'Page.enable', 'Runtime.evaluate', 'Page.getFrameTree',
     'Target.setAutoAttach'])
+
+  function ownerHash(owner) {
+    return createHash('sha256').update(String(owner)).digest('hex')
+  }
+
+  function partitionKey(owner, kind, profile = '') {
+    return createHash('sha256').update(JSON.stringify([owner, kind, profile])).digest('hex')
+  }
+
+  function readAllRegistries() {
+    if (!accountsFile) return Object.fromEntries(memoryRegistry)
+    try {
+      if (!fs.existsSync(accountsFile)) return {}
+      const parsed = JSON.parse(fs.readFileSync(accountsFile, 'utf8'))
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+    } catch { return {} }
+  }
+
+  function writeAllRegistries(all) {
+    if (!accountsFile) {
+      memoryRegistry.clear()
+      for (const [k, v] of Object.entries(all)) memoryRegistry.set(k, v)
+      return
+    }
+    fs.mkdirSync(path.dirname(accountsFile), { recursive: true, mode: 0o700 })
+    const temporary = `${accountsFile}.${randomUUID()}.tmp`
+    fs.writeFileSync(temporary, JSON.stringify(all, null, 2), { mode: 0o600 })
+    fs.renameSync(temporary, accountsFile)
+  }
+
+  function normalizeAccountRow(raw) {
+    const profile = String(raw?.profile || raw?.id || '').trim()
+    if (!PROFILE_PATTERN.test(profile)) throw new Error('Google 账号会话标识无效。')
+    const status = ['signed_in', 'login_required', 'rate_limited', 'signed_out', 'unknown'].includes(raw?.status)
+      ? raw.status : 'unknown'
+    return {
+      id: profile,
+      profile,
+      email: String(raw?.email || '').trim().slice(0, 200),
+      name: String(raw?.name || '').trim().slice(0, 120),
+      enabled: raw?.enabled !== false,
+      status,
+      last_checked_at: String(raw?.last_checked_at || '').trim().slice(0, 64),
+      last_error: String(raw?.last_error || '').trim().slice(0, 500),
+    }
+  }
+
+  async function hasGoogleAuthCookies(store) {
+    if (!store?.cookies?.get) return null
+    try {
+      const cookies = await store.cookies.get({ domain: 'google.com' })
+      if (!Array.isArray(cookies)) return null
+      return cookies.some(cookie => GOOGLE_AUTH_COOKIE_NAMES.has(cookie.name) && Boolean(cookie.value))
+    } catch { return null }
+  }
+
+  function isProfileBusy(owner, profile) {
+    const key = partitionKey(owner, 'gemini', profile)
+    return [...pages.values()].some(page => page.owner === owner && page.kind === 'gemini' && page.key === key && Boolean(page.callId) && !page.idleTimer)
+  }
+
+  async function clearProfilePartition(owner, profile) {
+    const key = partitionKey(owner, 'gemini', profile)
+    for (const page of [...pages.values()]) {
+      if (page.owner === owner && page.kind === 'gemini' && page.key === key) close(page)
+    }
+    const store = session.fromPartition('persist:erp-browser-' + key)
+    if (store?.clearStorageData) await store.clearStorageData()
+    if (store?.clearCache) await store.clearCache()
+    if (store?.clearAuthCache) await store.clearAuthCache()
+    if (store) await persist(store)
+  }
+
+  async function listCanvasAccounts(owner) {
+    const hash = ownerHash(owner)
+    const all = readAllRegistries()
+    let entry = all[hash]
+    if (!entry || !Array.isArray(entry.accounts)) {
+      // 自动承接旧版本已登录的默认 canvas 分区，老用户升级后不丢登录态。
+      const legacyStore = session.fromPartition('persist:erp-browser-' + partitionKey(owner, 'gemini', 'canvas'))
+      const hasLegacy = await hasGoogleAuthCookies(legacyStore)
+      const seeded = hasLegacy === true
+        ? [normalizeAccountRow({ id: 'canvas', profile: 'canvas', status: 'unknown', enabled: true })]
+        : []
+      entry = { accounts: seeded }
+      if (seeded.length) {
+        all[hash] = entry
+        writeAllRegistries(all)
+      }
+    }
+    const result = []
+    for (const raw of entry.accounts) {
+      let row
+      try { row = normalizeAccountRow(raw) } catch { continue }
+      const store = session.fromPartition('persist:erp-browser-' + partitionKey(owner, 'gemini', row.profile))
+      const hasCookies = await hasGoogleAuthCookies(store)
+      const status = hasCookies === false && row.status === 'signed_in' ? 'signed_out' : row.status
+      result.push({ ...row, status, busy: isProfileBusy(owner, row.profile) })
+    }
+    return { accounts: result }
+  }
+
+  async function upsertCanvasAccount(owner, data) {
+    const hash = ownerHash(owner)
+    const all = readAllRegistries()
+    const current = Array.isArray(all[hash]?.accounts) ? all[hash].accounts.map(normalizeAccountRow) : []
+    const existing = current.find(item => item.profile === data.profile)
+    const next = normalizeAccountRow({
+      ...existing,
+      ...data,
+      enabled: data.enabled !== undefined ? Boolean(data.enabled) : (existing ? existing.enabled : true),
+    })
+    const duplicateProfiles = []
+    const updated = []
+    let inserted = false
+    for (const item of current) {
+      if (item.profile === next.profile) {
+        updated.push(next)
+        inserted = true
+      } else if (next.email && item.email && item.email.toLowerCase() === next.email.toLowerCase()) {
+        // 同一 Google 邮箱在新建会话中重新登录时，合并旧重复槽位并清理旧分区。
+        next.enabled = item.enabled
+        duplicateProfiles.push(item.profile)
+      } else {
+        updated.push(item)
+      }
+    }
+    if (!inserted) updated.push(next)
+    all[hash] = { accounts: updated }
+    writeAllRegistries(all)
+    for (const duplicate of duplicateProfiles) {
+      if (!isProfileBusy(owner, duplicate)) await clearProfilePartition(owner, duplicate).catch(() => {})
+    }
+    return { account: next, ...(await listCanvasAccounts(owner)) }
+  }
+
+  async function logoutCanvasAccount(owner, data) {
+    const profile = String(data?.profile || '').trim()
+    if (!PROFILE_PATTERN.test(profile)) throw new Error('Google 账号会话标识无效。')
+    if (isProfileBusy(owner, profile)) throw new Error('该 Google 账号正在执行修图任务，请等待完成后再取消登录。')
+    await clearProfilePartition(owner, profile)
+    const hash = ownerHash(owner)
+    const all = readAllRegistries()
+    const current = Array.isArray(all[hash]?.accounts) ? all[hash].accounts : []
+    all[hash] = { accounts: current.filter(item => String(item?.profile || item?.id || '') !== profile) }
+    writeAllRegistries(all)
+    return listCanvasAccounts(owner)
+  }
+
+  async function setCanvasAccountEnabled(owner, data) {
+    const profile = String(data?.profile || '').trim()
+    if (!PROFILE_PATTERN.test(profile)) throw new Error('Google 账号会话标识无效。')
+    const hash = ownerHash(owner)
+    const all = readAllRegistries()
+    const current = Array.isArray(all[hash]?.accounts) ? all[hash].accounts.map(normalizeAccountRow) : []
+    const target = current.find(item => item.profile === profile)
+    if (!target) throw new Error('未找到对应的 Google 账号。')
+    target.enabled = Boolean(data?.enabled)
+    all[hash] = { accounts: current }
+    writeAllRegistries(all)
+    return listCanvasAccounts(owner)
+  }
   function close(page) {
     if (!pages.delete(page.id)) return
     clearTimeout(page.idleTimer)
@@ -84,7 +253,7 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
   async function open(data, owner, call) {
     const { kind, url, profile = '', proxy = '' } = data
     if (!domains[kind] || !allowedNavigation(kind, url)) throw new Error('此网址不属于指定的内置浏览服务。')
-    const key = createHash('sha256').update(JSON.stringify([owner, kind, profile])).digest('hex')
+    const key = partitionKey(owner, kind, profile)
     for (const previous of pages.values()) {
       if (previous.inspecting && previous.key === key) close(previous)
     }
@@ -223,6 +392,10 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
   async function handle(action, data, owner, call) {
     if (!owner || account() !== owner) throw new Error('ERP 登录会话已失效。')
     if (action === 'open') return open(data, owner, call)
+    if (action === 'canvas_accounts_list') return listCanvasAccounts(owner)
+    if (action === 'canvas_account_upsert') return upsertCanvasAccount(owner, data)
+    if (action === 'canvas_account_logout') return logoutCanvasAccount(owner, data)
+    if (action === 'canvas_account_set_enabled') return setCanvasAccountEnabled(owner, data)
     if (action === 'list') return [...pages.values()].filter(p => p.owner === owner && p.kind === '1688' && !p.inspecting)
       .map(p => ({ id: p.id, source_url: p.url, type: 'page', url: p.contents.getURL(), title: p.contents.getTitle(),
         login_popup_closed: !!p.loginPopupClosed, visited_login: !!p.visitedLogin && !p.returnedFromHome }))
@@ -242,7 +415,7 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
       }
       page.events.length = 0
       page.callId = null
-      page.idleTimer = setTimeout(() => close(page), 60000)
+      page.idleTimer = setTimeout(() => close(page), canvasIdleMs)
       page.idleTimer.unref()
       return
     }
@@ -329,4 +502,4 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
   return { handle, finish, reset, flush, get generation() { return generation } }
 }
 
-module.exports = { createEmbeddedBrowser, allowedNavigation }
+module.exports = { createEmbeddedBrowser, allowedNavigation, CANVAS_IDLE_MS }

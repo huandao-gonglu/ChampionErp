@@ -129,7 +129,8 @@ async function initializeDesktop() {
   const backendOrigin = getBackendBaseUrl()
   const browserOwner = () => accountSession.email && JSON.stringify([backendOrigin, accountSession.email])
   embeddedBrowser = createEmbeddedBrowser({ BaseWindow, WebContentsView, session: electronSession,
-    parent: () => mainWindow, account: browserOwner, layoutVerificationWindow: mountLayout, development: !app.isPackaged })
+    parent: () => mainWindow, account: browserOwner, layoutVerificationWindow: mountLayout,
+    development: !app.isPackaged, accountsFile: path.join(dataDir, 'config', 'canvas-accounts.json') })
   const options = { browser: embeddedBrowser, browserOwner, onUnexpectedExit: (error) => {
     void desktopConnection?.stop()
     notifyConnectionChanged()
@@ -250,7 +251,11 @@ async function proxyToBackend(req, res, backendBaseUrl) {
   const path = new URL(req.url, 'http://desktop.invalid').pathname
   const link = desktopConnection
   // 休眠或服务重启后，当前连接标识可能仍在本地，但服务器已经释放它。
-  if (link && accountSession.cookie && req.method === 'POST' && ['/api/desktop-handoff/resolve', '/api/collect-batch', '/api/collect-source'].includes(path)) {
+  if (link && accountSession.cookie && req.method === 'POST' && [
+    '/api/desktop-handoff/resolve', '/api/collect-batch', '/api/collect-source',
+    '/api/draft-images/generate-set', '/api/draft-images/process',
+    '/api/ai-config/canvas/account-login', '/api/ai-config/canvas/account-logout', '/api/ai-config/canvas/account-toggle',
+  ].includes(path)) {
     try {
       await link.ensure(true)
     } catch (error) {

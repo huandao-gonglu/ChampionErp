@@ -713,6 +713,7 @@ class ConfigStore:
                         field: template[field] for field in ai_model_config.SYSTEM_CONNECTION_FIELDS
                     }})
                 config["ai_models"] = [*system_rows, *stored.values()]
+            config["ai_models"] = ai_model_config.ensure_fixed_canvas_model(config["ai_models"])
             return config
 
     def check_system_models(self, models) -> list[dict]:
@@ -863,7 +864,32 @@ class ConfigStore:
     def _merge_client_ai_config(self, current, incoming):
         if self.managed_models is not None and "ai_models" in incoming:
             incoming = {**incoming, "ai_models": self.check_system_models(incoming["ai_models"])}
-        merged = merge_ai_config(self._app_dir, current, incoming, preserve_local_models=not current_desktop_connection())
+        desktop_connected = bool(current_desktop_connection())
+        if desktop_connected and "ai_models" in incoming and isinstance(incoming.get("ai_models"), list):
+            current_canvas = next((row for row in current.get("ai_models", []) if row.get("canvas_managed")), None)
+            if current_canvas is not None:
+                canvas_id = str(current_canvas.get("id") or ai_model_config.CANVAS_FIXED_MODEL_ID)
+                matched = [row for row in incoming["ai_models"] if isinstance(row, dict) and str(row.get("id") or "").strip() == canvas_id]
+                if not matched:
+                    raise ai_model_config.SystemModelError("不能删除内置的 Gemini Canvas 模型。")
+                if len(matched) > 1:
+                    raise ai_model_config.SystemModelError("不能重复使用内置的 Gemini Canvas 模型 ID。")
+                target = matched[0]
+                if (
+                    str(target.get("connection_type") or "").strip().lower() != ai_model_config.CONNECTION_TYPE_BROWSER
+                    or not ai_model_config.is_canvas_model(target)
+                ):
+                    raise ai_model_config.SystemModelError("内置 Gemini Canvas 模型的接入方式和服务商不可修改。")
+                incoming = {
+                    **incoming,
+                    "ai_models": [
+                        {**row, "canvas_managed": True, "capabilities": [ai_model_config.CAP_IMAGE_EDIT]}
+                        if isinstance(row, dict) and str(row.get("id") or "").strip() == canvas_id
+                        else row
+                        for row in incoming["ai_models"]
+                    ],
+                }
+        merged = merge_ai_config(self._app_dir, current, incoming, preserve_local_models=not desktop_connected)
         if isinstance(incoming.get("ai_use_case_bindings"), dict):
             previous = ai_model_config.normalize_ai_use_case_bindings(current.get("ai_use_case_bindings"))
             for use_case, binding in merged["ai_use_case_bindings"].items():

@@ -414,3 +414,32 @@ def test_only_web_manual_image_routes_delegate_to_online_desktop(monkeypatch):
         assert current_desktop_connection() == ''
     finally:
         broker.close()
+
+
+def test_canvas_batch_rebinds_to_reconnected_same_session_desktop_without_cross_session_fallback(monkeypatch):
+    from erp_web.services.desktop_connection_service import current_desktop_connection
+    broker = DesktopConnections()
+    broker.RECONNECT_WAIT_SECONDS = 2.0
+    _delegation_context(monkeypatch, broker)
+    first = broker.connect(session_hash='session-a')['connection_id']
+    other = broker.connect(session_hash='session-b')['connection_id']
+    model = {'id': 'canvas', 'connection_type': 'browser', 'browser_provider': 'gemini'}
+    try:
+        broker.disconnect(first)
+        reconnected = {}
+        def reconnect_same_session():
+            time.sleep(0.15)
+            reconnected['key'] = broker.connect(session_hash='session-a')['connection_id']
+            call = broker.poll(reconnected['key'], wait_seconds=1)['calls'][0]
+            broker.complete(reconnected['key'], {'id': call['id'], 'ok': True, 'result': {'ok': True, 'ready_accounts': 2}})
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            worker = pool.submit(reconnect_same_session)
+            with bind_desktop_connection(first, session_hash='session-a'):
+                result = broker.call('canvas.check', {'model': model, 'force_login': False, 'timeout_seconds': 5}, timeout=3)
+                assert current_desktop_connection() == reconnected['key']
+            worker.result(timeout=2)
+        assert result == {'ok': True, 'ready_accounts': 2}
+        # 绝不能误切到其他登录会话的连接。
+        assert broker.poll(other, wait_seconds=0)['calls'] == []
+    finally:
+        broker.close()

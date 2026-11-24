@@ -13,7 +13,7 @@ export interface BackendUserAgentsDocument {
 
 export interface BackendDesktopCall {
   id: string
-  operation: "browser.status" | "collect.read" | "collect.verify" | "browser.ai.open" | "browser.ai.chat" | "canvas.check" | "canvas.edit" | "cli.run" | "cli.status" | "config.read" | "config.write" | "auth.open"
+  operation: "browser.status" | "collect.read" | "collect.verify" | "browser.ai.open" | "browser.ai.chat" | "canvas.check" | "canvas.edit" | "canvas.accounts" | "canvas.account.login" | "canvas.account.logout" | "canvas.account.toggle" | "cli.run" | "cli.status" | "config.read" | "config.write" | "auth.open"
   params: Record<string, unknown>
   timeout: number
 }
@@ -701,6 +701,7 @@ export interface BackendAiModelConfig {
   capability_profiles?: Record<string, BackendAiCapabilityProfile>
   timeout_seconds?: number
   thinking_enabled?: boolean
+  canvas_managed?: boolean
   local_connection_id?: string
   local_config_fingerprint?: string
   browser_provider?: string
@@ -711,6 +712,25 @@ export interface BackendAiModelConfig {
   browser_proxy?: string
   extra?: Record<string, unknown>
   enabled?: boolean
+}
+
+export interface BackendCanvasAccountSummary {
+  id?: string
+  profile?: string
+  email?: string
+  name?: string
+  enabled?: boolean
+  status?: string
+  last_checked_at?: string
+  last_error?: string
+  cooldown_seconds?: number
+  busy?: boolean
+}
+
+export interface BackendCanvasAccountStatus {
+  scope: string
+  desktop_online: boolean
+  accounts: Array<BackendCanvasAccountSummary>
 }
 
 export interface BackendAiReasoningSettings {

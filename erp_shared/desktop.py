@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 DesktopOperation = Literal[
     'browser.status', 'collect.read', 'collect.verify',
     'browser.ai.open', 'browser.ai.chat', 'canvas.check', 'canvas.edit',
+    'canvas.accounts', 'canvas.account.login', 'canvas.account.logout', 'canvas.account.toggle',
     'cli.run', 'cli.status', 'config.read', 'config.write', 'auth.open',
 ]
 LOCAL_MODEL_FIELDS = frozenset({
@@ -67,6 +68,23 @@ class CanvasParams(ModelParams):
     combine_references: bool = False
 
 
+class CanvasAccountLoginParams(ActionParams):
+    model: dict[str, Any]
+    profile: str = ''
+    force_login: bool = False
+    check_only: bool = False
+    timeout_seconds: int | None = Field(default=None, ge=1, le=7200)
+
+
+class CanvasAccountLogoutParams(ActionParams):
+    profile: str = Field(min_length=1, max_length=80)
+
+
+class CanvasAccountToggleParams(ActionParams):
+    profile: str = Field(min_length=1, max_length=80)
+    enabled: bool
+
+
 class ConfigParams(ActionParams):
     models: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
@@ -80,7 +98,12 @@ ACTION_PARAMS: dict[str, type[ActionParams]] = {
     'browser.status': ActionParams,
     'collect.read': CollectReadParams, 'collect.verify': VerificationParams,
     'browser.ai.open': ModelParams, 'browser.ai.chat': ModelParams, 'canvas.check': ModelParams,
-    'canvas.edit': CanvasParams, 'cli.run': ModelParams, 'cli.status': ModelParams,
+    'canvas.edit': CanvasParams,
+    'canvas.accounts': ActionParams,
+    'canvas.account.login': CanvasAccountLoginParams,
+    'canvas.account.logout': CanvasAccountLogoutParams,
+    'canvas.account.toggle': CanvasAccountToggleParams,
+    'cli.run': ModelParams, 'cli.status': ModelParams,
     'config.read': ActionParams, 'config.write': ConfigParams, 'auth.open': AuthParams,
 }
 

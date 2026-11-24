@@ -184,6 +184,93 @@ def save_ai_config_payload(body: dict[str, Any]) -> ResponseWithStatus:
     }, 200
 
 
+def _resolve_canvas_model_for_auth(body: dict[str, Any]) -> dict[str, Any]:
+    from erp_web.services import ai_model_config
+    from erp_web.services.desktop_model_config_service import prepare_local_model
+
+    incoming = body.get("model") if isinstance(body.get("model"), dict) else None
+    if incoming is not None:
+        return ai_model_config.normalize_ai_model(prepare_local_model(incoming))
+    config = load_app_config()
+    model_id = str(body.get("model_id") or "").strip()
+    models = config.get("ai_models") if isinstance(config.get("ai_models"), list) else []
+    target = next(
+        (row for row in models if isinstance(row, dict) and (
+            (model_id and str(row.get("id") or "") == model_id)
+            or (not model_id and (row.get("canvas_managed") or ai_model_config.is_canvas_model(row)))
+        )),
+        None,
+    )
+    if target is None or not ai_model_config.is_canvas_model(target):
+        return ai_model_config.fixed_canvas_model()
+    return target
+
+
+def canvas_account_login_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    from erp_web.services import gemini_canvas_runtime
+    try:
+        model = _resolve_canvas_model_for_auth(body)
+        result = gemini_canvas_runtime.login_canvas_account(
+            _app_dir(),
+            model,
+            profile=str(body.get("profile") or "").strip(),
+            force_login=bool(body.get("force_login")),
+            check_only=bool(body.get("check_only")),
+            timeout=int(model.get("timeout_seconds") or 45),
+        )
+        return {
+            **result,
+            "canvas_status": {
+                "scope": "desktop",
+                "desktop_online": True,
+                "accounts": result.get("accounts") or [],
+            },
+        }, 200
+    except DesktopUnavailable as exc:
+        return {"ok": False, "error": str(exc), "error_code": exc.code}, 409
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}, 400
+
+
+def canvas_account_logout_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    from erp_web.services import gemini_canvas_runtime
+    try:
+        result = gemini_canvas_runtime.logout_canvas_account(str(body.get("profile") or "").strip())
+        return {
+            **result,
+            "canvas_status": {
+                "scope": "desktop",
+                "desktop_online": True,
+                "accounts": result.get("accounts") or [],
+            },
+        }, 200
+    except DesktopUnavailable as exc:
+        return {"ok": False, "error": str(exc), "error_code": exc.code}, 409
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}, 400
+
+
+def canvas_account_toggle_payload(body: dict[str, Any]) -> ResponseWithStatus:
+    from erp_web.services import gemini_canvas_runtime
+    try:
+        result = gemini_canvas_runtime.toggle_canvas_account(
+            str(body.get("profile") or "").strip(),
+            bool(body.get("enabled")),
+        )
+        return {
+            **result,
+            "canvas_status": {
+                "scope": "desktop",
+                "desktop_online": True,
+                "accounts": result.get("accounts") or [],
+            },
+        }, 200
+    except DesktopUnavailable as exc:
+        return {"ok": False, "error": str(exc), "error_code": exc.code}, 409
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}, 400
+
+
 def mercadolibre_auth_link_payload(body: dict[str, Any]) -> ResponseWithStatus:
     try:
         result = build_mercadolibre_auth_link(
@@ -465,6 +552,9 @@ __all__ = [
     "refresh_mercadolibre_token_payload",
     "run_mercadolibre_auth_test_payload",
     "save_ai_config_payload",
+    "canvas_account_login_payload",
+    "canvas_account_logout_payload",
+    "canvas_account_toggle_payload",
     "save_settings_payload",
     "store_currency_selection_payload",
     "test_api_config_payload",

@@ -527,6 +527,7 @@ def test_app_runtime_secret_paths_survive_ai_model_reordering() -> None:
     restored_by_id = {
         str(model["id"]): str(model["api_key"])
         for model in restored["ai_models"]
+        if not model.get("canvas_managed")
     }
     assert restored_by_id == expected
 
