@@ -4,6 +4,7 @@ from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 import fcntl
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -21,7 +22,7 @@ import tarfile
 import tempfile
 import threading
 import time
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -278,21 +279,35 @@ def check_runtime(executable):
                     child.wait()
 
 
+def _fetch_bytes(url, *, headers=RELEASE_HEADERS, timeout=30, attempts=3):
+    for attempt in range(1, attempts + 1):
+        try:
+            with urlopen(Request(url, headers=headers), timeout=timeout) as response:
+                return response.geturl(), response.read()
+        except HTTPError as error:
+            if error.code < 500 or attempt >= attempts:
+                raise
+        except (http.client.HTTPException, URLError, TimeoutError, OSError):
+            if attempt >= attempts:
+                raise
+        time.sleep(2 * attempt)
+
+
 def verify_public(public_url, source):
     index = (source / 'erp_web/static/dist/index.html').read_text()
     entry = re.search(r'src="(/assets/[^" ]+\.js)"', index)
     if not entry:
         raise RuntimeError('网页构建未找到入口资源')
-    headers = RELEASE_HEADERS
-    with urlopen(Request(public_url.rstrip('/') + '/api/account/session', headers=headers), timeout=30) as response:
-        session = json.load(response)
+    base = public_url.rstrip('/')
+    _, session_body = _fetch_bytes(base + '/api/account/session')
+    session = json.loads(session_body)
     if not session.get('initialized') or not session.get('ok'):
         raise RuntimeError('公网账号入口尚未就绪')
-    with urlopen(Request(public_url.rstrip('/') + '/', headers=headers), timeout=30) as response:
-        if entry[1] not in response.read().decode():
-            raise RuntimeError('公网页面尚未提供本次网页版本')
-    with urlopen(Request(public_url.rstrip('/') + entry[1], headers=headers), timeout=30) as response:
-        received = hashlib.sha256(response.read()).hexdigest()
+    _, page_body = _fetch_bytes(base + '/')
+    if entry[1] not in page_body.decode():
+        raise RuntimeError('公网页面尚未提供本次网页版本')
+    _, asset_body = _fetch_bytes(base + entry[1])
+    received = hashlib.sha256(asset_body).hexdigest()
     if received != digest(source / 'erp_web/static/dist' / entry[1].lstrip('/')):
         raise RuntimeError('公网静态资源与构建包不一致')
     return {'account_session': True, 'web_entry': entry[1], 'web_sha256': received}
@@ -888,13 +903,13 @@ def publish_desktop_update(args, record, folder, source, *, already_pulled=False
             transfer_desktop_files(args, staging, files, artifacts, log)
     print(remote_output(args, command), flush=True)
     manifest_url = desktop_manifest_url(update)
-    with urlopen(Request(manifest_url, headers=RELEASE_HEADERS), timeout=30) as response:
-        manifest = json.load(response)
-        if (response.geturl() != manifest_url or manifest['version'] != update['version']
-                or manifest['installer']['sha256'] != update['installer']['sha256']
-                or ('mac_zip' in update and manifest.get('macZip', {}).get('sha256') != update['mac_zip']['sha256'])
-                or (update['policy'] == 'required' and manifest['minimum'] != update['version'])):
-            raise RuntimeError('公网桌面更新清单与本次发布不一致')
+    final_url, manifest_body = _fetch_bytes(manifest_url)
+    manifest = json.loads(manifest_body)
+    if (final_url != manifest_url or manifest['version'] != update['version']
+            or manifest['installer']['sha256'] != update['installer']['sha256']
+            or ('mac_zip' in update and manifest.get('macZip', {}).get('sha256') != update['mac_zip']['sha256'])
+            or (update['policy'] == 'required' and manifest['minimum'] != update['version'])):
+        raise RuntimeError('公网桌面更新清单与本次发布不一致')
     update['published'] = True
     write_record(folder / 'release.json', record)
 

@@ -382,6 +382,52 @@ def test_public_verification_identifies_release_client_and_checks_asset_digest(t
         worker.join(timeout=5)
 
 
+def test_verify_public_retries_on_incomplete_read(tmp_path, monkeypatch):
+    static = tmp_path / 'erp_web/static/dist'
+    (static / 'assets').mkdir(parents=True)
+    (static / 'index.html').write_text('<script src="/assets/index-test.js"></script>')
+    (static / 'assets/index-test.js').write_bytes(b'compiled application')
+
+    attempts = {'asset': 0}
+
+    class FakeResponse:
+        def __init__(self, url, body, fail_incomplete=False):
+            self._url = url
+            self._body = body
+            self._fail_incomplete = fail_incomplete
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def geturl(self):
+            return self._url
+
+        def read(self):
+            if self._fail_incomplete:
+                import http.client
+                raise http.client.IncompleteRead(b'compiled', 12)
+            return self._body
+
+    def fake_urlopen(req, timeout=30):
+        url = req.full_url
+        if url.endswith('/api/account/session'):
+            return FakeResponse(url, b'{"ok":true,"initialized":true}')
+        if url.endswith('/'):
+            return FakeResponse(url, b'<script src="/assets/index-test.js"></script>')
+        attempts['asset'] += 1
+        return FakeResponse(url, b'compiled application', fail_incomplete=attempts['asset'] == 1)
+
+    monkeypatch.setattr(release, 'urlopen', fake_urlopen)
+    monkeypatch.setattr(release.time, 'sleep', lambda *_: None)
+
+    result = release.verify_public('https://hdgl.cc.cd', tmp_path)
+    assert attempts['asset'] == 2
+    assert result['web_sha256'] == release.digest(static / 'assets/index-test.js')
+
+
 @pytest.mark.parametrize('provider', ['alibaba', 'alibaba_crossborder', 'onebound'])
 @pytest.mark.parametrize('leak_secret', [False, True])
 def test_server_smoke_checks_selected_application_and_revokes_session(tmp_path, monkeypatch, provider, leak_secret):
