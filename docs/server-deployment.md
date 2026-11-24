@@ -2,11 +2,19 @@
 
 ## 统一编译与发布
 
-在构建用 Mac 的项目根目录执行以下命令。默认发布服务器、网页和该 Mac 架构的可选桌面更新。发布前先准备好新版号、提交代码，脚本从干净的 Git 版本构建。首次分发需先完成下方的[更新站点配置](#桌面更新发布服务)。
+在构建用 Mac 的项目根目录执行以下命令，或通过 GitHub Actions（`.github/workflows/release.yml`）直接从已推送的远端提交构建并发布。默认发布服务器、网页和该 Mac 架构的可选桌面更新。发布前先准备好新版号、提交代码，脚本从干净的 Git 版本构建；本地工作区存在未提交改动但希望按当前已提交 `HEAD` 发布时，可显式传入 `--allow-dirty`。首次分发需先完成下方的[更新站点配置](#桌面更新发布服务)。
 
 ```sh
 .venv/bin/python scripts/release.py
 ```
+
+### 通过 GitHub Actions 发布
+
+仓库提供 `.github/workflows/release.yml`，从远端 Git 提交直接构建并上传到服务器（美区机房直连 VPS，不受本机未提交修改和跨海上传带宽影响）：
+
+- **手动触发（Actions → 发布 ERP → Run workflow）**：可选 `mode`（`full` 在 `macos-15` 构建并分发服务器、网页及 arm64 桌面包；`server-only` 在 `ubuntu-latest` 仅发布服务器和网页以节省 macOS 额度）、`desktop_update`（`optional` / `required`）、`skip_tests` 与 `update_notes`。
+- **标签触发**：推送 `v*` 标签自动执行完整发布（`optional`），推送 `server-v*` 标签自动执行仅服务器与网页发布。
+- **必需 GitHub Secrets**：`DEPLOY_SSH_KEY`（部署用 SSH 私钥）、`DEPLOY_SSH_KNOWN_HOSTS`（VPS 主机公钥，配合 `--known-hosts` 保持严格主机校验）；执行 `full` 桌面发布还需 `MACOS_CERT_P12_BASE64`（导出的固定自签证书 `.p12` Base64）与 `MACOS_CERT_PASSWORD`。可选 Repository Variables：`DEPLOY_SSH_HOST`、`DEPLOY_SSH_PORT`、`DEPLOY_PUBLIC_URL`。
 
 默认执行后端、前端和桌面全量测试。需要跳过这三套测试时，显式传入 `--skip-tests`。此参数也可与 `--server-only` 合用。第三方声明、生成契约、构建和发布验收仍会执行，测试选项会保存在 `release.json` 中。
 

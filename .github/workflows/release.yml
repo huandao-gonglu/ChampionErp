@@ -1,0 +1,367 @@
+name: 发布 ERP（服务器 / 网页 / macOS 桌面）
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 发布范围：full（服务器+网页+macOS 桌面，macos-15）或 server-only（仅服务器+网页，ubuntu-latest 省额度）
+        type: choice
+        default: full
+        options:
+          - full
+          - server-only
+      desktop_update:
+        description: 桌面更新策略（仅 mode=full 时生效）
+        type: choice
+        default: optional
+        options:
+          - optional
+          - required
+      skip_tests:
+        description: 跳过全量回归测试（仍执行声明检查、类型契约、构建与公网验收）
+        type: boolean
+        default: true
+      update_notes:
+        description: 桌面更新说明（仅 mode=full 时生效，最多 2000 字）
+        type: string
+        default: ''
+      wait_tasks_seconds:
+        description: 服务器等待已接任务安全停机的最长秒数
+        type: string
+        default: '3600'
+  push:
+    tags:
+      - 'v*'
+      - 'server-v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-release
+  cancel-in-progress: false
+
+jobs:
+  release-server-only:
+    name: 发布服务器与网页（Linux）
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.mode == 'server-only') ||
+      (github.event_name == 'push' && startsWith(github.ref_name, 'server-v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SKIP_TESTS: ${{ github.event_name != 'workflow_dispatch' || inputs.skip_tests }}
+      WAIT_TASKS_SECONDS: ${{ (github.event_name == 'workflow_dispatch' && inputs.wait_tasks_seconds != '') && inputs.wait_tasks_seconds || '3600' }}
+      DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST || vars.DEPLOY_SSH_HOST || 'root@107.174.48.238' }}
+      DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT || vars.DEPLOY_SSH_PORT || '22' }}
+      DEPLOY_PUBLIC_URL: ${{ secrets.DEPLOY_PUBLIC_URL || vars.DEPLOY_PUBLIC_URL || 'https://hdgl.cc.cd' }}
+    steps:
+      - name: 校验部署 Secrets
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DEPLOY_SSH_KEY" ]; then
+            echo "::error::缺少 Secret: DEPLOY_SSH_KEY（部署用 SSH 私钥）"
+            exit 1
+          fi
+          if [ -z "$DEPLOY_SSH_KNOWN_HOSTS" ]; then
+            echo "::error::缺少 Secret: DEPLOY_SSH_KNOWN_HOSTS（VPS 主机公钥，用于严格主机校验）"
+            exit 1
+          fi
+
+      - name: 检出目标版本
+        uses: actions/checkout@v4
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: '10.33.2'
+
+      - name: 配置 Node.js 与 pnpm 缓存
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+          cache-dependency-path: front/pnpm-lock.yaml
+
+      - name: 配置 Python 与 pip 缓存
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            front/src/legal/third-party-notices.json
+
+      - name: 安装发布检查所需 Python 依赖
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib
+          data = json.loads(pathlib.Path('front/src/legal/third-party-notices.json').read_text())
+          lines = [f"{p['name']}=={p['version']}" for p in data['packages'] if p['ecosystem'] == 'Python']
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'notice-constraints.txt').write_text('\n'.join(lines) + '\n')
+          PY
+          if [ "$SKIP_TESTS" = "true" ]; then
+            python3 -m pip install --disable-pip-version-check -c "$RUNNER_TEMP/notice-constraints.txt" packaging -r requirements.txt
+          else
+            python3 -m pip install --disable-pip-version-check -c "$RUNNER_TEMP/notice-constraints.txt" packaging -r requirements-dev.txt
+          fi
+
+      - name: 准备临时 SSH 凭据
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ssh"
+          chmod 700 "$RUNNER_TEMP/ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/ssh/id_deploy"
+          printf '%s\n' "$DEPLOY_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/ssh/id_deploy" "$RUNNER_TEMP/ssh/known_hosts"
+
+      - name: 执行服务器与网页发布
+        run: |
+          set -euo pipefail
+          args=(
+            scripts/release.py
+            --server-only
+            --ssh-host "$DEPLOY_SSH_HOST"
+            --ssh-port "$DEPLOY_SSH_PORT"
+            --ssh-identity "$RUNNER_TEMP/ssh/id_deploy"
+            --known-hosts "$RUNNER_TEMP/ssh/known_hosts"
+            --public-url "$DEPLOY_PUBLIC_URL"
+            --output-dir "$RUNNER_TEMP/releases"
+            --wait-tasks-seconds "$WAIT_TASKS_SECONDS"
+          )
+          if [ "$SKIP_TESTS" = "true" ]; then
+            args+=(--skip-tests)
+          fi
+          python3 "${args[@]}"
+
+      - name: 失败时输出本地构建阶段日志尾部
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import os, pathlib
+          for log_file in sorted(pathlib.Path(os.environ['RUNNER_TEMP'], 'releases').glob('*/build.log')):
+              lines = log_file.read_text(errors='replace').splitlines()
+              # 公开仓库只输出上传前的本地构建/检查日志，不暴露 SSH、服务器路径与运行记录。
+              cutoff = next((i for i, line in enumerate(lines) if line.startswith('运行 scp ')), len(lines))
+              local_lines = lines[:cutoff]
+              if local_lines:
+                  print('=== 本地构建日志尾部（已排除上传与远端阶段）===')
+                  print('\n'.join(local_lines[-80:]))
+          PY
+
+      - name: 清理临时凭据与发布产物
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/ssh" "$RUNNER_TEMP/releases" "$RUNNER_TEMP/notice-constraints.txt"
+
+  release-full:
+    name: 发布服务器、网页与 macOS 桌面（arm64）
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.mode == 'full') ||
+      (github.event_name == 'push' && startsWith(github.ref_name, 'v'))
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      DESKTOP_UPDATE: ${{ inputs.desktop_update || 'optional' }}
+      SKIP_TESTS: ${{ github.event_name != 'workflow_dispatch' || inputs.skip_tests }}
+      UPDATE_NOTES: ${{ github.event_name == 'workflow_dispatch' && inputs.update_notes || '' }}
+      WAIT_TASKS_SECONDS: ${{ (github.event_name == 'workflow_dispatch' && inputs.wait_tasks_seconds != '') && inputs.wait_tasks_seconds || '3600' }}
+      DEPLOY_SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST || vars.DEPLOY_SSH_HOST || 'root@107.174.48.238' }}
+      DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT || vars.DEPLOY_SSH_PORT || '22' }}
+      DEPLOY_PUBLIC_URL: ${{ secrets.DEPLOY_PUBLIC_URL || vars.DEPLOY_PUBLIC_URL || 'https://hdgl.cc.cd' }}
+    steps:
+      - name: 校验部署与签名 Secrets
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in DEPLOY_SSH_KEY DEPLOY_SSH_KNOWN_HOSTS MACOS_CERT_P12_BASE64 MACOS_CERT_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::缺少 Secret: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: 检出目标版本
+        uses: actions/checkout@v4
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: '10.33.2'
+
+      - name: 配置 Node.js 与 pnpm 缓存
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+          cache-dependency-path: front/pnpm-lock.yaml
+
+      - name: 配置 Python 与 pip 缓存
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements-desktop-build.txt
+            front/src/legal/third-party-notices.json
+
+      - name: 缓存 Electron 与打包工具
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: macos-electron-${{ runner.arch }}-${{ hashFiles('front/pnpm-lock.yaml') }}
+          restore-keys: |
+            macos-electron-${{ runner.arch }}-
+
+      - name: 缓存本机执行器与构建 wheel
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/champion-erp/wheels
+            ~/.cache/champion-erp/desktop-runtime
+          key: >-
+            macos-runtime-${{ runner.arch }}-py314-${{
+              hashFiles(
+                'desktop_runtime/**',
+                'erp_shared/**',
+                'scripts/desktop_runtime_entry.py',
+                'scripts/desktop_runtime.spec',
+                'scripts/build_desktop_runtime.py',
+                'requirements-desktop.txt',
+                'requirements-desktop-build.txt',
+                'LICENSE'
+              )
+            }}
+          restore-keys: |
+            macos-runtime-${{ runner.arch }}-py314-
+
+      - name: 安装发布检查所需 Python 依赖
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib
+          data = json.loads(pathlib.Path('front/src/legal/third-party-notices.json').read_text())
+          lines = [f"{p['name']}=={p['version']}" for p in data['packages'] if p['ecosystem'] == 'Python']
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'notice-constraints.txt').write_text('\n'.join(lines) + '\n')
+          PY
+          if [ "$SKIP_TESTS" = "true" ]; then
+            python3 -m pip install --disable-pip-version-check -c "$RUNNER_TEMP/notice-constraints.txt" packaging -r requirements.txt
+          else
+            python3 -m pip install --disable-pip-version-check -c "$RUNNER_TEMP/notice-constraints.txt" packaging -r requirements-dev.txt
+          fi
+
+      - name: 导入 macOS 固定自签证书到临时钥匙串
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_DIR="$RUNNER_TEMP/cert"
+          mkdir -p "$CERT_DIR"
+          chmod 700 "$CERT_DIR"
+          CERT_P12="$CERT_DIR/signing.p12"
+          CERT_PEM="$CERT_DIR/signing.pem"
+          KEYCHAIN_PATH="$CERT_DIR/release.keychain-db"
+          KEYCHAIN_PASS="$(openssl rand -hex 24)"
+
+          printf '%s' "$MACOS_CERT_P12_BASE64" | tr -d '[:space:]' | base64 --decode > "$CERT_P12"
+          chmod 600 "$CERT_P12"
+
+          if ! openssl pkcs12 -in "$CERT_P12" -clcerts -nokeys -out "$CERT_PEM" -passin env:MACOS_CERT_PASSWORD 2>/dev/null; then
+            openssl pkcs12 -legacy -in "$CERT_P12" -clcerts -nokeys -out "$CERT_PEM" -passin env:MACOS_CERT_PASSWORD
+          fi
+
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security import "$CERT_P12" -P "$MACOS_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+          existing_keychains=()
+          while IFS= read -r kc; do
+            kc="$(printf '%s' "$kc" | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')"
+            [ -n "$kc" ] && existing_keychains+=("$kc")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$KEYCHAIN_PATH" "${existing_keychains[@]}"
+          security default-keychain -s "$KEYCHAIN_PATH"
+
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$CERT_PEM"
+
+          expected_sha1="$(node -p "require('./front/desktop/update-signature.cjs').LOCAL_SIGNING_CERTIFICATE.sha1")"
+          if ! security find-identity -v -p codesigning | grep -Fq "$expected_sha1"; then
+            echo "::error::未在临时钥匙串中找到有效签名证书指纹 $expected_sha1，请核对 MACOS_CERT_P12_BASE64 与 MACOS_CERT_PASSWORD"
+            security find-identity -v -p codesigning || true
+            exit 1
+          fi
+          echo "已加载有效 macOS 签名证书：$expected_sha1"
+
+      - name: 准备临时 SSH 凭据
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ssh"
+          chmod 700 "$RUNNER_TEMP/ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/ssh/id_deploy"
+          printf '%s\n' "$DEPLOY_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/ssh/id_deploy" "$RUNNER_TEMP/ssh/known_hosts"
+
+      - name: 执行完整发布（服务器 + 网页 + macOS 桌面）
+        run: |
+          set -euo pipefail
+          args=(
+            scripts/release.py
+            --desktop-update "$DESKTOP_UPDATE"
+            --desktop-transfer ssh
+            --update-notes "$UPDATE_NOTES"
+            --ssh-host "$DEPLOY_SSH_HOST"
+            --ssh-port "$DEPLOY_SSH_PORT"
+            --ssh-identity "$RUNNER_TEMP/ssh/id_deploy"
+            --known-hosts "$RUNNER_TEMP/ssh/known_hosts"
+            --public-url "$DEPLOY_PUBLIC_URL"
+            --output-dir "$RUNNER_TEMP/releases"
+            --wait-tasks-seconds "$WAIT_TASKS_SECONDS"
+          )
+          if [ "$SKIP_TESTS" = "true" ]; then
+            args+=(--skip-tests)
+          fi
+          python3 "${args[@]}"
+
+      - name: 失败时输出本地构建阶段日志尾部
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import os, pathlib
+          for log_file in sorted(pathlib.Path(os.environ['RUNNER_TEMP'], 'releases').glob('*/build.log')):
+              lines = log_file.read_text(errors='replace').splitlines()
+              # 公开仓库只输出上传前的本地构建/检查日志，不暴露 SSH、服务器路径与运行记录。
+              cutoff = next((i for i, line in enumerate(lines) if line.startswith('运行 scp ')), len(lines))
+              local_lines = lines[:cutoff]
+              if local_lines:
+                  print('=== 本地构建日志尾部（已排除上传与远端阶段）===')
+                  print('\n'.join(local_lines[-80:]))
+          PY
+
+      - name: 清理临时钥匙串、凭据与发布产物
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/cert/release.keychain-db" 2>/dev/null || true
+          rm -rf "$RUNNER_TEMP/cert" "$RUNNER_TEMP/ssh" "$RUNNER_TEMP/releases" "$RUNNER_TEMP/notice-constraints.txt"

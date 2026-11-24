@@ -200,7 +200,7 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 校验当前版本与清单后清理旧程序、旧桌面包及 staging 上传副本；发布失败前不清理回退程序。
 当前版、待续发版本、发布记录、业务数据和手工备份保留，清理失败沿用既有发布续发入口重试。
 
-统一发布默认分发可选桌面更新，构建用 Mac 同样通过客户端升级。`--server-only` 跳过桌面打包和分发。
+统一发布默认分发可选桌面更新，构建用 Mac 同样通过客户端升级。`--server-only` 跳过桌面打包和分发；本地需忽略工作区未提交修改仅按 `HEAD` 构建时可加 `--allow-dirty`，CI 环境可通过 `--known-hosts` 指定独立主机公钥文件。`.github/workflows/release.yml` 复用同一 `scripts/release.py` 入口按 `server-only`（`ubuntu-latest`）与 `full`（`macos-15` 导入固定自签 `.p12` 证书）分流发布。
 桌面版本发布由 `scripts/release.py` 和 `deploy/publish_desktop.py` 写入同一套平台/架构清单，Nginx 独立提供安装包。
 `front/desktop/updates.cjs` 负责检查、下载和校验缓存。符合条件的 Mac 可在业务运行中下载 ZIP，重启后直接复用；
 `update-signature.cjs` 共用固定自签身份并核验原生更新资格，

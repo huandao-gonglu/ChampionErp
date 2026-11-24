@@ -122,7 +122,7 @@ def run_parallel(tasks, *, log):
             log.flush()
 
 
-def _ssh_common_options(*, multiplex=True):
+def _ssh_common_options(*, multiplex=True, known_hosts=None):
     options = [
         '-o', 'BatchMode=yes',
         '-o', 'ForwardAgent=no',
@@ -131,6 +131,8 @@ def _ssh_common_options(*, multiplex=True):
         '-o', 'ServerAliveInterval=20',
         '-o', 'ServerAliveCountMax=3',
     ]
+    if known_hosts is not None:
+        options.extend(['-o', f'UserKnownHostsFile={known_hosts}'])
     if multiplex:
         with _SSH_CONTROL_LOCK:
             control_path = _SSH_CONTROL_PATH
@@ -145,19 +147,21 @@ def _ssh_common_options(*, multiplex=True):
 
 def ssh_args(args):
     return ['ssh', '-p', str(args.ssh_port), '-i', str(args.ssh_identity),
-            *_ssh_common_options(multiplex=True), args.ssh_host]
+            *_ssh_common_options(multiplex=True, known_hosts=getattr(args, 'known_hosts', None)), args.ssh_host]
 
 
 def direct_ssh_args(args):
     # 桌面包直连传输使用独立非压缩 SSH 连接，避免复用通道限速与跨阶段闲置断连。
     return ['ssh', '-p', str(args.ssh_port), '-i', str(args.ssh_identity),
-            *_ssh_common_options(multiplex=False), '-o', 'Compression=no', args.ssh_host]
+            *_ssh_common_options(multiplex=False, known_hosts=getattr(args, 'known_hosts', None)),
+            '-o', 'Compression=no', args.ssh_host]
 
 
 def scp_args(args):
-    # 大文件 SCP 使用独立连接，避免跨构建阶段闲置或复用通道限速。
+    # 大文件 SCP 使用独立非压缩连接，避免跨构建阶段闲置或复用通道限速。
     return ['scp', '-P', str(args.ssh_port), '-i', str(args.ssh_identity),
-            *_ssh_common_options(multiplex=False)]
+            *_ssh_common_options(multiplex=False, known_hosts=getattr(args, 'known_hosts', None)),
+            '-o', 'Compression=no']
 
 
 @contextmanager
@@ -447,7 +451,7 @@ def prepare_desktop_transfer_inputs(update, folder, staging):
 
 
 def pull_desktop_files(args, staging, files, artifacts, log, *, display_gate=None, cancel_event=None):
-    command = 'cd ' + shlex.quote(staging) + ' && exec python3 -u pull_desktop.py'
+    command = 'cd ' + shlex.quote(staging) + ' && exec python3 -u pull_desktop.py --preempt'
     first_name = next(iter(artifacts))
     for attempt in range(1, 4):
         if cancel_event and cancel_event.is_set():
@@ -555,8 +559,11 @@ def _format_transfer_speed(bytes_per_second):
     return f'{bytes_per_second / 1024:.1f} KiB/s'
 
 
-def _probe_remote_desktop(args, staging, artifacts, log, *, cancel_event=None):
-    command = 'cd ' + shlex.quote(staging) + ' && exec python3 -u pull_desktop.py --probe'
+def _probe_remote_desktop(args, staging, artifacts, log, *, cancel_event=None, preempt=False):
+    remote = ['python3', '-u', 'pull_desktop.py', '--probe']
+    if preempt:
+        remote.append('--preempt')
+    command = 'cd ' + shlex.quote(staging) + ' && exec ' + shlex.join(remote)
     payload = json.dumps({'artifacts': artifacts}) + '\n'
     for attempt in range(1, 4):
         if cancel_event and cancel_event.is_set():
@@ -587,7 +594,7 @@ def _probe_remote_desktop(args, staging, artifacts, log, *, cancel_event=None):
 def push_desktop_files(args, staging, files, artifacts, log, *, display_gate=None, cancel_event=None,
                        stall_timeout=45, chunk_size=256 * 1024):
     """通过多条独立直连 SSH 管道并行推送桌面包，支持前缀摘要校验续传、卡死重连与实时进度。"""
-    probed = _probe_remote_desktop(args, staging, artifacts, log, cancel_event=cancel_event)
+    probed = _probe_remote_desktop(args, staging, artifacts, log, cancel_event=cancel_event, preempt=True)
     if probed is None:
         return
     lock = threading.Lock()
@@ -658,23 +665,30 @@ def push_desktop_files(args, staging, files, artifacts, log, *, display_gate=Non
         sha256 = item['sha256']
         path = item['path']
         last_error = ''
-        for attempt in range(1, 6):
+        consecutive_failures = 0
+        total_attempts = 0
+        max_consecutive_failures = 5
+        max_total_attempts = 20
+        while consecutive_failures < max_consecutive_failures and total_attempts < max_total_attempts:
+            total_attempts += 1
             if cancel_event and cancel_event.is_set():
                 return
-            if attempt > 1:
+            if total_attempts > 1:
                 try:
                     reprobed = _probe_remote_desktop(
-                        args, staging, {name: {'size': size, 'sha256': sha256}}, log, cancel_event=cancel_event)
+                        args, staging, {name: {'size': size, 'sha256': sha256}},
+                        log, cancel_event=cancel_event, preempt=True)
                 except Exception as exc:
                     reprobed = None
                     last_error = str(exc)
                 if cancel_event and cancel_event.is_set():
                     return
                 if reprobed is None:
-                    if attempt < 5:
+                    consecutive_failures += 1
+                    if consecutive_failures < max_consecutive_failures and total_attempts < max_total_attempts:
                         with lock:
-                            item['status'] = f'等待第 {attempt + 1} 次尝试'
-                        wait_s = min(8, 2 ** (attempt - 1))
+                            item['status'] = f'等待第 {total_attempts + 1} 次尝试'
+                        wait_s = min(8, 2 ** (consecutive_failures - 1))
                         if cancel_event:
                             cancel_event.wait(wait_s)
                         else:
@@ -701,6 +715,7 @@ def push_desktop_files(args, staging, files, artifacts, log, *, display_gate=Non
                 with lock:
                     offset = item['offset']
 
+            attempt_start_received = offset
             with lock:
                 item['status'] = '续传' if offset else '传输中'
                 item['last_progress_at'] = time.monotonic()
@@ -708,7 +723,7 @@ def push_desktop_files(args, staging, files, artifacts, log, *, display_gate=Non
             remote_cmd = (
                 'cd ' + shlex.quote(staging) + ' && exec '
                 + shlex.join(['python3', '-u', 'pull_desktop.py', '--receive', name,
-                              '--offset', str(offset), '--size', str(size), '--sha256', sha256])
+                              '--offset', str(offset), '--size', str(size), '--sha256', sha256, '--preempt'])
             )
             ready_event = threading.Event()
             verified_event = threading.Event()
@@ -813,10 +828,13 @@ def push_desktop_files(args, staging, files, artifacts, log, *, display_gate=Non
                 last_error = protocol_errors[-1]
             else:
                 last_error = f'连接中断（exit={exit_code}）'
-            if attempt < 5:
+            with lock:
+                made_progress = item['received'] > attempt_start_received
+            consecutive_failures = 0 if made_progress else consecutive_failures + 1
+            if consecutive_failures < max_consecutive_failures and total_attempts < max_total_attempts:
                 with lock:
-                    item['status'] = f'等待第 {attempt + 1} 次尝试'
-                wait_s = min(8, 2 ** (attempt - 1))
+                    item['status'] = f'等待第 {total_attempts + 1} 次尝试'
+                wait_s = 1 if made_progress else min(8, 2 ** (consecutive_failures - 1))
                 if cancel_event:
                     cancel_event.wait(wait_s)
                 else:
@@ -988,6 +1006,9 @@ def resume_release(args):
     staged = record['status'] in {'server_staged', 'failed_after_server_staged'}
     if not staged and record['status'] not in {'server_published', 'failed_after_server_published'}:
         raise RuntimeError('只有已上传或已发布的版本可以继续')
+    known_hosts = getattr(args, 'known_hosts', None)
+    if known_hosts is not None and not known_hosts.is_file():
+        raise RuntimeError('SSH known_hosts 文件不存在')
     update = record.get('desktop_update')
     if (update and not update.get('published')
             and getattr(args, 'desktop_transfer', 'ssh') == 'tunnel'
@@ -1019,12 +1040,22 @@ def release(args):
         raise RuntimeError('构建 macOS 更新包需要 Mac，仅发布服务器和网页可使用 --server-only')
     if args.desktop_update and getattr(args, 'desktop_transfer', 'ssh') == 'tunnel' and not shutil.which('cloudflared'):
         raise RuntimeError('桌面隧道发布需要 cloudflared，请先在构建机安装，或改用 --desktop-transfer ssh')
-    if output('git', 'status', '--porcelain', '--untracked-files=normal'):
+    allow_dirty = getattr(args, 'allow_dirty', False)
+    dirty_output = output('git', 'status', '--porcelain', '--untracked-files=normal')
+    if dirty_output and not allow_dirty:
         raise RuntimeError('请先提交本次代码修改，发布仅使用干净的 Git 版本')
     if not args.ssh_identity.is_file():
         raise RuntimeError('SSH 密钥文件不存在')
+    known_hosts = getattr(args, 'known_hosts', None)
+    if known_hosts is not None and not known_hosts.is_file():
+        raise RuntimeError('SSH known_hosts 文件不存在')
     revision = output('git', 'rev-parse', 'HEAD')
-    package = json.loads((ROOT / 'front/package.json').read_text())
+    if allow_dirty:
+        if dirty_output:
+            print(f'已按 --allow-dirty 忽略工作区未提交修改，仅按已提交版本 {revision[:12]} 构建发布', flush=True)
+        package = json.loads(output('git', 'show', f'{revision}:front/package.json'))
+    else:
+        package = json.loads((ROOT / 'front/package.json').read_text())
     version = package['version']
     release_id = datetime.now(timezone.utc).strftime('%Y%m%dt%H%M%Sz') + '-' + revision[:12]
     folder = args.output_dir / release_id
@@ -1212,12 +1243,14 @@ def main():
     parser.add_argument('--ssh-host', default='root@107.174.48.238', help='服务器 SSH 登录目标')
     parser.add_argument('--ssh-port', type=int, default=22)
     parser.add_argument('--ssh-identity', type=Path, default=Path.home() / '.ssh/id_ed25519')
+    parser.add_argument('--known-hosts', type=Path, help='自定义 SSH known_hosts 文件路径（CI 环境可用）')
     parser.add_argument('--public-url', default='https://hdgl.cc.cd', help='升级后验证的公网地址')
     parser.add_argument('--output-dir', type=Path, default=Path.home() / 'Library/Application Support/Champion ERP/releases')
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--desktop-update', choices=['optional', 'required'], help='发布桌面升级，默认 optional，可显式指定 required')
     mode.add_argument('--server-only', action='store_true', help='仅发布服务器和网页，跳过桌面打包和分发')
     parser.add_argument('--skip-tests', action='store_true', help='跳过后端、前端和桌面全量测试，继续执行构建检查与发布验收')
+    parser.add_argument('--allow-dirty', action='store_true', help='忽略工作区未提交修改，仅按当前已提交的 Git HEAD 构建发布')
     parser.add_argument('--desktop-transfer', choices=['ssh', 'tunnel'], default='ssh',
                         help='桌面包传输方式：默认 ssh（直连多路独立 SSH 可续传），直连拥塞时可改为 tunnel（Cloudflare QUIC 隧道）')
     parser.add_argument('--update-notes', default='', help='向用户展示的更新说明')
@@ -1225,7 +1258,7 @@ def main():
     parser.add_argument('--wait-tasks-seconds', type=int, default=3600, help='服务器等待已接任务安全停机的最长秒数')
     parser.add_argument('--resume', type=Path, help='从已上传的发布目录继续原有服务器切换、验证和更新包分发')
     args = parser.parse_args()
-    if args.resume and (args.desktop_update or args.server_only or args.signed_desktop or args.update_notes):
+    if args.resume and (args.desktop_update or args.server_only or args.signed_desktop or args.update_notes or args.allow_dirty):
         parser.error('--resume 沿用发布记录中的桌面策略、签名与更新说明')
     if args.server_only and (args.signed_desktop or args.update_notes):
         parser.error('--server-only 不能与桌面签名或更新说明一起使用')
@@ -1235,6 +1268,8 @@ def main():
         parser.error('桌面更新说明最多 2000 字')
     if args.wait_tasks_seconds < 0:
         parser.error('等待任务时间必须为非负数')
+    if args.known_hosts is not None:
+        args.known_hosts = args.known_hosts.expanduser().resolve()
     args.output_dir = args.output_dir.expanduser().absolute()
     if args.resume:
         args.output_dir = args.resume.expanduser().resolve().parent

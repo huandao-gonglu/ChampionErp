@@ -6,15 +6,117 @@ from dataclasses import dataclass
 import fcntl
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import selectors
 import shutil
+import signal
+import subprocess
 import sys
 import time
 
 ALLOWED_ARTIFACTS = {'installer.dmg', 'update.zip'}
 SHA256_RE = re.compile(r'[0-9a-f]{64}')
-RECEIVE_CHUNK_SIZE = 256 * 1024
+RECEIVE_CHUNK_SIZE = 64 * 1024
+RECEIVE_IDLE_TIMEOUT = 120
+
+
+def _pid_cmdline(pid):
+    proc_cmdline = Path(f'/proc/{pid}/cmdline')
+    if proc_cmdline.is_file():
+        try:
+            raw = proc_cmdline.read_bytes()
+        except OSError:
+            return ''
+        return ' '.join(part.decode(errors='replace') for part in raw.split(b'\x00') if part)
+    try:
+        result = subprocess.run(['ps', '-p', str(pid), '-o', 'command='], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ''
+    return result.stdout.strip() if result.returncode == 0 else ''
+
+
+def _pid_is_stale_receiver(pid, artifact_name=None):
+    if pid <= 1 or pid == os.getpid():
+        return False
+    cmdline = _pid_cmdline(pid)
+    if 'pull_desktop.py' not in cmdline or '--receive' not in cmdline:
+        return False
+    if artifact_name and artifact_name not in cmdline:
+        return False
+    return True
+
+
+def _terminate_stale_pid(pid, *, force=False):
+    sig = signal.SIGKILL if force else signal.SIGTERM
+    try:
+        os.kill(pid, sig)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        pass
+
+
+def _read_lock_pid(lock_file):
+    try:
+        lock_file.seek(0)
+        text = lock_file.read().strip()
+        return int(text.splitlines()[0]) if text else None
+    except (OSError, ValueError):
+        return None
+
+
+def _write_lock_pid(lock_file):
+    try:
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.write(f'{os.getpid()}\n')
+        lock_file.flush()
+    except OSError:
+        pass
+
+
+def _acquire_lock(lock_file, *, exclusive=True, wait_seconds=5.0, preempt_artifact=None):
+    mode = (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    signaled_pid = None
+    signaled_at = 0.0
+    forced = False
+    while True:
+        try:
+            fcntl.flock(lock_file, mode)
+            if exclusive:
+                _write_lock_pid(lock_file)
+            return
+        except BlockingIOError:
+            now = time.monotonic()
+            if preempt_artifact is not None:
+                holder = _read_lock_pid(lock_file)
+                if holder is not None and holder != signaled_pid and _pid_is_stale_receiver(holder, preempt_artifact):
+                    _terminate_stale_pid(holder, force=False)
+                    signaled_pid = holder
+                    signaled_at = now
+                    forced = False
+                elif signaled_pid is not None and not forced and now - signaled_at >= 2.0:
+                    if _pid_is_stale_receiver(signaled_pid, preempt_artifact):
+                        _terminate_stale_pid(signaled_pid, force=True)
+                    forced = True
+            if now >= deadline:
+                raise
+            time.sleep(0.1)
+
+
+def _preempt_stale_receivers(names):
+    for name in names:
+        lock_path = Path(f'.desktop-transfer.{name}.lock')
+        if not lock_path.is_file() or lock_path.is_symlink():
+            continue
+        with lock_path.open('a+') as file_lock:
+            try:
+                _acquire_lock(file_lock, exclusive=True, wait_seconds=4.0, preempt_artifact=name)
+            except BlockingIOError:
+                pass
 
 
 def file_sha256(path):
@@ -146,7 +248,7 @@ def _validate_artifact(name, size, sha256):
         raise ValueError('桌面包摘要格式无效')
 
 
-def probe_ssh():
+def probe_ssh(*, preempt=False):
     """检查目标暂存目录中的成品和断点文件，供直连 SSH 续传前核对前缀摘要。"""
     request = json.loads(sys.stdin.readline())
     artifacts = request['artifacts']
@@ -154,13 +256,16 @@ def probe_ssh():
         raise ValueError('桌面包名称无效')
     result = {}
     with ExitStack() as stack:
-        dir_lock = stack.enter_context(open('.desktop-transfer.lock', 'a'))
-        fcntl.flock(dir_lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        dir_lock = stack.enter_context(open('.desktop-transfer.lock', 'a+'))
+        _acquire_lock(dir_lock, exclusive=False, wait_seconds=5.0)
         for name, item in artifacts.items():
             size, sha256 = item['size'], item['sha256']
             _validate_artifact(name, size, sha256)
-            file_lock = stack.enter_context(open(f'.desktop-transfer.{name}.lock', 'a'))
-            fcntl.flock(file_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            file_lock = stack.enter_context(open(f'.desktop-transfer.{name}.lock', 'a+'))
+            _acquire_lock(
+                file_lock, exclusive=True, wait_seconds=5.0,
+                preempt_artifact=name if preempt else None,
+            )
             target = Path(name)
             partial = Path(name + '.ssh.part')
             if target.is_file() and not target.is_symlink() and target.stat().st_size == size and file_sha256(target) == sha256:
@@ -191,16 +296,19 @@ def probe_ssh():
     print(json.dumps(result), flush=True)
 
 
-def receive_ssh(name, offset, size, sha256):
+def receive_ssh(name, offset, size, sha256, *, preempt=False, idle_timeout=RECEIVE_IDLE_TIMEOUT):
     """通过标准输入接收单个桌面包的原始字节流，实时回报落盘进度并在完成后校验替换。"""
     _validate_artifact(name, size, sha256)
     if offset < 0 or offset >= size:
         raise ValueError('续传偏移量无效')
     with ExitStack() as stack:
-        dir_lock = stack.enter_context(open('.desktop-transfer.lock', 'a'))
-        fcntl.flock(dir_lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        file_lock = stack.enter_context(open(f'.desktop-transfer.{name}.lock', 'a'))
-        fcntl.flock(file_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        dir_lock = stack.enter_context(open('.desktop-transfer.lock', 'a+'))
+        _acquire_lock(dir_lock, exclusive=False, wait_seconds=5.0)
+        file_lock = stack.enter_context(open(f'.desktop-transfer.{name}.lock', 'a+'))
+        _acquire_lock(
+            file_lock, exclusive=True, wait_seconds=5.0,
+            preempt_artifact=name if preempt else None,
+        )
         target = Path(name)
         partial = Path(name + '.ssh.part')
         if target.is_file() and not target.is_symlink() and target.stat().st_size == size and file_sha256(target) == sha256:
@@ -222,21 +330,39 @@ def receive_ssh(name, offset, size, sha256):
             last_report_time = time.monotonic()
             last_report_bytes = written
             reader = sys.stdin.buffer
-            while True:
-                chunk = reader.read(RECEIVE_CHUNK_SIZE)
-                if not chunk:
-                    break
-                if written + len(chunk) > size:
-                    raise ValueError('接收字节数超出声明大小')
-                stream.write(chunk)
-                written += len(chunk)
-                now = time.monotonic()
-                if now - last_report_time >= 0.4 or written - last_report_bytes >= 2 * 1024 * 1024:
-                    stream.flush()
-                    print(f'PROGRESS {written}', flush=True)
-                    last_report_time = now
-                    last_report_bytes = written
-            stream.flush()
+            stdin_fd = None
+            selector = None
+            try:
+                stdin_fd = reader.fileno()
+                selector = selectors.DefaultSelector()
+                selector.register(stdin_fd, selectors.EVENT_READ)
+            except (AttributeError, OSError, ValueError):
+                stdin_fd = None
+                selector = None
+            try:
+                while True:
+                    if selector is not None:
+                        if not selector.select(idle_timeout):
+                            break
+                        chunk = os.read(stdin_fd, RECEIVE_CHUNK_SIZE)
+                    else:
+                        chunk = reader.read(RECEIVE_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    if written + len(chunk) > size:
+                        raise ValueError('接收字节数超出声明大小')
+                    stream.write(chunk)
+                    written += len(chunk)
+                    now = time.monotonic()
+                    if now - last_report_time >= 0.4 or written - last_report_bytes >= 1024 * 1024:
+                        stream.flush()
+                        print(f'PROGRESS {written}', flush=True)
+                        last_report_time = now
+                        last_report_bytes = written
+                stream.flush()
+            finally:
+                if selector is not None:
+                    selector.close()
         print(f'PROGRESS {written}', flush=True)
         if written != size:
             print(f'INCOMPLETE {written}', flush=True)
@@ -250,7 +376,7 @@ def receive_ssh(name, offset, size, sha256):
         return 0
 
 
-async def pull_tunnel_main():
+async def pull_tunnel_main(*, preempt=False):
     request = json.loads(sys.stdin.readline())
     artifacts = request['artifacts']
     if not artifacts or not artifacts.keys() <= ALLOWED_ARTIFACTS:
@@ -258,8 +384,10 @@ async def pull_tunnel_main():
     downloads = [Download(Path(name), item['size'], item['sha256']) for name, item in artifacts.items()]
     if any(item.size <= 0 for item in downloads):
         raise ValueError('桌面包为空')
-    with open('.desktop-transfer.lock', 'a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    if preempt:
+        _preempt_stale_receivers(artifacts.keys())
+    with open('.desktop-transfer.lock', 'a+') as lock:
+        _acquire_lock(lock, exclusive=True, wait_seconds=5.0)
         for item in downloads:
             item.prepare()
         needed = any(item.status != '已复用' for item in downloads)
@@ -278,15 +406,16 @@ def main():
     parser.add_argument('--offset', type=int, default=0)
     parser.add_argument('--size', type=int)
     parser.add_argument('--sha256')
+    parser.add_argument('--preempt', action='store_true', help='接管同一暂存目录中残留的旧接收进程锁')
     args = parser.parse_args()
     if args.probe:
-        probe_ssh()
+        probe_ssh(preempt=args.preempt)
     elif args.receive:
         if args.size is None or not args.sha256:
             parser.error('--receive 需要同时提供 --size 和 --sha256')
-        sys.exit(receive_ssh(args.receive, args.offset, args.size, args.sha256))
+        sys.exit(receive_ssh(args.receive, args.offset, args.size, args.sha256, preempt=args.preempt))
     else:
-        asyncio.run(pull_tunnel_main())
+        asyncio.run(pull_tunnel_main(preempt=args.preempt))
 
 
 if __name__ == '__main__':

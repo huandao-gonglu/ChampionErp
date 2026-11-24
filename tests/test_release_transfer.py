@@ -4,6 +4,7 @@ from functools import partial
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
+import json
 import os
 import re
 import shutil
@@ -310,3 +311,89 @@ def test_tunnel_download_prepare_adopts_ssh_partial_file(tmp_path, monkeypatch):
     assert not (tmp_path / 'installer.dmg.ssh.part').exists()
     assert (tmp_path / 'installer.dmg.https.part').read_bytes() == payload[:4096]
     assert item.received() == 4096
+
+
+def test_direct_ssh_receive_reports_small_chunk_progress_and_preempts_stale_receiver(tmp_path):
+    staging = tmp_path / 'staging'
+    staging.mkdir()
+    script = staging / 'pull_desktop.py'
+    shutil.copy(release.ROOT / 'deploy/pull_desktop.py', script)
+
+    payload = os.urandom(128 * 1024)
+    digest = hashlib.sha256(payload).hexdigest()
+
+    # 启动一个模拟卡死未退出的旧接收进程，写入 8 KiB 后不再继续发送。
+    stale = subprocess.Popen(
+        [sys.executable, '-u', str(script), '--receive', 'installer.dmg',
+         '--offset', '0', '--size', str(len(payload)), '--sha256', digest],
+        cwd=staging, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    try:
+        assert stale.stdout.readline().decode().strip() == 'READY 0'
+        # 仅写入 8 KiB（远小于原 256 KiB 块大小），验证能立刻回报 PROGRESS 而不阻塞。
+        stale.stdin.write(payload[:8192])
+        stale.stdin.flush()
+        import time as _time
+        _time.sleep(0.45)
+        stale.stdin.write(payload[8192:16384])
+        stale.stdin.flush()
+        progress_line = stale.stdout.readline().decode().strip()
+        assert progress_line == 'PROGRESS 16384'
+
+        # 旧进程仍持有文件锁时，带 --preempt 的探测应优雅接管而不是抛 BlockingIOError。
+        probe = subprocess.run(
+            [sys.executable, '-u', str(script), '--probe', '--preempt'],
+            cwd=staging,
+            input=json.dumps({'artifacts': {'installer.dmg': {'size': len(payload), 'sha256': digest}}}) + '\n',
+            capture_output=True, text=True, timeout=10,
+        )
+        assert probe.returncode == 0, probe.stderr
+        probed = json.loads(probe.stdout)
+        assert probed['installer.dmg']['status'] == 'partial'
+        assert probed['installer.dmg']['offset'] == 16384
+        assert probed['installer.dmg']['prefix_sha256'] == hashlib.sha256(payload[:16384]).hexdigest()
+        assert stale.wait(timeout=5) is not None
+    finally:
+        if stale.poll() is None:
+            stale.kill()
+            stale.wait()
+
+
+def test_direct_ssh_push_resets_retry_budget_after_progress(tmp_path, monkeypatch):
+    staging = tmp_path / 'staging'
+    staging.mkdir()
+    shutil.copy(release.ROOT / 'deploy/pull_desktop.py', staging)
+    monkeypatch.setattr(release, 'direct_ssh_args', lambda args: ['sh', '-c'])
+
+    payload = os.urandom(256 * 1024)
+    artifact = tmp_path / 'installer.dmg'
+    artifact.write_bytes(payload)
+    artifacts = {'installer.dmg': {'size': len(payload), 'sha256': hashlib.sha256(payload).hexdigest()}}
+
+    receive_offsets = []
+    real_popen = subprocess.Popen
+
+    def incremental_flaky_popen(cmd, *args, **kwargs):
+        shell_cmd = cmd[-1]
+        if '--receive' in shell_cmd:
+            m = re.search(r'--offset\s+(\d+)', shell_cmd)
+            offset = int(m.group(1))
+            receive_offsets.append(offset)
+            # 模拟前 6 次每次推进 32 KiB 后断线（超过 5 次固定上限），第 7 次顺利传完。
+            if len(receive_offsets) <= 6:
+                next_offset = offset + 32 * 1024
+                (staging / 'installer.dmg.ssh.part').write_bytes(payload[:next_offset])
+                return real_popen(
+                    ['sh', '-c', f'echo "READY {offset}"; echo "PROGRESS {next_offset}"; echo "INCOMPLETE {next_offset}"; exit 1'],
+                    *args, **kwargs,
+                )
+        return real_popen(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(release.subprocess, 'Popen', incremental_flaky_popen)
+    monkeypatch.setattr(release.time, 'sleep', lambda *_: None)
+
+    log = io.StringIO()
+    release.push_desktop_files(None, str(staging), {'installer.dmg': artifact}, artifacts, log)
+    assert len(receive_offsets) == 7
+    assert receive_offsets == [i * 32 * 1024 for i in range(7)]
+    assert (staging / 'installer.dmg').read_bytes() == payload

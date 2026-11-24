@@ -709,18 +709,51 @@ def test_detect_reusable_server_assets_probe_runs_via_shell_and_filters_matches(
 def test_ssh_session_multiplexes_ssh_but_keeps_scp_dedicated(tmp_path):
     identity = tmp_path / 'id_ed25519'
     identity.touch()
-    args = argparse.Namespace(ssh_host='root@example', ssh_port=22, ssh_identity=identity)
+    known_hosts = tmp_path / 'known_hosts'
+    known_hosts.touch()
+    args = argparse.Namespace(ssh_host='root@example', ssh_port=22, ssh_identity=identity, known_hosts=known_hosts)
     with release.ssh_session(args):
         ssh_cmd = release.ssh_args(args)
         direct_cmd = release.direct_ssh_args(args)
         scp_cmd = release.scp_args(args)
         assert 'ControlMaster=auto' in ssh_cmd
         assert any(opt.startswith('ControlPath=') for opt in ssh_cmd)
+        assert f'UserKnownHostsFile={known_hosts}' in ssh_cmd
         assert 'ControlMaster=auto' not in direct_cmd
         assert not any(opt.startswith('ControlPath=') for opt in direct_cmd)
         assert 'Compression=no' in direct_cmd
+        assert f'UserKnownHostsFile={known_hosts}' in direct_cmd
         assert 'ControlMaster=auto' not in scp_cmd
         assert not any(opt.startswith('ControlPath=') for opt in scp_cmd)
+        assert 'Compression=no' in scp_cmd
+        assert f'UserKnownHostsFile={known_hosts}' in scp_cmd
+
+
+def test_release_allow_dirty_reads_head_package_and_validates_known_hosts(tmp_path, monkeypatch):
+    identity = tmp_path / 'id_ed25519'
+    identity.touch()
+    missing_kh = tmp_path / 'missing_known_hosts'
+    monkeypatch.setattr(release, 'output', lambda *args: {
+        ('git', 'status', '--porcelain', '--untracked-files=normal'): ' M README.md',
+        ('git', 'rev-parse', 'HEAD'): 'abcdef1234567890abcdef1234567890abcdef12',
+        ('git', 'show', 'abcdef1234567890abcdef1234567890abcdef12:front/package.json'): json.dumps({
+            'version': '9.9.9', 'desktopUpdateOrigin': 'https://hdgl.cc.cd',
+        }),
+    }[args])
+    base = dict(ssh_identity=identity, desktop_update=None, server_only=True, skip_tests=True,
+                output_dir=tmp_path, public_url='https://hdgl.cc.cd', signed_desktop=False,
+                allow_dirty=True, known_hosts=missing_kh)
+    with pytest.raises(RuntimeError, match='known_hosts'):
+        release.release(argparse.Namespace(**base))
+
+    known_hosts = tmp_path / 'known_hosts'
+    known_hosts.touch()
+    base['known_hosts'] = known_hosts
+    monkeypatch.setattr(release, 'remote_output', lambda *args: (_ for _ in ()).throw(RuntimeError('已到达远端预检')))
+    with pytest.raises(RuntimeError, match='已到达远端预检'):
+        release.release(argparse.Namespace(**base))
+    record = json.loads(next(tmp_path.glob('*/release.json')).read_text())
+    assert record['version'] == '9.9.9'
 
 
 @pytest.mark.parametrize(('flags', 'expected'), [
