@@ -557,13 +557,29 @@ class ConfigStore:
         """管理员本人使用的 1688 方案；普通用户固定使用万邦，未设置时默认企业自用应用。"""
         return self.shared_config._db.runtime_secret("enterprise_applications", "active", {}).get("alibaba_api_application", "alibaba")
 
+    def gemini_canvas_url(self) -> str:
+        """管理员统一配置的 Google Gemini Canvas 修图项目地址；所有账号共享。"""
+        from erp_shared.browser_ai import DEFAULT_GEMINI_CANVAS_URL, normalize_canvas_url
+
+        saved = str(
+            self.shared_config._db.runtime_secret("enterprise_applications", "active", {}).get("gemini_canvas_url") or ""
+        ).strip()
+        candidate = saved or os.environ.get("ERP_GEMINI_CANVAS_URL", "").strip()
+        if candidate:
+            try:
+                return normalize_canvas_url(candidate)
+            except ValueError:
+                pass
+        return DEFAULT_GEMINI_CANVAS_URL
+
     def managed_settings(self) -> dict:
         owner = self.shared_config
         applications = {provider: owner.enterprise_application(provider)
                         for provider in ("alibaba", "alibaba_crossborder", "onebound", "crossborderbus")}
         rates = {key: owner.load_app_config()["pricing_defaults"][key] for key in EXCHANGE_RATE_FIELDS}
         selected = owner.alibaba_api_application()
-        revision = hashlib.sha256(json.dumps([applications, rates, selected], sort_keys=True).encode()).hexdigest()
+        canvas_url = owner.gemini_canvas_url()
+        revision = hashlib.sha256(json.dumps([applications, rates, selected, canvas_url], sort_keys=True).encode()).hexdigest()
         public = {provider: {"app_key": value.get("app_key", ""), "redirect_uri": value.get("redirect_uri", ""),
                              "secret_configured": bool(value.get("app_secret"))}
                   for provider, value in applications.items() if provider in {"alibaba", "alibaba_crossborder"}}
@@ -572,7 +588,8 @@ class ConfigStore:
                               "initial_grant": self._normalize_onebound_initial_grant(applications["onebound"].get("initial_grant"))}
         return {"ok": True, "revision": revision, "exchange_rates": rates, **public,
                 "alibaba_api_application": selected,
-                "crossborderbus_secret_configured": bool(applications["crossborderbus"].get("client_secret"))}
+                "crossborderbus_secret_configured": bool(applications["crossborderbus"].get("client_secret")),
+                "gemini_canvas_url": canvas_url}
 
     def save_managed_settings(self, incoming: dict) -> dict:
         request = ManagedSettingsRequest.model_validate(incoming)
@@ -608,6 +625,11 @@ class ConfigStore:
                         value["credential_generation"] = uuid4().hex
                 applications[provider] = value
             applications["alibaba_api_application"] = request.alibaba_api_application or owner.alibaba_api_application()
+            if request.gemini_canvas_url is not None:
+                if request.gemini_canvas_url:
+                    applications["gemini_canvas_url"] = request.gemini_canvas_url
+                else:
+                    applications.pop("gemini_canvas_url", None)
             config = owner.load_app_config()
             # 旧汇率表没有来源字段，接管配置时先归属到原 API，避免换地址后复用。
             owner._db.set_runtime_secret("exchange_rates", "source", config["pricing_defaults"]["exchange_rate_api_url"], only_if_missing=True)
@@ -713,7 +735,10 @@ class ConfigStore:
                         field: template[field] for field in ai_model_config.SYSTEM_CONNECTION_FIELDS
                     }})
                 config["ai_models"] = [*system_rows, *stored.values()]
-            config["ai_models"] = ai_model_config.ensure_fixed_canvas_model(config["ai_models"])
+            config["ai_models"] = ai_model_config.ensure_fixed_canvas_model(
+                config["ai_models"],
+                canvas_url=self.gemini_canvas_url(),
+            )
             return config
 
     def check_system_models(self, models) -> list[dict]:
@@ -784,6 +809,14 @@ class ConfigStore:
             )}
             if self.managed_models is not None:
                 config["ai_models"] = self.check_system_models(config.get("ai_models"))
+            if isinstance(config.get("ai_models"), list):
+                # 管理员共享的 Gemini Canvas 项目地址只保存在根库，不落盘到个人 app_config.json。
+                config["ai_models"] = [
+                    {key: value for key, value in row.items() if key != "canvas_url"}
+                    if isinstance(row, dict) and "canvas_url" in row
+                    else row
+                    for row in config["ai_models"]
+                ]
             if self.shared_config is not self:
                 defaults = self.default_app_config()
                 config["forbidden_categories"] = defaults["forbidden_categories"]
@@ -864,6 +897,16 @@ class ConfigStore:
     def _merge_client_ai_config(self, current, incoming):
         if self.managed_models is not None and "ai_models" in incoming:
             incoming = {**incoming, "ai_models": self.check_system_models(incoming["ai_models"])}
+        if isinstance(incoming.get("ai_models"), list):
+            incoming = {
+                **incoming,
+                "ai_models": [
+                    {key: value for key, value in row.items() if key != "canvas_url"}
+                    if isinstance(row, dict) and "canvas_url" in row
+                    else row
+                    for row in incoming["ai_models"]
+                ],
+            }
         desktop_connected = bool(current_desktop_connection())
         if desktop_connected and "ai_models" in incoming and isinstance(incoming.get("ai_models"), list):
             current_canvas = next((row for row in current.get("ai_models", []) if row.get("canvas_managed")), None)

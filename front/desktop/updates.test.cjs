@@ -19,7 +19,7 @@ const installerUrl = 'https://release.example/desktop-updates/darwin-arm64/1.10.
 async function setup(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'desktop-updates-'))
   t.after(() => fs.rm(directory, { recursive: true, force: true }))
-  const state = { manifest: policy, answer: 1, messages: [], opened: [], revealed: [], native: false, fetched: [], downloads: 0 }
+  const state = { manifest: policy, answer: 1, messages: [], opened: [], revealed: [], native: false, fetched: [], downloads: 0, downloadKinds: [] }
   const native = new EventEmitter()
   native.setFeedURL = ({ url }) => { state.feed = url }
   native.checkForUpdates = async () => {
@@ -38,7 +38,7 @@ async function setup(t) {
     app: { getPath: () => directory, getVersion: () => '1.2.8' },
     dialog: { showMessageBox: async value => { state.messages.push(value); return { response: state.answer } } },
     shell: { openPath: async value => { state.opened.push(value); return '' }, showItemInFolder: value => state.revealed.push(value) },
-    showProgress: () => { state.downloads += 1; return { update() {}, close() {} } },
+    showProgress: (_cancel, kind) => { state.downloads += 1; state.downloadKinds.push(kind); return { update() {}, close() {} } },
     fetcher: async (url, options) => {
       state.fetched.push(url.href)
       assert.equal(options.redirect, 'error')
@@ -78,15 +78,17 @@ test('未签名 Mac 启动时校验并打开安装包，在业务会话中只定
   assert.equal(state.revealed.length, 1)
   assert.equal(state.revealed[0], state.opened[0])
   assert.equal(state.fetched.filter(url => url.endsWith('.dmg')).length, 1)
+  assert.deepEqual(state.downloadKinds, ['installer'])
 })
 
-test('已签名 Mac 启动前校验 ZIP，再由本机来源交给 Electron 安装', async t => {
+test('已签名 Mac 启动前校验 ZIP，再由本机来源交给 Electron 安装，不并排暴露 DMG 下载', async t => {
   const { create, state } = await setup(t)
   state.native = true
   state.answer = 0
   state.manifest = { ...policy, macZip }
   assert.equal(await create().startup(), 'installing')
-  assert.equal(state.messages[0].buttons[0], '下载并安装')
+  assert.deepEqual(state.messages[0].buttons, ['下载并安装', '稍后'])
+  assert.deepEqual(state.downloadKinds, ['update'])
   assert.match(state.feed, /^http:\/\/127\.0\.0\.1:\d+\/[a-f0-9]{48}\/feed$/)
   assert.deepEqual(state.nativeBytes, zipBytes)
   assert.equal(state.nativeFeed.sha256, macZip.sha256)
@@ -96,25 +98,31 @@ test('已签名 Mac 启动前校验 ZIP，再由本机来源交给 Electron 安�
   await assert.rejects(fetch(state.feed))
 })
 
-test('业务运行中下载 ZIP，新进程离线启动仍直接安装且不再次下载', async t => {
+test('业务运行中下载 ZIP，不暴露 DMG 按钮，新进程离线启动直接安装且不再次下载', async t => {
   const { create, state } = await setup(t)
   state.native = true
   state.answer = 0
   state.manifest = { ...policy, macZip }
   await create().manual()
-  assert.equal(state.messages[0].buttons[0], '下载更新')
+  assert.deepEqual(state.messages[0].buttons, ['下载更新', '稍后'])
+  assert.deepEqual(state.downloadKinds, ['update'])
   assert.equal(state.messages.at(-1).message, '更新已下载。')
   assert.equal(state.feed, undefined)
   assert.deepEqual(state.revealed, [])
 
-  state.answer = 1
+  state.answer = 0
   await create().manual()
   assert.equal(state.messages.at(-1).message, '桌面新版 1.10.0 已下载')
-  assert.equal(state.messages.at(-1).buttons[state.messages.at(-1).defaultId], '知道了')
+  assert.deepEqual(state.messages.at(-1).buttons, ['知道了'])
+  assert.equal(state.messages.at(-1).defaultId, 0)
+  assert.equal(state.messages.at(-1).cancelId, 0)
+  assert.deepEqual(state.revealed, [])
+  assert.equal(state.fetched.filter(url => url.endsWith('.dmg')).length, 0)
+
   state.answer = 0
   state.manifest = null
   assert.equal(await create().startup(), 'installing')
-  assert.equal(state.messages.at(-1).buttons[0], '安装并重启')
+  assert.deepEqual(state.messages.at(-1).buttons, ['安装并重启', '稍后'])
   assert.deepEqual(state.fetched.filter(url => /\.(zip|dmg)$/.test(url)), [zipUrl])
   assert.equal(state.downloads, 1)
   assert.deepEqual(state.nativeBytes, zipBytes)

@@ -336,6 +336,7 @@ function normalizeAiModelRow(value: unknown, index: number): UnknownRecord {
     id: firstText(record.id, fallbackId),
     ...(record.system_managed === true ? { system_managed: true } : {}),
     ...(record.canvas_managed === true ? { canvas_managed: true } : {}),
+    ...(record.canvas_url ? { canvas_url: firstText(record.canvas_url) } : {}),
     local_connection_id: firstText(record.local_connection_id),
     local_config_fingerprint: firstText(record.local_config_fingerprint),
     name: firstText(record.name, record.id, `AI 模型 ${index + 1}`),
@@ -744,7 +745,8 @@ function aiPayload(bindings: UnknownRecord): UnknownRecord {
           row.browser_provider = 'gemini'
           row.browser_mode = BROWSER_MODE_MANAGED_PROFILE
           row.browser_profile = firstText(row.browser_profile, 'canvas')
-          row.browser_url = firstText(row.browser_url, 'https://gemini.google.com/share/a3adc37e7008')
+          row.browser_url = firstText(row.canvas_url, row.browser_url)
+          delete row.canvas_url
           row.capabilities = ['image_edit']
         } else {
           row.provider = firstText(row.provider, '浏览器 AI')
@@ -1826,6 +1828,7 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
               :local-operations="localOperations"
               :desktop-reason="desktopReason"
               :locked="aiControlsLocked"
+              :is-admin="Boolean(accountStore?.isAdmin)"
               @update-field="handleCanvasFieldUpdate"
               @accounts-updated="handleCanvasAccountsUpdated"
               @bind-image-translate="handleCanvasBindImageTranslate"

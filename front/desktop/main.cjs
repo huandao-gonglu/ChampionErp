@@ -427,13 +427,14 @@ async function createWindow() {
   await win.loadURL(url)
 }
 
-function showDownloadProgress(cancel) {
+function showDownloadProgress(cancel, kind = 'installer') {
+  const label = kind === 'update' ? '自动更新包' : '安装包'
   const progress = new BrowserWindow({
     width: 410, height: 145, resizable: false, autoHideMenuBar: true, title: '正在下载桌面更新',
     webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
   })
   const page = '<meta charset="utf-8"><style>body{font:15px system-ui;padding:8px 18px}</style>' +
-    '<p>正在下载安装包，完成后会校验文件。</p><p>关闭此窗口可取消下载。</p>'
+    `<p>正在下载${label}，完成后会校验文件。</p><p>关闭此窗口可取消下载。</p>`
   void progress.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(page)).catch(cancel)
   progress.once('closed', cancel)
   let percent = -1

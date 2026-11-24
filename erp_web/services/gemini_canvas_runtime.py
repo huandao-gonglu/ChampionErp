@@ -15,7 +15,19 @@ from . import image_service
 from erp_shared.browser_ai import CANVAS_PREVIEW_WAIT_SECONDS, is_canvas_model
 
 
+def _with_managed_canvas_url(model):
+    if not isinstance(model, dict) or not model.get('canvas_managed'):
+        return model
+    from erp_web.context import peek_context
+    ctx = peek_context()
+    url_getter = getattr(getattr(ctx, 'config', None), 'gemini_canvas_url', None) if ctx is not None else None
+    if not callable(url_getter):
+        return model
+    return {**model, 'canvas_url': url_getter()}
+
+
 def check_canvas_connection(app_dir, model, timeout=30, *, force_login=False):
+    model = _with_managed_canvas_url(model)
     try:
         return call_desktop('canvas.check', {'model': model, 'force_login': force_login, 'timeout_seconds': timeout},
                             timeout=timeout + 300 + CANVAS_PREVIEW_WAIT_SECONDS)
@@ -52,6 +64,7 @@ def canvas_accounts_status():
 
 def login_canvas_account(app_dir, model, *, profile='', force_login=False, check_only=False, timeout=45):
     del app_dir
+    model = _with_managed_canvas_url(model)
     wait_seconds = timeout + CANVAS_PREVIEW_WAIT_SECONDS + (0 if check_only else 300)
     try:
         return call_desktop(
@@ -93,7 +106,7 @@ class GeminiCanvasProvider(AiImageEditProvider):
             if path is None or path.stat().st_size > 20 * 1024 * 1024:
                 raise ValueError('Canvas 源图片不存在或超过 20 MB。')
             images.append({'id': str(item.get('id') or ''), 'data': base64.b64encode(path.read_bytes()).decode('ascii')})
-        result = call_desktop('canvas.edit', {'model': request.model, 'prompt': request.prompt,
+        result = call_desktop('canvas.edit', {'model': _with_managed_canvas_url(request.model), 'prompt': request.prompt,
             'images': images, 'mode': request.mode, 'count': request.count,
             'combine_references': request.combine_references, 'timeout_seconds': int(request.timeout_seconds)}, timeout=request.timeout_seconds + 300 + CANVAS_PREVIEW_WAIT_SECONDS)
         from io import BytesIO

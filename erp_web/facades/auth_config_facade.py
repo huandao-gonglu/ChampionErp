@@ -188,9 +188,14 @@ def _resolve_canvas_model_for_auth(body: dict[str, Any]) -> dict[str, Any]:
     from erp_web.services import ai_model_config
     from erp_web.services.desktop_model_config_service import prepare_local_model
 
+    managed_url = get_context().config.gemini_canvas_url()
     incoming = body.get("model") if isinstance(body.get("model"), dict) else None
     if incoming is not None:
-        return ai_model_config.normalize_ai_model(prepare_local_model(incoming))
+        normalized = ai_model_config.normalize_ai_model(prepare_local_model(incoming))
+        if normalized.get("canvas_managed") or ai_model_config.is_canvas_model(normalized):
+            normalized["canvas_managed"] = True
+            normalized["canvas_url"] = managed_url
+        return normalized
     config = load_app_config()
     model_id = str(body.get("model_id") or "").strip()
     models = config.get("ai_models") if isinstance(config.get("ai_models"), list) else []
@@ -202,8 +207,8 @@ def _resolve_canvas_model_for_auth(body: dict[str, Any]) -> dict[str, Any]:
         None,
     )
     if target is None or not ai_model_config.is_canvas_model(target):
-        return ai_model_config.fixed_canvas_model()
-    return target
+        return ai_model_config.fixed_canvas_model(canvas_url=managed_url)
+    return {**target, "canvas_managed": True, "canvas_url": managed_url}
 
 
 def canvas_account_login_payload(body: dict[str, Any]) -> ResponseWithStatus:

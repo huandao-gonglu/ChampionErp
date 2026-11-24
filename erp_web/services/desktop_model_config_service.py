@@ -28,5 +28,16 @@ def local_models_view(models):
     if not current_desktop_connection():
         return models
     local = call_desktop('config.read', timeout=15)['models']
-    return [{**model, **resolve_local_settings(model, local.get(str(model.get('local_connection_id') or model.get('id') or '')))}
-            if model.get('connection_type') in {'browser', 'cli'} else model for model in models]
+    result = []
+    for model in models:
+        if model.get('connection_type') not in {'browser', 'cli'}:
+            result.append(model)
+            continue
+        reference = str(model.get('local_connection_id') or model.get('id') or '')
+        saved = local.get(reference)
+        resolved = resolve_local_settings(model, saved)
+        merged = {**model, **resolved}
+        if merged.get('canvas_managed') and merged.get('canvas_url') and (saved is not None or 'browser_url' in resolved):
+            merged['browser_url'] = merged['canvas_url']
+        result.append(merged)
+    return result

@@ -8,7 +8,12 @@ import os
 from typing import Any
 
 from erp_shared.desktop import LOCAL_MODEL_FIELDS, local_configuration_fingerprint
-from erp_shared.browser_ai import canvas_connection_defaults, is_canvas_model
+from erp_shared.browser_ai import (
+    DEFAULT_GEMINI_CANVAS_URL,
+    canvas_connection_defaults,
+    is_canvas_model,
+    normalize_canvas_url,
+)
 from . import ai_generation_settings, ai_provider_catalog
 from erp_shared.browser_connection_config import normalize_browser_proxy
 from erp_web.schemas.config import AiBrowserPreset
@@ -334,10 +339,19 @@ def managed_newapi_models(internal_url: str, saved_models=()) -> list[dict[str, 
     return models
 
 
-def fixed_canvas_model(saved: dict[str, Any] | None = None) -> dict[str, Any]:
-    """内置固定的 Gemini Canvas 修图模型；不可删除，本地代理和 Google 登录态由桌面端维护。"""
+def fixed_canvas_model(
+    saved: dict[str, Any] | None = None,
+    *,
+    canvas_url: str = "",
+) -> dict[str, Any]:
+    """内置固定的 Gemini Canvas 修图模型；不可删除，项目地址由管理员统一配置，代理和登录态由桌面端维护。"""
     defaults = canvas_connection_defaults()
     existing = saved if isinstance(saved, dict) else {}
+    effective_canvas_url = (
+        normalize_canvas_url(canvas_url)
+        if str(canvas_url or "").strip()
+        else DEFAULT_GEMINI_CANVAS_URL
+    )
     model_id = str(existing.get("id") or CANVAS_FIXED_MODEL_ID).strip() or CANVAS_FIXED_MODEL_ID
     local_id = str(existing.get("local_connection_id") or model_id).strip() or model_id
     fingerprint = str(existing.get("local_config_fingerprint") or "").strip() or local_configuration_fingerprint(defaults)
@@ -360,6 +374,7 @@ def fixed_canvas_model(saved: dict[str, Any] | None = None) -> dict[str, Any]:
         "timeout_seconds": existing.get("timeout_seconds") or 180,
         "enabled": existing.get("enabled", True) is not False,
         "canvas_managed": True,
+        "canvas_url": effective_canvas_url,
     }
     for local_field in ("browser_mode", "browser_profile", "browser_port", "browser_url", "browser_proxy"):
         if local_field in existing:
@@ -369,7 +384,11 @@ def fixed_canvas_model(saved: dict[str, Any] | None = None) -> dict[str, Any]:
     return row
 
 
-def ensure_fixed_canvas_model(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def ensure_fixed_canvas_model(
+    models: list[dict[str, Any]],
+    *,
+    canvas_url: str = "",
+) -> list[dict[str, Any]]:
     """确保模型列表中始终存在内置固定的 Gemini Canvas 条目，并平滑承接历史配置。"""
     rows = [dict(row) for row in (models or []) if isinstance(row, dict)]
     index = next(
@@ -379,14 +398,17 @@ def ensure_fixed_canvas_model(models: list[dict[str, Any]]) -> list[dict[str, An
     if index is None:
         index = next((idx for idx, row in enumerate(rows) if is_canvas_model(row)), None)
     if index is not None:
-        rows[index] = fixed_canvas_model(rows[index])
+        rows[index] = fixed_canvas_model(rows[index], canvas_url=canvas_url)
         return rows
-    rows.append(fixed_canvas_model())
+    rows.append(fixed_canvas_model(canvas_url=canvas_url))
     return rows
 
 
-def browser_model_presets() -> list[AiBrowserPreset]:
+def browser_model_presets(*, canvas_url: str = "") -> list[AiBrowserPreset]:
     """可重复添加的网页连接模板，不包含用户登录、代理或能力测试结果。"""
+    defaults = canvas_connection_defaults()
+    if str(canvas_url or "").strip():
+        defaults = {**defaults, "browser_url": normalize_canvas_url(canvas_url)}
     return [{
         "id": "gemini_canvas",
         "label": "Gemini Canvas",
@@ -395,7 +417,7 @@ def browser_model_presets() -> list[AiBrowserPreset]:
         "model": {
             "id": CANVAS_FIXED_MODEL_ID, "name": "Gemini Canvas 修图",
             "connection_type": CONNECTION_TYPE_BROWSER, "provider": "Gemini Canvas",
-            "browser_provider": "gemini", **canvas_connection_defaults(),
+            "browser_provider": "gemini", **defaults,
             "model": "", "timeout_seconds": 180, "capabilities": [CAP_IMAGE_EDIT], "enabled": True,
             "canvas_managed": True,
         },
@@ -509,6 +531,9 @@ def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
     if connection_type == CONNECTION_TYPE_BROWSER and raw.get("canvas_managed") is True:
         normalized["canvas_managed"] = True
         normalized["capabilities"] = [CAP_IMAGE_EDIT]
+        canvas_url = str(raw.get("canvas_url") or "").strip()
+        if canvas_url:
+            normalized["canvas_url"] = normalize_canvas_url(canvas_url)
     if connection_type in {CONNECTION_TYPE_CLI, CONNECTION_TYPE_BROWSER} and raw.get('local_connection_id'):
         normalized['local_connection_id'] = str(raw['local_connection_id'])
         normalized['local_config_fingerprint'] = str(raw.get('local_config_fingerprint') or '')
@@ -881,13 +906,17 @@ def public_ai_config(app_config: dict[str, Any] | None) -> dict[str, Any]:
                 public.pop(field, None)
         public.pop("api_key", None)
         models.append(public)
+    managed_canvas_url = next(
+        (str(row.get("canvas_url") or "").strip() for row in normalized if row.get("canvas_managed") and row.get("canvas_url")),
+        "",
+    )
     return {
         "ai_models": models,
         "ai_use_case_bindings": normalize_ai_use_case_bindings(config.get("ai_use_case_bindings")),
         "ai_use_cases": list(AI_USE_CASES.values()),
         "connection_types": list(AI_CONNECTION_TYPES),
         "browser_modes": list(AI_BROWSER_MODES),
-        "browser_presets": browser_model_presets(),
+        "browser_presets": browser_model_presets(canvas_url=managed_canvas_url),
         "capabilities": list(AI_MODEL_CAPABILITIES),
         "api_styles": list(AI_API_STYLES),
         "providers": ai_provider_catalog.public_provider_catalog(),

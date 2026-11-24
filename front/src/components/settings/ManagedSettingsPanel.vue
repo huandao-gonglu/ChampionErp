@@ -63,6 +63,7 @@ async function save() {
         ...(secrets.value.onebound.trim() ? { api_secret: secrets.value.onebound.trim() } : {}),
       },
       ...(secrets.value.crossborderbus.trim() ? { crossborderbus_client_secret: secrets.value.crossborderbus.trim() } : {}),
+      gemini_canvas_url: value.gemini_canvas_url,
     })
     secrets.value = { alibaba: '', alibaba_crossborder: '', onebound: '', crossborderbus: '' }
     notice.value = '共享设置已保存'
@@ -146,6 +147,31 @@ onMounted(load)
             {{ operation === 'restore' ? '恢复中…' : '已处理，恢复使用' }}
           </button>
         </div>
+      </section>
+      <section class="space-y-4 rounded-lg border border-accent-200 p-4 dark:border-dark-700" aria-label="Google Gemini Canvas 配置">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <h4 class="font-semibold">Google Gemini Canvas 修图项目</h4>
+          <button
+            type="button"
+            data-testid="reset-gemini-canvas-url"
+            class="btn btn-outline py-1 text-xs"
+            @click="settings.gemini_canvas_url = ''; notice = ''"
+          >
+            恢复默认地址
+          </button>
+        </div>
+        <p class="muted text-sm">所有账号内置的 Gemini Canvas 修图通道共用此项目分享页地址。保存后全员自动生效，无需重新配置本机代理；留空保存将恢复默认地址。</p>
+        <label class="block text-sm">修图项目地址
+          <input
+            v-model="settings.gemini_canvas_url"
+            data-testid="managed-gemini-canvas-url"
+            type="url"
+            maxlength="2048"
+            placeholder="https://gemini.google.com/share/..."
+            class="input mt-2 w-full"
+          />
+        </label>
+        <p class="muted text-xs">仅支持 https://gemini.google.com/share/... 或 https://gemini.google.com/app/... 地址。</p>
       </section>
       <section class="space-y-4 rounded-lg border border-accent-200 p-4 dark:border-dark-700">
         <h4 class="font-semibold">跨境巴士企业应用</h4>

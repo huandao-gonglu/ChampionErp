@@ -29,7 +29,7 @@ const tabs = computed(() => [
   { key: 'watermark', label: '图片水印', summary: '发布水印、文字与自定义图片' },
   { key: 'forbidden_categories', label: '禁售类目', summary: '导入 Yandex 禁售名单并在预检时拦截' },
   { key: 'tariffs', label: '国际物流运费表', summary: 'FBS 默认费率、个人导入与版本升级' },
-  ...(account.isAdmin ? [{ key: 'managed', label: '管理员共享设置', summary: '企业应用凭据与汇率 API' }] as const : []),
+  ...(account.isAdmin ? [{ key: 'managed', label: '管理员共享设置', summary: '企业应用凭据、汇率 API 与 Canvas 项目地址' }] as const : []),
   { key: 'yandex_warehouses', label: 'Yandex 发布仓库', summary: '同步远端仓库并指定运输模式' },
   { key: 'about', label: '关于', summary: '版本信息、开源许可证、软件许可与服务协议、隐私政策' },
 ] as const)

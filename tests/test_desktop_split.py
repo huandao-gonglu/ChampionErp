@@ -326,6 +326,35 @@ def test_missing_canvas_connection_uses_only_matching_public_preset(tmp_path, mo
         config.model(binding)
 
 
+def test_managed_canvas_url_from_admin_overrides_local_url_without_breaking_fingerprint(tmp_path):
+    from desktop_runtime.config import LocalConfig
+    from erp_shared.desktop import local_configuration_fingerprint
+
+    config = LocalConfig(tmp_path)
+    saved_fields = {
+        "browser_mode": "managed_profile",
+        "browser_profile": "canvas",
+        "browser_proxy": "http://127.0.0.1:7890",
+        "browser_url": "https://gemini.google.com/share/old-local",
+    }
+    config.update({"gemini_canvas_browser": saved_fields})
+    model_binding = {
+        "id": "gemini_canvas_browser",
+        "connection_type": "browser",
+        "browser_provider": "gemini",
+        "canvas_managed": True,
+        "canvas_url": "https://gemini.google.com/share/admin-updated-v2",
+        "local_connection_id": "gemini_canvas_browser",
+        "local_config_fingerprint": local_configuration_fingerprint(saved_fields),
+    }
+    effective = config.model(model_binding)
+    assert effective["browser_url"] == "https://gemini.google.com/share/admin-updated-v2"
+    assert effective["browser_proxy"] == "http://127.0.0.1:7890"
+
+    with pytest.raises(ValueError, match="Gemini Canvas"):
+        config.model({**model_binding, "canvas_url": "https://untrusted.test/share/evil"})
+
+
 def _delegation_context(monkeypatch, broker):
     from types import SimpleNamespace
     import erp_web.context as context_module

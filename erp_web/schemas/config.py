@@ -39,6 +39,7 @@ class AiModelConfig(TypedDict, total=False):
     timeout_seconds: int
     thinking_enabled: bool  # 缺省时沿用高级请求配置或服务商默认。
     canvas_managed: bool
+    canvas_url: str
     local_connection_id: str
     local_config_fingerprint: str
     browser_provider: str

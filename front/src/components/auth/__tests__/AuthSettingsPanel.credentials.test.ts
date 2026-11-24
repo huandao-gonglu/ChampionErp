@@ -133,6 +133,7 @@ describe('AuthSettingsPanel 固定 Gemini Canvas 多账号与桌面交接', () =
     id: 'gemini_canvas_browser', name: 'Gemini Canvas 修图', connection_type: 'browser',
     browser_provider: 'gemini', browser_mode: 'managed_profile', browser_profile: 'canvas',
     browser_port: '', browser_proxy: '', browser_url: 'https://gemini.google.com/share/example',
+    canvas_url: 'https://gemini.google.com/share/example',
     provider: 'Gemini Canvas', model: '', capabilities: ['image_edit'], enabled: true, canvas_managed: true,
   }
   const preset = {
@@ -179,6 +180,8 @@ describe('AuthSettingsPanel 固定 Gemini Canvas 多账号与桌面交接', () =
       expect(btn('复制当前模型').element.disabled).toBe(true)
       expect(wrapper.get('[data-testid="gemini-canvas-panel"]').text()).toContain('alice@gmail.com')
       expect(wrapper.get('[data-testid="gemini-canvas-panel"]').text()).toContain('bob@gmail.com')
+      expect(wrapper.get('[data-testid="canvas-managed-url"]').text()).toBe('https://gemini.google.com/share/example')
+      expect(wrapper.find('[data-testid="canvas-open-managed-settings"]').exists()).toBe(false)
 
       await wrapper.get('[data-testid="canvas-logout-acct_a"]').trigger('click')
       await flushPromises()
@@ -200,6 +203,7 @@ describe('AuthSettingsPanel 固定 Gemini Canvas 多账号与桌面交接', () =
       expect(savedCanvas).toMatchObject({
         canvas_managed: true, browser_provider: 'gemini', browser_proxy: 'http://127.0.0.1:7890', capabilities: ['image_edit'],
       })
+      expect(savedCanvas).not.toHaveProperty('canvas_url')
     } finally {
       logoutSpy.mockRestore()
       toggleSpy.mockRestore()

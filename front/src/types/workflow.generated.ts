@@ -145,6 +145,7 @@ export interface BackendManagedSettings {
   onebound: BackendPublicOneBoundApplication
   alibaba_api_application: "alibaba" | "alibaba_crossborder" | "onebound"
   crossborderbus_secret_configured: boolean
+  gemini_canvas_url: string
 }
 
 export interface BackendTariffVersion {
@@ -702,6 +703,7 @@ export interface BackendAiModelConfig {
   timeout_seconds?: number
   thinking_enabled?: boolean
   canvas_managed?: boolean
+  canvas_url?: string
   local_connection_id?: string
   local_config_fingerprint?: string
   browser_provider?: string

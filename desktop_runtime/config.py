@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 from threading import RLock
-from erp_shared.browser_ai import resolve_local_settings
+from erp_shared.browser_ai import normalize_canvas_url, resolve_local_settings
 from erp_shared.desktop import LOCAL_MODEL_FIELDS, local_configuration_fingerprint
 
 
@@ -44,7 +44,8 @@ class LocalConfig:
         reference = str(model.get('local_connection_id') or model.get('id') or '')
         business_fields = {'id', 'name', 'connection_type', 'provider', 'browser_provider', 'cli_tool',
                            'model', 'timeout_seconds', 'capabilities', 'capability_profiles',
-                           'local_connection_id', 'local_config_fingerprint', 'enabled'}
+                           'local_connection_id', 'local_config_fingerprint', 'enabled',
+                           'canvas_managed', 'canvas_url'}
         business = {k: v for k, v in model.items() if k in business_fields}
         saved = self.read().get(reference)
         local = resolve_local_settings(business, saved)
@@ -53,4 +54,8 @@ class LocalConfig:
             if saved is None:
                 raise ValueError('当前桌面尚未配置此模型的本机连接，请在系统设置中配置、测试并保存模型。')
             raise ValueError('本机连接配置已变化，请在当前桌面重新测试并保存模型。')
-        return {**business, **local}
+        result = {**business, **local}
+        if business.get('canvas_managed') and business.get('canvas_url'):
+            # 内置 Gemini Canvas 项目地址由管理员统一配置，桌面端严格校验域名白名单后生效。
+            result['browser_url'] = normalize_canvas_url(business['canvas_url'])
+        return result

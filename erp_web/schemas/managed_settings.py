@@ -5,6 +5,8 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from erp_shared.browser_ai import normalize_canvas_url
+
 EXCHANGE_RATE_FIELDS = (
     "exchange_rate_api_url", "exchange_rate_timeout_seconds", "exchange_rate_cache_ttl_seconds",
 )
@@ -42,6 +44,7 @@ class ManagedSettings(TypedDict):
     onebound: PublicOneBoundApplication
     alibaba_api_application: AlibabaApplicationType
     crossborderbus_secret_configured: bool
+    gemini_canvas_url: str
 
 
 class TariffVersion(TypedDict):
@@ -176,6 +179,14 @@ class ManagedSettingsRequest(BaseModel):
     onebound: OneBoundApplicationSettings | None = None
     alibaba_api_application: AlibabaApplicationType | None = None
     crossborderbus_client_secret: str | None = Field(default=None, max_length=4096)
+    gemini_canvas_url: str | None = Field(default=None, max_length=2048)
+
+    @field_validator("gemini_canvas_url")
+    @classmethod
+    def valid_gemini_canvas_url(cls, value):
+        if value is None:
+            return None
+        return normalize_canvas_url(value, allow_empty=True)
 
 
 class TariffImportRequest(BaseModel):

@@ -22,6 +22,7 @@ def clean_enterprise_environment(monkeypatch):
         for name in ('APP_KEY', 'APP_SECRET', 'REDIRECT_URI'):
             monkeypatch.delenv(prefix + name, raising=False)
     monkeypatch.delenv('ERP_CROSSBORDERBUS_CLIENT_SECRET', raising=False)
+    monkeypatch.delenv('ERP_GEMINI_CANVAS_URL', raising=False)
 
 
 def settings_body(client, url):
@@ -364,3 +365,55 @@ def test_rate_test_aliases_always_use_the_managed_api(kind, monkeypatch):
         'exchange_rate_api_url': 'https://user-controlled.example/rates'}})
     assert status == 200 and result['ok']
     assert calls == [configured]
+
+
+def test_admin_gemini_canvas_url_is_shared_validated_and_resettable(accounts_http):
+    from erp_shared.browser_ai import DEFAULT_GEMINI_CANVAS_URL
+
+    url, runtime, login = accounts_http
+    admin = login()
+    user = register(url)
+    client = login('user@example.com')
+
+    body = settings_body(admin, url)
+    assert body['gemini_canvas_url'] == DEFAULT_GEMINI_CANVAS_URL
+
+    # 非法或非 Gemini 域名地址被拒绝。
+    for bad_url in (
+        'https://evil.example/share/abc',
+        'http://gemini.google.com/share/abc',
+        'https://gemini.google.com/app',
+        'https://gemini.google.com/share/',
+    ):
+        invalid = deepcopy(body)
+        invalid['gemini_canvas_url'] = bad_url
+        assert admin.post(url + '/api/admin/settings', json=invalid).status_code == 400
+
+    # 管理员更新后，全员配置与公开 AI 配置立即生效，且不落盘到个人 app_config.json。
+    updated_url = 'https://gemini.google.com/share/team-canvas-v2'
+    body['gemini_canvas_url'] = updated_url
+    saved = post_settings(admin, url, body)
+    assert saved['gemini_canvas_url'] == updated_url
+    assert client.post(url + '/api/admin/settings', json=body).status_code == 403
+
+    user_ctx = runtime.context_for(next(row for row in runtime.store.users() if row['id'] == user['id']))
+    user_canvas = next(m for m in user_ctx.config.load_app_config()['ai_models'] if m.get('canvas_managed'))
+    assert user_canvas['canvas_url'] == updated_url
+
+    public_ai = client.get(url + '/api/ai-config').json()['config']
+    public_canvas = next(m for m in public_ai['ai_models'] if m.get('canvas_managed'))
+    assert public_canvas['canvas_url'] == updated_url
+
+    personal = user_ctx.config.load_app_config()
+    user_ctx.config.save_app_config(personal)
+    raw = json.loads(user_ctx.paths.app_config_path.read_text())
+    assert all('canvas_url' not in m for m in raw['ai_models'])
+
+    # 省略字段时保留当前管理员配置，传空字符串恢复默认地址。
+    keep_body = settings_body(admin, url)
+    keep_body.pop('gemini_canvas_url')
+    assert post_settings(admin, url, keep_body)['gemini_canvas_url'] == updated_url
+
+    reset_body = settings_body(admin, url)
+    reset_body['gemini_canvas_url'] = ''
+    assert post_settings(admin, url, reset_body)['gemini_canvas_url'] == DEFAULT_GEMINI_CANVAS_URL

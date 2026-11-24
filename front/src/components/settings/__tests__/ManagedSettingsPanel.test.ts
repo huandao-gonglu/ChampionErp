@@ -15,6 +15,7 @@ const saved: ManagedSettings = {
   alibaba_crossborder: { app_key: '', redirect_uri: '', secret_configured: false },
   onebound: { api_key: '', secret_configured: false, initial_grant: 200 },
   crossborderbus_secret_configured: true,
+  gemini_canvas_url: 'https://gemini.google.com/share/a3adc37e7008',
 }
 beforeEach(() => {
   vi.clearAllMocks()
@@ -137,4 +138,26 @@ it('万邦企业 Key 停用时展示恢复按钮，点击后恢复使用', async
   await flushPromises()
   expect(restoreOneBoundKey).toHaveBeenCalledTimes(1)
   expect(wrapper.text()).toContain('已恢复万邦企业 Key 使用')
+})
+
+it('管理员可修改并恢复默认 Google Gemini Canvas 修图项目地址', async () => {
+  const wrapper = mount(ManagedSettingsPanel, { attachTo: document.body })
+  await flushPromises()
+  const input = wrapper.get('[data-testid="managed-gemini-canvas-url"]')
+  expect((input.element as HTMLInputElement).value).toBe('https://gemini.google.com/share/a3adc37e7008')
+
+  const nextUrl = 'https://gemini.google.com/share/new-canvas-999'
+  vi.mocked(saveManagedSettings).mockResolvedValueOnce({ ...saved, revision: 'revision-2', gemini_canvas_url: nextUrl })
+  await input.setValue(nextUrl)
+  await wrapper.get('form').trigger('submit')
+  await flushPromises()
+  expect(saveManagedSettings).toHaveBeenCalledWith(expect.objectContaining({ gemini_canvas_url: nextUrl }))
+
+  vi.mocked(saveManagedSettings).mockResolvedValueOnce({ ...saved, revision: 'revision-3' })
+  await wrapper.get('[data-testid="reset-gemini-canvas-url"]').trigger('click')
+  expect((input.element as HTMLInputElement).value).toBe('')
+  await wrapper.get('form').trigger('submit')
+  await flushPromises()
+  expect(saveManagedSettings).toHaveBeenLastCalledWith(expect.objectContaining({ revision: 'revision-2', gemini_canvas_url: '' }))
+  expect((input.element as HTMLInputElement).value).toBe('https://gemini.google.com/share/a3adc37e7008')
 })

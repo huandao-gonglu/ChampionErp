@@ -103,7 +103,7 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 ### 管理员共享设置与个人费率
 
 - `AccountRuntime.context_for` 将每个空间的 `ConfigStore.shared_config` 和 `AppContext.shared_paths` 绑定到根配置与路径，客户端不能选择共享 owner。仅汇率 API 配置、禁售名单和企业应用使用此共享来源。个人核价模板、手动汇率、店铺授权与 Mercado 应用配置仍由个人持有。
-- GET/POST `/api/admin/settings` 经 `managed_settings_facade`、`schemas/managed_settings.py` 和 `ConfigStore.managed_settings/save_managed_settings` 管理企业应用及汇率 API；请求带配置 revision，冲突拒绝整次更新。企业密钥只返回是否配置。通用设置和 AI 设置不能改写汇率 API，普通配置视图不下发该地址；汇率缓存记录来源，切换 API 不复用旧来源缓存。
+- GET/POST `/api/admin/settings` 经 `managed_settings_facade`、`schemas/managed_settings.py` 和 `ConfigStore.managed_settings/save_managed_settings` 管理企业应用、汇率 API 与共享 Gemini Canvas 修图项目地址（`gemini_canvas_url`）；请求带配置 revision，冲突拒绝整次更新。企业密钥只返回是否配置。通用设置和 AI 设置不能改写汇率 API 或共享 Canvas 地址，普通配置视图不下发汇率地址；汇率缓存记录来源，切换 API 不复用旧来源缓存。
 - `AppContext.tariffs` 装配 `TariffSettingsService`。共享费率位于根 `data/tariffs`，普通用户覆盖位于其空间 `data/tariffs`，根管理员的个人覆盖位于 `data/personal-tariffs`。按平台选择来源，未自定义者自动跟随；自定义表记录 `customized_from`，管理员版本改变时提示更新，用户显式确认覆盖后恢复跟随，原版本文件保留。
 - GET `/api/shipping/tariffs`、POST `/import` 与 `/upgrade` 位于 `pricing_workspace_routes`。仅管理员可写 shared scope，所有用户可写 personal scope。导入复用模块 XLSX 解析和差异比较，限制文件/解压大小，校验表头、单位、明确数值和完整规则，失败保留生效版本。预览后显式发布，写入与升级均核对预期版本，尚未生效日期拒绝发布。
 - 核价 `ShippingModule`、Yandex 发布仓运输模式和 `draft_pricing._pricing_environment` 使用同一份有效费率来源；单次核价固定快照，更新后旧预览须重算。发布校验会比较已保存报价的运费版本与当前有效版本，单次 SKU 批次由 `PublishValidationSession` 固定版本读取，历史报价保留展示。当前导入支持 Yandex FBS 与 Ozon OGL，Mercado 按个人店铺授权调用远端试算。
@@ -178,7 +178,7 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 前端 `modelRequiresDesktop` 据此直接提交；没有或多台在线桌面时仍走桌面交接。AI 工具、审批恢复与
 `/api/image-processing/continue` 不使用代执行。回归见 `tests/test_desktop_split.py`。
 
-Gemini Canvas 作为内置固定不可删模型（`gemini_canvas_browser`，`canvas_managed=True`，自动匹配跳过，需显式绑定到 `image.translate`）展示于「授权配置 → AI 模型」左侧列表。Electron `embedded-browser.cjs` 按 ERP 账号哈希持久化多 Google 账号分区与元数据（兼容承接旧 `canvas` 分区，空闲保活 5 分钟），桌面端提供 `canvas.accounts` / `canvas.account.login` / `canvas.account.logout` / `canvas.account.toggle` 与后端 `/api/ai-config/canvas/account-{login,logout,toggle}`；登录态校验提取 Google 邮箱与名称，取消登录先核对任务未占用再彻底清空对应分区存储；多启用账号按可用数并行（上限 3 路）并在 429/401 时轮换与冷却；Canvas 请求过滤 `thought` 中间图并在单图模式收敛至最后一张有效终图，兼容中英文共享应用确认弹窗、HTTP 401 非 JSON 自动重登与 `AbortSignal.timeout`。网页端只读展示在线桌面账号摘要，任何配置/账号操作均经 `launchDesktop` 唤起桌面端。
+Gemini Canvas 作为内置固定不可删模型（`gemini_canvas_browser`，`canvas_managed=True`，自动匹配跳过，需显式绑定到 `image.translate`）展示于「授权配置 → AI 模型」左侧列表；其修图项目地址（`canvas_url`）由管理员在「系统设置 → 管理员共享设置」（`/api/admin/settings`）统一维护并经根库 `ConfigStore.gemini_canvas_url()` 下发，桌面端 `LocalConfig.model()` 经 `erp_shared.browser_ai.normalize_canvas_url` 白名单校验后生效（不破坏用户本机代理的 `local_config_fingerprint`）。Electron `embedded-browser.cjs` 按 ERP 账号哈希持久化多 Google 账号分区与元数据（兼容承接旧 `canvas` 分区，空闲保活 5 分钟），桌面端提供 `canvas.accounts` / `canvas.account.login` / `canvas.account.logout` / `canvas.account.toggle` 与后端 `/api/ai-config/canvas/account-{login,logout,toggle}`；登录态校验提取 Google 邮箱与名称，取消登录先核对任务未占用再彻底清空对应分区存储；多启用账号按可用数并行（上限 3 路）并在 429/401 时轮换与冷却；Canvas 请求过滤 `thought` 中间图并在单图模式收敛至最后一张有效终图，兼容中英文共享应用确认弹窗、HTTP 401 非 JSON 自动重登与 `AbortSignal.timeout`。网页端只读展示在线桌面账号摘要，任何配置/账号操作均经 `launchDesktop` 唤起桌面端。
 
 `source_collect_workflows.collect_browser_url` 调用本机 `collect.read`，后端才读目标商品、
 规范化、登记图片并经 `ProductStore` 保存。采集页面按已保存 URL 的方式执行。浏览器采集由桌面打开商品页，1688 API 采集由后端解析商品编号并使用当前账号授权。独立接口 `/api/collect-1688` 仍支持显式提交 URL 与模式。

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, inject, ref } from 'vue'
+import { routerKey } from 'vue-router'
 import { loginCanvasAccount, logoutCanvasAccount, toggleCanvasAccount } from '@/api/workflow/settings'
 import type { BackendCanvasAccountStatus, BackendCanvasAccountSummary, UnknownRecord } from '@/types/workflow'
 
@@ -11,7 +12,10 @@ const props = defineProps<{
   localOperations: boolean
   desktopReason: string
   locked: boolean
+  isAdmin?: boolean
 }>()
+
+const router = inject(routerKey, undefined)
 
 const emit = defineEmits<{
   updateField: [field: string, value: string | boolean]
@@ -28,6 +32,13 @@ const enabledAccounts = computed(() => accounts.value.filter(item => item.enable
 const signedInCount = computed(() => accounts.value.filter(item => item.status === 'signed_in').length)
 const desktopBlocked = computed(() => props.desktopShell && !props.localOperations)
 const controlsBusy = computed(() => props.locked || Boolean(pendingAction.value))
+const managedCanvasUrl = computed(() => fieldText('canvas_url') || fieldText('browser_url'))
+
+function openManagedCanvasSettings() {
+  if (router) {
+    void router.push('/settings?settings_section=managed')
+  }
+}
 
 function fieldText(field: string, fallback = ''): string {
   return String(props.model[field] ?? fallback)
@@ -391,19 +402,30 @@ function handleWebInputClick() {
         <details class="md:col-span-2 rounded-lg border border-dashed border-accent-200 bg-accent-50/40 px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-950/40">
           <summary class="cursor-pointer font-semibold text-accent-700 dark:text-accent-200">高级设置</summary>
           <div class="mt-3 grid gap-3 md:grid-cols-2">
-            <label class="block">
-              <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Canvas 网页 URL</span>
-              <input
-                class="input"
-                :value="fieldText('browser_url')"
-                :disabled="controlsBusy || desktopBlocked"
-                :readonly="!desktopShell"
-                placeholder="https://gemini.google.com/share/..."
-                @click="handleWebInputClick"
-                @input="desktopShell && emit('updateField', 'browser_url', eventText($event))"
-              />
-            </label>
-            <label class="block">
+            <div class="block md:col-span-2">
+              <div class="mb-1 flex flex-wrap items-center justify-between gap-2">
+                <span class="text-xs font-semibold text-accent-600 dark:text-accent-300">Google 修图项目地址（管理员统一配置）</span>
+                <button
+                  v-if="isAdmin"
+                  type="button"
+                  data-testid="canvas-open-managed-settings"
+                  class="text-xs font-medium text-primary-700 underline hover:text-primary-800 dark:text-primary-300"
+                  @click="openManagedCanvasSettings"
+                >
+                  前往管理员共享设置修改
+                </button>
+              </div>
+              <p
+                data-testid="canvas-managed-url"
+                class="break-all rounded-md border border-accent-200 bg-white px-3 py-2 font-mono text-xs text-accent-700 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-200"
+              >
+                {{ managedCanvasUrl || '使用系统默认项目地址' }}
+              </p>
+              <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">
+                {{ isAdmin ? '所有账号共用此地址，可在「系统设置 → 管理员共享设置」中统一更换。' : '由管理员在「系统设置 → 管理员共享设置」统一维护，所有账号自动生效。' }}
+              </span>
+            </div>
+            <label class="block md:col-span-2">
               <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">图片模型名</span>
               <input
                 class="input"

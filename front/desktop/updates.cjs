@@ -156,10 +156,10 @@ function createDesktopUpdates({ app, dialog, shell, autoUpdater, origin, nativeS
     return path.join(directory, 'ERP-' + version + suffix)
   }
 
-  async function downloadPackage(versionUrl, asset, destination) {
+  async function downloadPackage(versionUrl, asset, destination, kind = 'installer') {
     await fs.mkdir(directory, { recursive: true, mode: 0o700 })
     const task = new AbortController()
-    const progress = showProgress(() => task.abort())
+    const progress = showProgress(() => task.abort(), kind)
     try {
       await downloadInstaller(new URL(asset.file, versionUrl), asset, destination,
         AbortSignal.any([task.signal, AbortSignal.timeout(20 * 60 * 1000)]), progress.update, fetcher)
@@ -180,16 +180,16 @@ function createDesktopUpdates({ app, dialog, shell, autoUpdater, origin, nativeS
     if (!startup && !manual && announced === key) return true
     announced = key
     const versionUrl = new URL(manifest.version + '/', base)
-    const native = manifest.macZip && await nativeSigned()
+    const native = Boolean(manifest.macZip && await nativeSigned())
     const archive = native ? packagePath(manifest.version, '.zip') : undefined
     const prepared = native && await hasValidPackage(archive, manifest.macZip)
     const awaitingRestart = !startup && prepared
-    const offerNativeAction = native && !awaitingRestart
     const dismiss = awaitingRestart ? '知道了' : required && startup ? '退出应用' : '稍后'
     const installOnStartup = '下次启动时可选择「安装并重启」。'
     const installButton = prepared ? '安装并重启' : '下载并安装'
-    const buttons = [startup && !native ? '下载并安装' : '下载安装包', dismiss]
-    if (offerNativeAction) buttons.unshift(startup ? installButton : '下载更新')
+    const buttons = native
+      ? (awaitingRestart ? [dismiss] : [startup ? installButton : '下载更新', dismiss])
+      : [startup ? '下载并安装' : '下载安装包', dismiss]
     const cancelId = buttons.length - 1
     const response = await message({ message: prepared ? '桌面新版 ' + manifest.version + ' 已下载' : '发现桌面新版 ' + manifest.version,
       detail: [required ? '最低可用版本为 ' + manifest.minimum + '。' : '本次为可选更新。',
@@ -198,8 +198,8 @@ function createDesktopUpdates({ app, dialog, shell, autoUpdater, origin, nativeS
         manifest.notes].filter(Boolean).join('\n'), buttons, cancelId, defaultId: awaitingRestart ? cancelId : 0 })
     if (response.response < 0 || response.response === cancelId) return !(startup && required)
     try {
-      if (offerNativeAction && response.response === 0) {
-        if (!prepared) await downloadPackage(versionUrl, manifest.macZip, archive)
+      if (native) {
+        if (!prepared) await downloadPackage(versionUrl, manifest.macZip, archive, 'update')
         if (startup) {
           await installNative(manifest, archive)
           return 'installing'
@@ -209,7 +209,7 @@ function createDesktopUpdates({ app, dialog, shell, autoUpdater, origin, nativeS
       }
       const destination = packagePath(manifest.version, SUFFIXES[platform])
       if (!await hasValidPackage(destination, manifest.installer)) {
-        await downloadPackage(versionUrl, manifest.installer, destination)
+        await downloadPackage(versionUrl, manifest.installer, destination, 'installer')
       }
       if (platform === 'linux') await fs.chmod(destination, 0o700)
       if (startup && platform !== 'linux') {

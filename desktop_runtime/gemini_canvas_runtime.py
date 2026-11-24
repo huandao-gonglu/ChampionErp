@@ -132,19 +132,11 @@ def _clear_rate_limit(profile: str) -> None:
         _cooldown_until.pop(profile, None)
 
 
-from erp_shared.browser_ai import CANVAS_PREVIEW_WAIT_SECONDS, is_canvas_model
+from erp_shared.browser_ai import CANVAS_PREVIEW_WAIT_SECONDS, is_canvas_model, normalize_canvas_url
 
 
 def _canvas_url(model: dict[str, Any]) -> str:
-    url = browser_ai_runtime.browser_ai_url(model)
-    parsed = urlsplit(url)
-    if (
-        parsed.scheme != "https" or parsed.hostname != "gemini.google.com"
-        or parsed.username or parsed.password or parsed.port not in (None, 443)
-        or not parsed.path.startswith(("/share/", "/app/"))
-    ):
-        raise ValueError("请在浏览器模型的网页 URL 中填写已打开的 Gemini Canvas 分享页或对话地址。")
-    return url
+    return normalize_canvas_url(browser_ai_runtime.browser_ai_url(model))
 
 
 def _evaluate(cdp, expression: str, *, session_id: str = "", context_id: int | None = None,
