@@ -46,16 +46,6 @@ function safeOriginPath(address) {
   return parsed ? `${parsed.origin}${parsed.pathname}` : String(address || '').slice(0, 120)
 }
 
-function cleanChromeUserAgent(raw) {
-  const text = String(raw || '').trim()
-  if (!text) return ''
-  return text
-    .replace(/(KHTML,\s*like Gecko\))\s+(?:(?!Chrome\/)[^\s]+\s+)*(Chrome\/[^\s]+)(?:\s+Electron\/[^\s]+)?/i, '$1 $2')
-    .replace(/\s+Electron\/[^\s]+/gi, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim()
-}
-
 function allowedNavigation(kind, address) {
   try {
     const url = new URL(address)
@@ -354,10 +344,6 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
       }
     }
     const store = session.fromPartition('persist:erp-browser-' + key)
-    if (kind === 'gemini' && typeof store.getUserAgent === 'function' && typeof store.setUserAgent === 'function') {
-      const cleanedUa = cleanChromeUserAgent(store.getUserAgent())
-      if (cleanedUa) store.setUserAgent(cleanedUa)
-    }
     if (kind === 'gemini' && !stores.has(store)) {
       store.webRequest.onErrorOccurred(details => {
         if (details.resourceType !== 'mainFrame') return
@@ -665,4 +651,4 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
   return { handle, finish, reset, flush, get generation() { return generation } }
 }
 
-module.exports = { createEmbeddedBrowser, allowedNavigation, cleanChromeUserAgent, CANVAS_IDLE_MS }
+module.exports = { createEmbeddedBrowser, allowedNavigation, CANVAS_IDLE_MS }

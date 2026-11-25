@@ -89,7 +89,7 @@ function handleAddAccount() {
     pendingAction.value = 'add'
     feedback.value = { type: 'info', text: '正在打开 Google 登录窗口，请在弹出的内置浏览器中完成登录…' }
     try {
-      const result = await loginCanvasAccount({ model: props.model, forceLogin: true })
+      const result = await loginCanvasAccount({ model: props.model, forceLogin: false })
       emit('accountsUpdated', result.canvasStatus)
       if (!result.ok) {
         feedback.value = { type: 'error', text: result.error || '添加 Google 账号失败。' }

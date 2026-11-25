@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
 const { test } = require('node:test')
-const { createEmbeddedBrowser, allowedNavigation, cleanChromeUserAgent, CANVAS_IDLE_MS } = require('./embedded-browser.cjs')
+const { createEmbeddedBrowser, allowedNavigation, CANVAS_IDLE_MS } = require('./embedded-browser.cjs')
 
 function fixture(development = false) {
   let account = 'erp/first'
@@ -317,19 +317,12 @@ test('Canvas 多账号按 ERP 账号隔离，支持去重、启停与取消登�
   assert.deepEqual((await call('canvas_accounts_list', {})).accounts, [])
 })
 
-test('Google 登录页清洗标准 Chrome UA、不挂载 CDP 调试器，并在新认证 Cookie 落盘后自动恢复跳转', async () => {
+test('Google 登录页保留原生 UA、不挂载 CDP 调试器，并在新认证 Cookie 落盘后自动恢复跳转', async () => {
   const { createHash } = require('node:crypto')
   const { call, views, userAgents, permissionChecks, partitionCookies } = fixture()
-  assert.equal(
-    cleanChromeUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) gongluErp/1.2.189 Chrome/147.0.0.0 Electron/43.0.0 Safari/537.36'),
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
-  )
   const page = await call('open', canvas)
   const partition = 'persist:erp-browser-' + createHash('sha256').update(JSON.stringify(['erp/first', 'gemini', 'canvas'])).digest('hex')
-  assert.equal(
-    userAgents.get(partition),
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
-  )
+  assert.equal(userAgents.has(partition), false)
   const permCheck = permissionChecks.get(partition)
   assert.equal(permCheck(null, 'storage-access', 'https://accounts.google.com'), true)
   assert.equal(permCheck(null, 'storage-access', 'https://evil.test'), false)

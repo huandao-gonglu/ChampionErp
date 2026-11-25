@@ -147,12 +147,7 @@ def connect_gemini_page(
         if not allow_interactive:
             raise CanvasLoginRequired("当前 Google 账号需要重新登录。")
         page.show()
-        encoded_url = quote(url, safe='')
-        request(
-            'navigate',
-            page=page_id,
-            url=f'https://accounts.google.com/ServiceLogin?osid=1&continue={encoded_url}&followup={encoded_url}',
-        )
+        request('navigate', page=page_id, url='https://accounts.google.com/ServiceLogin?continue=' + quote(url, safe=''))
     if force_login or _wait_auth_state(page, timeout) != 'signed_in':
         if not allow_interactive:
             raise CanvasLoginRequired("当前 Google 账号未登录或登录已过期，请重新登录。")
