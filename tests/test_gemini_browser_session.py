@@ -122,3 +122,13 @@ def test_downstream_model_error_still_releases_healthy_canvas_page(monkeypatch, 
             page.reusable = False
             raise RuntimeError("timeout")
     assert [name for name, _ in bridge] == ["open"]
+
+
+def test_force_login_navigates_with_osid_and_followup_continue(monkeypatch, bridge, tmp_path):
+    monkeypatch.setattr(session, "_auth_state", Mock(side_effect=["signed_in"]))
+    with session.connect_gemini_page(tmp_path, MODEL, force_login=True):
+        pass
+    nav = next(params["url"] for name, params in bridge if name == "navigate")
+    assert nav.startswith("https://accounts.google.com/ServiceLogin?osid=1&continue=")
+    assert "&followup=" in nav
+    assert "gemini.google.com%2Fshare%2Fowned" in nav

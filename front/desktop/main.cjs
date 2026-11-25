@@ -128,9 +128,17 @@ async function initializeDesktop() {
   const dataDir = path.join(app.getPath('userData'), 'backend')
   const backendOrigin = getBackendBaseUrl()
   const browserOwner = () => accountSession.email && JSON.stringify([backendOrigin, accountSession.email])
+  const browserLogPath = path.join(dataDir, 'desktop-runtime.log')
+  const browserLog = message => {
+    try {
+      fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 })
+      fs.appendFileSync(browserLogPath, `${new Date().toISOString()} [embedded-browser] ${message}\n`, { mode: 0o600 })
+    } catch {}
+  }
   embeddedBrowser = createEmbeddedBrowser({ BaseWindow, WebContentsView, session: electronSession,
     parent: () => mainWindow, account: browserOwner, layoutVerificationWindow: mountLayout,
-    development: !app.isPackaged, accountsFile: path.join(dataDir, 'config', 'canvas-accounts.json') })
+    development: !app.isPackaged, accountsFile: path.join(dataDir, 'config', 'canvas-accounts.json'),
+    log: browserLog })
   const options = { browser: embeddedBrowser, browserOwner, onUnexpectedExit: (error) => {
     void desktopConnection?.stop()
     notifyConnectionChanged()

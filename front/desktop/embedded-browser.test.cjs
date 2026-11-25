@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
 const { test } = require('node:test')
-const { createEmbeddedBrowser, allowedNavigation, CANVAS_IDLE_MS } = require('./embedded-browser.cjs')
+const { createEmbeddedBrowser, allowedNavigation, cleanChromeUserAgent, CANVAS_IDLE_MS } = require('./embedded-browser.cjs')
 
 function fixture(development = false) {
   let account = 'erp/first'
@@ -11,6 +11,8 @@ function fixture(development = false) {
   const networkErrors = []
   const clearedPartitions = []
   const partitionCookies = new Map()
+  const userAgents = new Map()
+  const permissionChecks = new Map()
   class View {
     constructor({ webPreferences }) {
       assert.equal(webPreferences.nodeIntegration, false)
@@ -48,12 +50,14 @@ function fixture(development = false) {
           async clearStorageData() { clearedPartitions.push(key); partitionCookies.set(key, []) },
           async clearCache() {},
           async clearAuthCache() {},
+          getUserAgent: () => userAgents.get(key) || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) gongluErp/1.2.189 Chrome/147.0.0.0 Electron/43.0.0 Safari/537.36',
+          setUserAgent(value) { userAgents.set(key, value) },
           cookies: {
             async flushStore() {},
             async get() { return partitionCookies.get(key) || [] },
           },
           setPermissionRequestHandler() {},
-          setPermissionCheckHandler() {},
+          setPermissionCheckHandler(handler) { permissionChecks.set(key, handler) },
           async setProxy() {},
         })
       }
@@ -61,7 +65,7 @@ function fixture(development = false) {
     } } })
   const call = (action, data, id = 'request') => browser.handle(action, data, account, { id, active: () => true })
   return {
-    browser, windows, views, call, keys, networkErrors, clearedPartitions, partitionCookies,
+    browser, windows, views, call, keys, networkErrors, clearedPartitions, partitionCookies, userAgents, permissionChecks,
     switchAccount(value) { account = value; browser.reset() },
   }
 }
@@ -109,6 +113,11 @@ test('游客验证保留原页；取消、手动关闭及任务完成释放对�
 test('主页面和跳转限制在对应服务的网页', () => {
   assert.ok(allowedNavigation('1688', 'https://login.taobao.com/member/login.jhtml'))
   assert.ok(allowedNavigation('gemini', 'https://accounts.google.com/'))
+  assert.ok(allowedNavigation('gemini', 'https://accounts.youtube.com/accounts/SetSID?ssdc=1'))
+  assert.ok(allowedNavigation('gemini', 'https://accounts.google.com.hk/accounts/SetSID?ssdc=1'))
+  assert.ok(allowedNavigation('gemini', 'https://accounts.google.co.jp/accounts/SetSID?ssdc=1'))
+  assert.equal(allowedNavigation('gemini', 'https://www.youtube.com/watch?v=123'), false)
+  assert.equal(allowedNavigation('gemini', 'https://accounts.google.com.evil.test/'), false)
   for (const url of ['file:///etc/hosts', 'https://1688.com.other.test', 'https://user@1688.com',
     'http://127.0.0.1:19222', 'javascript:void(0)']) assert.equal(allowedNavigation('1688', url), false)
 })
@@ -306,4 +315,53 @@ test('Canvas 多账号按 ERP 账号隔离，支持去重、启停与取消登�
   assert.ok(clearedPartitions.includes(partitionA2))
   switchAccount('erp/second')
   assert.deepEqual((await call('canvas_accounts_list', {})).accounts, [])
+})
+
+test('Google 登录页清洗标准 Chrome UA、不挂载 CDP 调试器，并在新认证 Cookie 落盘后自动恢复跳转', async () => {
+  const { createHash } = require('node:crypto')
+  const { call, views, userAgents, permissionChecks, partitionCookies } = fixture()
+  assert.equal(
+    cleanChromeUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) gongluErp/1.2.189 Chrome/147.0.0.0 Electron/43.0.0 Safari/537.36'),
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
+  )
+  const page = await call('open', canvas)
+  const partition = 'persist:erp-browser-' + createHash('sha256').update(JSON.stringify(['erp/first', 'gemini', 'canvas'])).digest('hex')
+  assert.equal(
+    userAgents.get(partition),
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
+  )
+  const permCheck = permissionChecks.get(partition)
+  assert.equal(permCheck(null, 'storage-access', 'https://accounts.google.com'), true)
+  assert.equal(permCheck(null, 'storage-access', 'https://evil.test'), false)
+  assert.equal(permCheck(null, 'notifications', 'https://accounts.google.com'), false)
+
+  let attached = false
+  let detached = false
+  views[0].webContents.debugger = Object.assign(new EventEmitter(), {
+    isAttached: () => attached,
+    attach() { attached = true },
+    detach() { attached = false; detached = true },
+    async sendCommand() { throw new Error('不应在 Google 登录页发送 CDP 命令') },
+  })
+  views[0].webContents.url = 'https://accounts.google.com/v3/signin/challenge/pwd'
+  const authReply = await call('command', {
+    page,
+    method: 'Runtime.evaluate',
+    params: { expression: 'SignOutOptions loginRequired' },
+  })
+  assert.equal(attached, false)
+  assert.deepEqual(authReply.result.result.value, { signedIn: false, loginRequired: true, email: '', name: '' })
+
+  // 即使未触发 ERR_ABORTED，只要新写入 Google 认证 Cookie，recover_login 会核验并跳转回原 Canvas 页。
+  partitionCookies.set(partition, [{ name: '__Secure-1PSID', value: 'fresh-session-token', domain: '.google.com' }])
+  const recovering = call('recover_login', { page, expression: 'auth-check' })
+  await new Promise(resolve => setImmediate(resolve))
+  let probeCalls = 0
+  views[1].webContents.executeJavaScript = async () => (++probeCalls === 1
+    ? { signedIn: false, loginRequired: false }
+    : { signedIn: true, loginRequired: false })
+  assert.equal(await recovering, true)
+  assert.equal(probeCalls, 2)
+  assert.equal(views[0].webContents.getURL(), canvas.url)
+  assert.equal(detached, false)
 })

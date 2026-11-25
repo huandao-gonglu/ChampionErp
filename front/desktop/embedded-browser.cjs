@@ -7,24 +7,66 @@ const { openLoginEntry } = require('./verification/login-entry.cjs')
 const { panelExpression } = require('./verification/login-panel.cjs')
 
 const CANVAS_IDLE_MS = 5 * 60 * 1000
+const RECOVER_PROBE_COOLDOWN_MS = 2500
+const RECOVER_PROBE_TIMEOUT_MS = 15000
 const GOOGLE_AUTH_COOKIE_NAMES = new Set(['SID', 'SAPISID', '__Secure-1PSID', '__Secure-3PSID', 'HSID', 'SSID'])
 const PROFILE_PATTERN = /^[A-Za-z0-9._-]{1,80}$/
+const GOOGLE_REGIONAL_TLDS = new Set([
+  'com.hk', 'com.tw', 'com.sg', 'com.au', 'com.br', 'com.mx', 'com.ar', 'com.my', 'com.ph', 'com.vn', 'com.tr', 'com.ua',
+  'co.jp', 'co.uk', 'co.kr', 'co.in', 'co.id', 'co.th', 'co.nz', 'co.za', 'co.il',
+  'cn', 'de', 'fr', 'ca', 'it', 'es', 'nl', 'ru', 'pl', 'se', 'ch', 'at', 'be', 'pt', 'ie', 'dk', 'no', 'fi', 'cz', 'gr', 'hu', 'ro',
+])
 
 const domains = {
   '1688': ['1688.com', 'taobao.com', 'tmall.com', 'alibaba.com', 'alipay.com'],
   gemini: ['google.com'],
 }
 
+function isAllowedGeminiHost(hostname) {
+  const host = String(hostname || '').toLowerCase()
+  if (host === 'google.com' || host.endsWith('.google.com')) return true
+  if (host === 'accounts.youtube.com') return true
+  const match = host.match(/^(?:accounts|www|consent)\.google\.([a-z]{2}(?:\.[a-z]{2})?|[a-z]{3}\.[a-z]{2})$/)
+  return Boolean(match && GOOGLE_REGIONAL_TLDS.has(match[1]))
+}
+
+function isGoogleAuthHost(hostname) {
+  const host = String(hostname || '').toLowerCase()
+  if (host === 'accounts.google.com' || host === 'accounts.youtube.com' || host === 'gds.google.com' || host === 'consent.google.com') return true
+  const match = host.match(/^(?:accounts|consent)\.google\.([a-z]{2}(?:\.[a-z]{2})?|[a-z]{3}\.[a-z]{2})$/)
+  return Boolean(match && GOOGLE_REGIONAL_TLDS.has(match[1]))
+}
+
+function safeUrl(address) {
+  try { return new URL(address) } catch { return null }
+}
+
+function safeOriginPath(address) {
+  const parsed = safeUrl(address)
+  return parsed ? `${parsed.origin}${parsed.pathname}` : String(address || '').slice(0, 120)
+}
+
+function cleanChromeUserAgent(raw) {
+  const text = String(raw || '').trim()
+  if (!text) return ''
+  return text
+    .replace(/(KHTML,\s*like Gecko\))\s+(?:(?!Chrome\/)[^\s]+\s+)*(Chrome\/[^\s]+)(?:\s+Electron\/[^\s]+)?/i, '$1 $2')
+    .replace(/\s+Electron\/[^\s]+/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
 function allowedNavigation(kind, address) {
   try {
     const url = new URL(address)
-    return ['https:', ...(kind === '1688' ? ['http:'] : [])].includes(url.protocol) &&
-      !url.username && !url.password && !url.port &&
-      domains[kind].some(host => url.hostname === host || url.hostname.endsWith('.' + host))
+    if (!['https:', ...(kind === '1688' ? ['http:'] : [])].includes(url.protocol) ||
+        url.username || url.password || url.port) return false
+    if (kind === 'gemini') return isAllowedGeminiHost(url.hostname)
+    return domains[kind].some(host => url.hostname === host || url.hostname.endsWith('.' + host))
   } catch { return false }
 }
 
-function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, account, layoutVerificationWindow, development = false, accountsFile = '', canvasIdleMs = CANVAS_IDLE_MS }) {
+function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, account, layoutVerificationWindow, development = false, accountsFile = '', canvasIdleMs = CANVAS_IDLE_MS, log = () => {} }) {
   let generation = 0
   const pages = new Map()
   const stores = new Set()
@@ -85,6 +127,28 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
       if (!Array.isArray(cookies)) return null
       return cookies.some(cookie => GOOGLE_AUTH_COOKIE_NAMES.has(cookie.name) && Boolean(cookie.value))
     } catch { return null }
+  }
+
+  async function googleAuthCookieSignature(store) {
+    if (!store?.cookies?.get) return null
+    try {
+      const cookies = await store.cookies.get({ domain: 'google.com' })
+      if (!Array.isArray(cookies)) return null
+      const pairs = cookies
+        .filter(cookie => GOOGLE_AUTH_COOKIE_NAMES.has(cookie.name) && Boolean(cookie.value))
+        .map(cookie => `${cookie.domain || ''}|${cookie.name}=${cookie.value}`)
+        .sort()
+      if (!pairs.length) return ''
+      return createHash('sha256').update(pairs.join('\n')).digest('hex')
+    } catch { return null }
+  }
+
+  function detachDebugger(page) {
+    const control = page.contents?.debugger
+    if (control?.isAttached?.()) {
+      if (page.debuggerListener) control.removeListener('message', page.debuggerListener)
+      control.detach()
+    }
   }
 
   function isProfileBusy(owner, profile) {
@@ -203,16 +267,29 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
 
   function protect(contents, page) {
     function check(event) {
-      if (!allowedNavigation(page.kind, event.url)) {
+      const targetUrl = event.url || ''
+      if (!allowedNavigation(page.kind, targetUrl)) {
         event.preventDefault()
-        if (page.kind === 'gemini' && contents === page.contents) page.loginNavigationInterrupted = true
+        if (page.kind === 'gemini' && contents === page.contents) {
+          page.loginNavigationInterrupted = true
+          log(`gemini blocked navigation: ${safeOriginPath(targetUrl)}`)
+        }
+        return
+      }
+      if (page.kind === 'gemini' && contents === page.contents) {
+        const parsed = safeUrl(targetUrl)
+        if (parsed && isGoogleAuthHost(parsed.hostname)) detachDebugger(page)
       }
     }
     let visitedLogin = false
     contents.on('did-navigate', (_event, address) => {
-      if (page.kind === '1688' && /^(login|passport)\./.test(new URL(address).hostname)) {
+      const parsed = safeUrl(address)
+      if (page.kind === '1688' && parsed && /^(login|passport)\./.test(parsed.hostname)) {
         visitedLogin = true
         page.visitedLogin = true
+      }
+      if (page.kind === 'gemini' && contents === page.contents && parsed && isGoogleAuthHost(parsed.hostname)) {
+        detachDebugger(page)
       }
     })
     contents.on('will-navigate', check)
@@ -235,6 +312,14 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
 
   async function navigate(page, url) {
     const contents = page.contents
+    const parsedTarget = safeUrl(url)
+    if (page.kind === 'gemini' && parsedTarget && isGoogleAuthHost(parsedTarget.hostname)) {
+      detachDebugger(page)
+      page.loginNavigationInterrupted = false
+      const sig = await googleAuthCookieSignature(page.store)
+      if (sig !== null) page.loginCookieBaseline = sig
+    }
+    page.programmaticNavigation = true
     let domReady
     const interactive = new Promise(resolve => { domReady = resolve })
     contents.once('dom-ready', domReady)
@@ -246,6 +331,7 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
         pages.has(page.id) && (contents.isLoadingMainFrame() || allowedNavigation(page.kind, contents.getURL()))
       if (!redirected) throw error
     } finally {
+      page.programmaticNavigation = false
       contents.removeListener('dom-ready', domReady)
     }
   }
@@ -268,23 +354,47 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
       }
     }
     const store = session.fromPartition('persist:erp-browser-' + key)
+    if (kind === 'gemini' && typeof store.getUserAgent === 'function' && typeof store.setUserAgent === 'function') {
+      const cleanedUa = cleanChromeUserAgent(store.getUserAgent())
+      if (cleanedUa) store.setUserAgent(cleanedUa)
+    }
     if (kind === 'gemini' && !stores.has(store)) {
       store.webRequest.onErrorOccurred(details => {
-        if (details.resourceType !== 'mainFrame' || details.error !== 'net::ERR_ABORTED') return
+        if (details.resourceType !== 'mainFrame') return
         const page = [...pages.values()].find(item => item.contents.id === details.webContentsId)
-        if (page?.kind === 'gemini') page.loginNavigationInterrupted = true
+        if (page?.kind !== 'gemini') return
+        if (details.error === 'net::ERR_ABORTED') {
+          if (!page.programmaticNavigation) {
+            page.loginNavigationInterrupted = true
+            log(`gemini mainFrame ERR_ABORTED: ${safeOriginPath(details.url)}`)
+          }
+        } else if (details.error) {
+          log(`gemini mainFrame error ${details.error}: ${safeOriginPath(details.url)}`)
+        }
       })
     }
     stores.add(store)
-    store.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
-    store.setPermissionCheckHandler(() => false)
+    const allowGeminiPermission = (permission, origin) =>
+      kind === 'gemini' &&
+      (permission === 'storage-access' || permission === 'top-level-storage-access') &&
+      Boolean(origin) && allowedNavigation('gemini', origin)
+    store.setPermissionRequestHandler((contents, permission, callback, details) => {
+      const origin = details?.requestingUrl || contents?.getURL?.() || ''
+      callback(allowGeminiPermission(permission, origin))
+    })
+    store.setPermissionCheckHandler((_contents, permission, requestingOrigin) =>
+      allowGeminiPermission(permission, requestingOrigin))
     await store.setProxy(proxy ? { mode: 'fixed_servers', proxyRules: proxy } : { mode: 'system' })
     if (!call.active() || account() !== owner) throw new Error('ERP 登录会话已切换。')
     const view = new WebContentsView({ webPreferences: { session: store, sandbox: true,
       contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } })
     view.setBounds({ x: 0, y: 0, width: 1100, height: 800 })
     const contents = view.webContents
-    const page = { owner, kind, key, proxy, url, callId: call.id, id: randomUUID(), contents, store, view, events: [], popups: new Set() }
+    const loginCookieBaseline = kind === 'gemini' ? await googleAuthCookieSignature(store) : null
+    const page = {
+      owner, kind, key, proxy, url, callId: call.id, id: randomUUID(), contents, store, view,
+      events: [], popups: new Set(), loginCookieBaseline, lastRecoverProbeAt: 0,
+    }
     pages.set(page.id, page)
     contents.once('destroyed', () => close(page))
     protect(contents, page)
@@ -338,18 +448,54 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
       }
       win.on('closed', () => { page.window = null; close(page) })
       page.contents.on('did-navigate', (_event, url) => {
-        if (!win.isDestroyed()) win.setTitle(page.windowLabel + ' · ' + new URL(url).origin)
+        const parsed = safeUrl(url)
+        if (!win.isDestroyed() && parsed) win.setTitle(page.windowLabel + ' · ' + parsed.origin)
       })
     }
-    page.window.setTitle(page.windowLabel + ' · ' + new URL(page.contents.getURL() || page.url).origin)
+    const currentParsed = safeUrl(page.contents.getURL() || page.url)
+    if (currentParsed) page.window.setTitle(page.windowLabel + ' · ' + currentParsed.origin)
     if (!page.window.isVisible()) { page.window.show(); page.view.webContents.focus() }
   }
 
+  async function evaluateProbeSignedIn(probe, expression, deadline) {
+    try {
+      await probe.loadURL('https://gemini.google.com/app')
+    } catch (error) {
+      const redirected = (error?.code === 'ERR_ABORTED' || error?.errno === -3) &&
+        !probe.isDestroyed() && (probe.isLoadingMainFrame?.() || allowedNavigation('gemini', probe.getURL()))
+      if (!redirected) throw error
+    }
+    while (!probe.isDestroyed() && Date.now() < deadline) {
+      let state
+      try {
+        state = await probe.executeJavaScript(expression)
+      } catch {
+        state = null
+      }
+      if (state?.signedIn) return state
+      // 明确返回 loginRequired，或测试替身直接返回非加载态时不再等待 SPA 水合。
+      if (state?.loginRequired === true) return state
+      if (state && typeof state === 'object' && state.signedIn === false && state.loginRequired === undefined) return state
+      await new Promise(resolve => setTimeout(resolve, 350))
+    }
+    return null
+  }
+
   async function recoverLogin(page, expression, call) {
-    if (!page.loginNavigationInterrupted || page.recoveringLogin ||
-        new URL(page.contents.getURL()).hostname !== 'accounts.google.com') return false
+    const currentParsed = safeUrl(page.contents.getURL())
+    const currentHost = currentParsed?.hostname?.toLowerCase() || ''
+    const onRecoverableHost = isGoogleAuthHost(currentHost) || currentHost === 'myaccount.google.com'
+    if (page.recoveringLogin || !onRecoverableHost) return false
+    const interrupted = Boolean(page.loginNavigationInterrupted)
+    let cookiesChanged = false
+    if (!interrupted && Date.now() - (page.lastRecoverProbeAt || 0) >= RECOVER_PROBE_COOLDOWN_MS) {
+      const sig = await googleAuthCookieSignature(page.store)
+      cookiesChanged = Boolean(sig) && page.loginCookieBaseline !== null && page.loginCookieBaseline !== undefined && sig !== page.loginCookieBaseline
+    }
+    if (!interrupted && !cookiesChanged) return false
     page.loginNavigationInterrupted = false
     page.recoveringLogin = true
+    page.lastRecoverProbeAt = Date.now()
     // 提交可能已生效；用同一会话读取 Gemini，避免重发验证码表单。
     const probeView = new WebContentsView({ webPreferences: { session: page.store, sandbox: true,
       contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } })
@@ -372,11 +518,13 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
         probeWindow.once('closed', () => { if (!probe.isDestroyed()) probe.close() })
         probeWindow.showInactive()
       }
+      const deadline = Date.now() + RECOVER_PROBE_TIMEOUT_MS
       const state = await Promise.race([
-        probe.loadURL('https://gemini.google.com/app').then(() => probe.executeJavaScript(expression)),
-        new Promise(resolve => { timer = setTimeout(() => resolve(null), 10000) }),
+        evaluateProbeSignedIn(probe, expression, deadline),
+        new Promise(resolve => { timer = setTimeout(() => resolve(null), RECOVER_PROBE_TIMEOUT_MS) }),
       ])
       if (!state?.signedIn || !call.active() || account() !== page.owner || !pages.has(page.id)) return false
+      log(`gemini recover_login succeeded (${interrupted ? 'interrupted' : 'cookies'})`)
       await navigate(page, page.url)
       return true
     } catch {
@@ -408,11 +556,7 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
         page.window?.hide()
         for (const popup of page.popups) if (!popup.isDestroyed()) popup.destroy()
       }
-      const control = page.contents.debugger
-      if (control?.isAttached()) {
-        control.removeListener('message', page.debuggerListener)
-        control.detach()
-      }
+      detachDebugger(page)
       page.events.length = 0
       page.callId = null
       page.idleTimer = setTimeout(() => close(page), canvasIdleMs)
@@ -462,6 +606,25 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
     if (action === 'close') { close(page); return }
     if (action === 'navigate' && allowedNavigation(page.kind, data.url)) return navigate(page, data.url)
     if (action !== 'command' || !commands.has(data.method)) throw new Error('不支持的内置网页操作。')
+    if (page.kind === 'gemini' && data.method === 'Runtime.evaluate' && !data.session_id && !data.collect_events) {
+      const currentUrl = page.contents.getURL() || ''
+      const currentParsed = safeUrl(currentUrl)
+      if (currentParsed && isGoogleAuthHost(currentParsed.hostname)) {
+        // 登录页期间不挂载 CDP 调试器也不反复向 Google 登录页注入脚本，避免干扰密码提交与跳转。
+        detachDebugger(page)
+        const expr = String(data.params?.expression || '')
+        if (expr.trim() === 'location.href') {
+          return { result: { result: { value: currentUrl } }, events: [] }
+        }
+        if (expr.includes('SignOutOptions') && expr.includes('loginRequired')) {
+          return { result: { result: { value: { signedIn: false, loginRequired: true, email: '', name: '' } } }, events: [] }
+        }
+        if (typeof page.contents.executeJavaScript === 'function') {
+          const value = await page.contents.executeJavaScript(expr)
+          return { result: { result: { value } }, events: [] }
+        }
+      }
+    }
     const control = page.contents.debugger
     if (!control.isAttached()) {
       control.attach('1.3')
@@ -502,4 +665,4 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
   return { handle, finish, reset, flush, get generation() { return generation } }
 }
 
-module.exports = { createEmbeddedBrowser, allowedNavigation, CANVAS_IDLE_MS }
+module.exports = { createEmbeddedBrowser, allowedNavigation, cleanChromeUserAgent, CANVAS_IDLE_MS }
