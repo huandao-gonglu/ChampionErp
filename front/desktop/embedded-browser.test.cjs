@@ -358,3 +358,26 @@ test('Google 登录页保留原生 UA、不挂载 CDP 调试器，并在新认�
   assert.equal(views[0].webContents.getURL(), canvas.url)
   assert.equal(detached, false)
 })
+
+test('交互式 Google 登录在网络等待前立即弹出窗口并直接打开 ServiceLogin', async () => {
+  const { call, windows, views } = fixture()
+  const loginUrl = 'https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fgemini.google.com%2Fshare%2Fowned'
+  const page = await call('open', {
+    ...canvas,
+    initial_url: loginUrl,
+    show: true,
+  })
+  assert.equal(windows.length, 1)
+  assert.equal(windows[0].isVisible(), true)
+  assert.equal(views[0].webContents.getURL(), loginUrl)
+  // 登录恢复后仍导航回原 Canvas 地址而非 initial_url。
+  views[0].webContents.emit('will-redirect', {
+    url: 'https://unrelated.test/',
+    isMainFrame: true,
+    preventDefault() {},
+  })
+  const recovered = call('recover_login', { page, expression: 'auth-check' })
+  views[1].webContents.executeJavaScript = async () => ({ signedIn: true })
+  assert.equal(await recovered, true)
+  assert.equal(views[0].webContents.getURL(), canvas.url)
+})

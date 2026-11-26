@@ -124,9 +124,13 @@ def test_downstream_model_error_still_releases_healthy_canvas_page(monkeypatch, 
     assert [name for name, _ in bridge] == ["open"]
 
 
-def test_force_login_navigates_to_service_login_with_continue(monkeypatch, bridge, tmp_path):
+def test_force_login_opens_visible_window_directly_at_service_login(monkeypatch, bridge, tmp_path):
     monkeypatch.setattr(session, "_auth_state", Mock(side_effect=["signed_in"]))
     with session.connect_gemini_page(tmp_path, MODEL, force_login=True):
         pass
-    nav = next(params["url"] for name, params in bridge if name == "navigate")
-    assert nav == "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fgemini.google.com%2Fshare%2Fowned"
+    open_params = next(params for name, params in bridge if name == "open")
+    assert open_params["show"] is True
+    assert open_params["url"] == MODEL["browser_url"]
+    assert open_params["initial_url"] == (
+        "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fgemini.google.com%2Fshare%2Fowned"
+    )

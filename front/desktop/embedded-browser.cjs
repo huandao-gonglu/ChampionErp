@@ -327,15 +327,18 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
   }
 
   async function open(data, owner, call) {
-    const { kind, url, profile = '', proxy = '' } = data
-    if (!domains[kind] || !allowedNavigation(kind, url)) throw new Error('此网址不属于指定的内置浏览服务。')
+    const { kind, url, initial_url: initialUrl = '', show: showImmediately = false, profile = '', proxy = '' } = data
+    const targetUrl = initialUrl || url
+    if (!domains[kind] || !allowedNavigation(kind, url) || !allowedNavigation(kind, targetUrl)) {
+      throw new Error('此网址不属于指定的内置浏览服务。')
+    }
     const key = partitionKey(owner, kind, profile)
     for (const previous of pages.values()) {
       if (previous.inspecting && previous.key === key) close(previous)
     }
     if (kind === 'gemini') {
       const ready = [...pages.values()].find(page => page.idleTimer && page.key === key)
-      if (ready && (ready.url !== url || ready.proxy !== proxy)) close(ready)
+      if (ready && (showImmediately || ready.url !== url || ready.proxy !== proxy)) close(ready)
       if (ready && pages.has(ready.id) && call.active() && account() === owner) {
         clearTimeout(ready.idleTimer)
         ready.idleTimer = null
@@ -385,11 +388,21 @@ function createEmbeddedBrowser({ BaseWindow, WebContentsView, session, parent, a
     contents.once('destroyed', () => close(page))
     protect(contents, page)
     try {
-      if (development) show(page, 'BROWSING')
-      await navigate(page, url)
+      if (development || showImmediately) show(page, showImmediately ? 'LOGIN' : 'BROWSING')
+      try {
+        await navigate(page, targetUrl)
+      } catch (firstError) {
+        if (!showImmediately || !pages.has(page.id) || !call.active() || account() !== owner) throw firstError
+        await new Promise(resolve => setTimeout(resolve, 600))
+        await navigate(page, targetUrl)
+      }
       return page.id
     } catch (error) {
       if (!development) close(page)
+      if (kind === 'gemini' && showImmediately) {
+        const detail = String(error?.message || error || '').trim()
+        throw new Error(`无法打开 Google 登录页（${detail || '网络连接中断'}），请检查本机浏览器代理设置与网络连接。`)
+      }
       throw error
     }
   }

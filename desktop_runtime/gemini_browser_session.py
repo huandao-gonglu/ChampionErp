@@ -36,7 +36,15 @@ _AUTH_SCRIPT = r"""(() => {
         try { const u = new URL(e.href); return u.hostname === 'accounts.google.com'
             && (u.pathname.includes('ServiceLogin') || u.pathname.includes('/signin/')); }
         catch { return false; }
-    });
+    }) || (
+        location.hostname === 'gemini.google.com'
+        && document.readyState === 'complete'
+        && !accountLink
+        && [...document.querySelectorAll('a,button,[role="button"]')].some(el => {
+            const text = (el.textContent || el.getAttribute?.('aria-label') || '').replace(/\s+/g, ' ').trim().toLowerCase();
+            return text === 'sign in' || text === '登录' || text === '登入';
+        })
+    );
     const challenge = location.pathname.startsWith('/sorry/') ||
         [...document.querySelectorAll('iframe[src*="recaptcha"]')].some(frame => {
             const rect = frame.getBoundingClientRect()
@@ -138,16 +146,22 @@ def _wait_auth_state(
 def connect_gemini_page(
     app_dir, model, timeout: int = 45, *, force_login: bool = False, allow_interactive: bool = True,
 ):
+    if force_login and not allow_interactive:
+        raise CanvasLoginRequired("当前 Google 账号需要重新登录。")
     url = browser_ai_runtime.browser_ai_url(model)
-    page_id = request('open', kind='gemini', url=url, profile=model.get('browser_profile') or 'default',
-                      proxy=normalize_browser_proxy(model.get('browser_proxy')), timeout=timeout)
+    open_kwargs = {
+        'kind': 'gemini',
+        'url': url,
+        'profile': model.get('browser_profile') or 'default',
+        'proxy': normalize_browser_proxy(model.get('browser_proxy')),
+        'timeout': timeout,
+    }
+    if force_login:
+        open_kwargs['initial_url'] = 'https://accounts.google.com/ServiceLogin?continue=' + quote(url, safe='')
+        open_kwargs['show'] = True
+    page_id = request('open', **open_kwargs)
     page = EmbeddedPage(page_id)
     # 页面由本次管道调用持有，异常、取消和执行器退出均由桌面端释放。
-    if force_login:
-        if not allow_interactive:
-            raise CanvasLoginRequired("当前 Google 账号需要重新登录。")
-        page.show()
-        request('navigate', page=page_id, url='https://accounts.google.com/ServiceLogin?continue=' + quote(url, safe=''))
     if force_login or _wait_auth_state(page, timeout) != 'signed_in':
         if not allow_interactive:
             raise CanvasLoginRequired("当前 Google 账号未登录或登录已过期，请重新登录。")
