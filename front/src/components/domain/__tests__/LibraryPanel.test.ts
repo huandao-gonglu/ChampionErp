@@ -138,4 +138,31 @@ describe('采集箱按语言选择目标市场', () => {
     expect(wrapper.emitted('importProducts')).toHaveLength(1)
     expect(wrapper.get('[role="alert"]').text()).toContain('高于当前系统支持的版本')
   })
+
+  it('支持按未推草稿、已推草稿和已发布筛选，并展示已发布平台标签', async () => {
+    const stagedItems = [
+      { ...items[0], productId: 'p-unclaimed', title: '未推商品', draftCount: 0, platforms: [], publishedPlatforms: [], libraryStage: 'unclaimed' },
+      { ...items[1], productId: 'p-claimed', title: '草稿中商品', draftCount: 1, platforms: ['ozon'], publishedPlatforms: [], libraryStage: 'claimed' },
+      { ...items[0], productId: 'p-published', title: '已发布商品', draftCount: 2, platforms: ['yandex', 'ozon'], publishedPlatforms: ['yandex'], publishedCount: 1, libraryStage: 'published' },
+    ] as ProductIndexItem[]
+    const wrapper = mount(LibraryPanel, {
+      props: { items: stagedItems, selectedIds: [], platformOptions, storeConfig, loading: false },
+    })
+
+    expect(wrapper.findAll('tbody tr')).toHaveLength(3)
+    expect(wrapper.text()).toContain('Yandex · 已发布')
+    expect(wrapper.text()).toContain('未推草稿')
+
+    await wrapper.get('[data-testid="library-tab-unclaimed"]').trigger('click')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(1)
+    expect(wrapper.get('tbody').text()).toContain('未推商品')
+
+    await wrapper.get('[data-testid="library-tab-claimed"]').trigger('click')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(1)
+    expect(wrapper.get('tbody').text()).toContain('草稿中商品')
+
+    await wrapper.get('[data-testid="library-tab-published"]').trigger('click')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(1)
+    expect(wrapper.get('tbody').text()).toContain('已发布商品')
+  })
 })

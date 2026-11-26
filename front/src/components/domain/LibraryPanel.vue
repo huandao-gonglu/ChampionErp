@@ -49,7 +49,8 @@ const emit = defineEmits<{
   claim: [productIds: string[], targets: MarketplaceTargetSite[]]
 }>()
 
-const workflowFilter = ref<'all' | 'collected' | 'not_collected'>('all')
+const stageFilter = ref<'all' | 'unclaimed' | 'claimed' | 'published'>('all')
+const collectFilter = ref<'all' | 'collected' | 'not_collected'>('all')
 const search = ref('')
 const platformFilter = ref('')
 const sortBy = ref<'updated' | 'title'>('updated')
@@ -73,6 +74,19 @@ function isCollected(item: ProductIndexItem) {
   return item.collectStatus === 'success' || item.collectStatus === 'collected'
 }
 
+function itemLibraryStage(item: ProductIndexItem): 'unclaimed' | 'claimed' | 'published' {
+  if (item.libraryStage === 'unclaimed' || item.libraryStage === 'claimed' || item.libraryStage === 'published') {
+    return item.libraryStage
+  }
+  if ((item.publishedCount || 0) > 0 || (item.publishedPlatforms?.length || 0) > 0) return 'published'
+  if ((item.draftCount || 0) > 0 || (item.platforms?.length || 0) > 0) return 'claimed'
+  return 'unclaimed'
+}
+
+function isPlatformPublished(item: ProductIndexItem, platform: Marketplace) {
+  return (item.publishedPlatforms || []).includes(platform)
+}
+
 const sourcePlatforms = computed(() => {
   const set = new Set<string>()
   for (const item of props.items) {
@@ -85,6 +99,8 @@ const searchMatched = computed(() => {
   const term = search.value.trim().toLowerCase()
   return props.items.filter((item) => {
     if (platformFilter.value && item.sourcePlatform !== platformFilter.value) return false
+    if (collectFilter.value === 'collected' && !isCollected(item)) return false
+    if (collectFilter.value === 'not_collected' && isCollected(item)) return false
     if (!term) return true
     return (item.title || '').toLowerCase().includes(term)
       || (item.productId || '').toLowerCase().includes(term)
@@ -94,19 +110,22 @@ const searchMatched = computed(() => {
 })
 
 const tabCounts = computed(() => {
-  let collected = 0
-  let notCollected = 0
+  let unclaimed = 0
+  let claimed = 0
+  let published = 0
   for (const item of searchMatched.value) {
-    if (isCollected(item)) collected++
-    else notCollected++
+    const stage = itemLibraryStage(item)
+    if (stage === 'published') published++
+    else if (stage === 'claimed') claimed++
+    else unclaimed++
   }
-  return { all: searchMatched.value.length, collected, not_collected: notCollected }
+  return { all: searchMatched.value.length, unclaimed, claimed, published }
 })
 
 const filteredItems = computed(() => {
   const rows = searchMatched.value.filter((item) => {
-    if (workflowFilter.value === 'all') return true
-    return workflowFilter.value === 'collected' ? isCollected(item) : !isCollected(item)
+    if (stageFilter.value === 'all') return true
+    return itemLibraryStage(item) === stageFilter.value
   })
   if (sortBy.value === 'title') {
     return [...rows].sort((a, b) => collator.compare(a.title || a.productId, b.title || b.productId))
@@ -114,7 +133,7 @@ const filteredItems = computed(() => {
   return rows
 })
 
-const hasActiveFilters = computed(() => Boolean(search.value.trim() || workflowFilter.value !== 'all' || platformFilter.value))
+const hasActiveFilters = computed(() => Boolean(search.value.trim() || stageFilter.value !== 'all' || collectFilter.value !== 'all' || platformFilter.value))
 const selectedVisibleIds = computed(() => filteredItems.value.filter(item => props.selectedIds.includes(item.productId)).map(item => item.productId))
 const allChecked = computed(() => filteredItems.value.length > 0 && selectedVisibleIds.value.length === filteredItems.value.length)
 const selectedCount = computed(() => props.selectedIds.length)
@@ -128,7 +147,8 @@ function requestClaim(productIds: string[]) {
 
 function clearFilters() {
   search.value = ''
-  workflowFilter.value = 'all'
+  stageFilter.value = 'all'
+  collectFilter.value = 'all'
   platformFilter.value = ''
 }
 
@@ -327,17 +347,20 @@ function confirmDeleteAction() {
         :loading="props.loading"
       />
 
-      <!-- 筛选标签 + 搜索 + 来源筛选 + 排序 + 操作下拉 -->
+      <!-- 筛选标签 + 搜索 + 采集态/来源筛选 + 排序 + 操作下拉 -->
       <div class="mt-3.5 flex flex-wrap items-center justify-between gap-2.5 border-b border-accent-200/80 pb-2.5 dark:border-dark-700">
-        <nav class="flex items-center gap-1 overflow-x-auto" aria-label="按采集状态筛选">
-          <button type="button" class="filter-tab" :aria-pressed="workflowFilter === 'all'" @click="workflowFilter = 'all'">
+        <nav class="flex items-center gap-1 overflow-x-auto" aria-label="按草稿与发布状态筛选">
+          <button type="button" data-testid="library-tab-all" class="filter-tab" :aria-pressed="stageFilter === 'all'" @click="stageFilter = 'all'">
             全部商品 <span class="tab-badge tabular-nums">{{ tabCounts.all }}</span>
           </button>
-          <button type="button" class="filter-tab" :aria-pressed="workflowFilter === 'collected'" @click="workflowFilter = 'collected'">
-            已采集 <span class="tab-badge tabular-nums">{{ tabCounts.collected }}</span>
+          <button type="button" data-testid="library-tab-unclaimed" class="filter-tab" :aria-pressed="stageFilter === 'unclaimed'" @click="stageFilter = 'unclaimed'">
+            未推草稿 <span class="tab-badge tabular-nums">{{ tabCounts.unclaimed }}</span>
           </button>
-          <button type="button" class="filter-tab" :aria-pressed="workflowFilter === 'not_collected'" @click="workflowFilter = 'not_collected'">
-            待补全 <span class="tab-badge tabular-nums">{{ tabCounts.not_collected }}</span>
+          <button type="button" data-testid="library-tab-claimed" class="filter-tab" :aria-pressed="stageFilter === 'claimed'" @click="stageFilter = 'claimed'">
+            已推草稿 <span class="tab-badge tabular-nums">{{ tabCounts.claimed }}</span>
+          </button>
+          <button type="button" data-testid="library-tab-published" class="filter-tab" :aria-pressed="stageFilter === 'published'" @click="stageFilter = 'published'">
+            已发布 <span class="tab-badge tabular-nums">{{ tabCounts.published }}</span>
           </button>
         </nav>
 
@@ -361,6 +384,16 @@ function confirmDeleteAction() {
               <PhX :size="12" aria-hidden="true" />
             </button>
           </div>
+
+          <select
+            v-model="collectFilter"
+            aria-label="按采集状态筛选"
+            class="input h-8 !w-auto !rounded-xl !py-0 !pl-2.5 !pr-7 text-xs"
+          >
+            <option value="all">全部采集态</option>
+            <option value="collected">已采集</option>
+            <option value="not_collected">待补全</option>
+          </select>
 
           <select
             v-if="sourcePlatforms.length > 1"
@@ -566,9 +599,19 @@ function confirmDeleteAction() {
                       <span
                         v-for="platform in item.platforms || []"
                         :key="platform"
-                        class="rounded bg-accent-100 px-1.5 py-0.5 text-[10px] font-medium text-accent-600 dark:bg-dark-700 dark:text-accent-200"
+                        class="rounded px-1.5 py-0.5 text-[10px] font-medium"
+                        :class="isPlatformPublished(item, platform)
+                          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300'
+                          : 'bg-accent-100 text-accent-600 dark:bg-dark-700 dark:text-accent-200'"
+                        :title="isPlatformPublished(item, platform) ? `${platformNames[platform] || platform} 已发布` : `${platformNames[platform] || platform} 已建草稿`"
                       >
-                        {{ platformNames[platform] || platform }}
+                        {{ platformNames[platform] || platform }}<template v-if="isPlatformPublished(item, platform)"> · 已发布</template>
+                      </span>
+                      <span
+                        v-if="itemLibraryStage(item) === 'unclaimed'"
+                        class="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-500/15 dark:text-amber-300"
+                      >
+                        未推草稿
                       </span>
                     </div>
                   </div>

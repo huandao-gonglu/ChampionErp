@@ -483,8 +483,141 @@ def _draft_platforms(draft: dict[str, Any], primary_platform: Any) -> list[str]:
     return platforms
 
 
+_PUBLISH_SUCCESS_STATUSES = frozenset(
+    {"success", "published", "real_publish_success", "imported"}
+)
+_PUBLISH_ACTIVE_STATUSES = frozenset(
+    {"pending", "queued", "running", "retrying", "pending_confirmation"}
+)
+_PUBLISH_FAILED_STATUSES = frozenset(
+    {
+        "failed",
+        "real_publish_failed",
+        "not_ready",
+        "interrupted",
+        "outcome_unknown",
+        "needs_attention",
+        "partial",
+    }
+)
+
+
 def _draft_status(draft: dict[str, Any]) -> str:
     return str(draft.get("status") or draft.get("publish_status") or "claimed")
+
+
+def _normalize_platform_job_status(platform_status: str, job_status: str) -> str:
+    value = str(platform_status or "").strip().lower()
+    if value:
+        return value
+    fallback = str(job_status or "").strip().lower()
+    if fallback == "completed":
+        return "success"
+    return fallback
+
+
+def _resolve_draft_publish_state(
+    *,
+    draft_status: str,
+    draft_publish_status: str,
+    primary_platform: str,
+    targets: list[dict[str, Any]],
+    job_entries: list[tuple[str, str]],
+) -> tuple[str, str, str]:
+    """统一推导草稿的 (publish_state, display_status, effective_publish_status)。
+
+    publish_state 仅取四个语义明确的值：
+    - publishing: 存在排队/执行中/待平台确认的发布任务
+    - publish_failed: 最新发布任务失败/部分失败/中断/结果未知/需人工处理
+    - published: 全部目标市场已确认发布成功（或单目标已确认发布成功）
+    - unpublished: 尚未发布（或部分市场待发布且无失败任务）
+    """
+    raw_draft_status = str(draft_status or "").strip().lower()
+    raw_publish_status = str(draft_publish_status or "").strip().lower()
+    latest_by_platform: dict[str, str] = {}
+    for platform_key, job_platform_status in job_entries:
+        key = str(platform_key or primary_platform or "").strip().lower()
+        status_val = str(job_platform_status or "").strip().lower()
+        if key and status_val and key not in latest_by_platform:
+            latest_by_platform[key] = status_val
+
+    # 1. 优先识别进行中的发布任务
+    for status_val in latest_by_platform.values():
+        if status_val in _PUBLISH_ACTIVE_STATUSES:
+            display = "pending_confirmation" if status_val == "pending_confirmation" else "publishing"
+            return "publishing", display, status_val
+
+    # 2. 检查是否存在最新失败/异常终态的任务
+    failed_job_status = next(
+        (status_val for status_val in latest_by_platform.values() if status_val in _PUBLISH_FAILED_STATUSES),
+        "",
+    )
+    if failed_job_status:
+        return "publish_failed", failed_job_status, failed_job_status
+
+    # 3. 聚合目标市场与草稿持久发布事实
+    target_platforms: list[str] = []
+    target_published_flags: list[bool] = []
+    target_failed_status = ""
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        t_platform = str(target.get("platform") or primary_platform or "").strip().lower()
+        t_status = str(target.get("status") or "").strip().lower()
+        t_pub = str(target.get("publish_status") or "").strip().lower()
+        job_status = latest_by_platform.get(t_platform, "")
+        is_pub = (
+            t_status in _PUBLISH_SUCCESS_STATUSES
+            or t_pub in _PUBLISH_SUCCESS_STATUSES
+            or job_status in _PUBLISH_SUCCESS_STATUSES
+        )
+        target_platforms.append(t_platform)
+        target_published_flags.append(is_pub)
+        if not is_pub and not target_failed_status:
+            if t_pub in _PUBLISH_FAILED_STATUSES:
+                target_failed_status = t_pub
+            elif t_status in _PUBLISH_FAILED_STATUSES:
+                target_failed_status = t_status
+
+    if target_published_flags and all(target_published_flags):
+        return "published", "published", "published"
+    if not target_published_flags and (
+        raw_draft_status in _PUBLISH_SUCCESS_STATUSES
+        or raw_publish_status in _PUBLISH_SUCCESS_STATUSES
+        or any(val in _PUBLISH_SUCCESS_STATUSES for val in latest_by_platform.values())
+    ):
+        return "published", "published", "published"
+    # 单市场草稿或目标均属于同一平台时，若根状态或最新任务已成功，视为已发布
+    unique_target_platforms = {p for p in target_platforms if p}
+    if len(unique_target_platforms) <= 1 and (
+        raw_draft_status in _PUBLISH_SUCCESS_STATUSES
+        or raw_publish_status in _PUBLISH_SUCCESS_STATUSES
+        or any(val in _PUBLISH_SUCCESS_STATUSES for val in latest_by_platform.values())
+    ):
+        return "published", "published", "published"
+
+    if target_failed_status:
+        return "publish_failed", target_failed_status, target_failed_status
+    if raw_publish_status in _PUBLISH_FAILED_STATUSES:
+        return "publish_failed", raw_publish_status, raw_publish_status
+    if raw_draft_status in _PUBLISH_FAILED_STATUSES:
+        return "publish_failed", raw_draft_status, raw_draft_status
+
+    if any(target_published_flags):
+        return "unpublished", raw_draft_status or "claimed", "partial"
+    return "unpublished", raw_draft_status or "claimed", raw_publish_status
+
+
+def _draft_matches_scope(publish_state: str, scope: str) -> bool:
+    normalized = str(scope or "active").strip().lower()
+    if normalized == "all":
+        return True
+    if normalized in {"published", "archived"}:
+        return publish_state == "published"
+    if normalized in {"unpublished", "publishing", "publish_failed"}:
+        return publish_state == normalized
+    # active 默认包含未发布、发布中、发布失败（即全部非已发布草稿）
+    return publish_state != "published"
 
 
 def _without_publish_logs(value: Any) -> Any:
@@ -1347,7 +1480,73 @@ class ErpDatabase:
             items.append(item)
         return items
 
-    def list_product_records(self, limit: int = 500, *, list_only: bool = False) -> list[dict[str, Any]]:
+    def _load_draft_publish_jobs_map(
+        self,
+        conn: sqlite3.Connection,
+        draft_ids: list[str] | None = None,
+    ) -> dict[str, list[tuple[str, str]]]:
+        """按时间倒序读取草稿关联的发布任务平台状态（同时覆盖单平台与多平台合批任务）。"""
+        filter_clause = ""
+        params: tuple[Any, ...] = ()
+        if draft_ids is not None:
+            unique_ids = list(dict.fromkeys(str(item or "").strip() for item in draft_ids if str(item or "").strip()))
+            if not unique_ids:
+                return {}
+            filter_clause = "WHERE entry_draft_id IN (SELECT value FROM json_each(?))"
+            params = (json_dumps(unique_ids),)
+        rows = conn.execute(
+            f"""
+            WITH job_entries AS (
+                SELECT
+                    coalesce(
+                        nullif(json_extract(p.value, '$.draft_id'), ''),
+                        nullif(j.draft_id, '')
+                    ) AS entry_draft_id,
+                    lower(coalesce(nullif(p.key, ''), j.platform, '')) AS entry_platform,
+                    coalesce(json_extract(p.value, '$.status'), '') AS entry_platform_status,
+                    j.status AS entry_job_status,
+                    j.updated_at AS sort_updated,
+                    j.created_at AS sort_created,
+                    j.rowid AS sort_rowid
+                FROM publish_jobs j
+                JOIN json_each(j.payload_json, '$.platforms') p
+                WHERE json_type(j.payload_json, '$.platforms') = 'object'
+                  AND p.type = 'object'
+                UNION ALL
+                SELECT
+                    j.draft_id AS entry_draft_id,
+                    lower(coalesce(j.platform, '')) AS entry_platform,
+                    '' AS entry_platform_status,
+                    j.status AS entry_job_status,
+                    j.updated_at AS sort_updated,
+                    j.created_at AS sort_created,
+                    j.rowid AS sort_rowid
+                FROM publish_jobs j
+                WHERE j.draft_id != ''
+                  AND coalesce(json_type(j.payload_json, '$.platforms'), '') != 'object'
+            )
+            SELECT entry_draft_id, entry_platform, entry_platform_status, entry_job_status
+            FROM job_entries
+            {filter_clause}
+            ORDER BY sort_updated DESC, sort_created DESC, sort_rowid DESC
+            """,
+            params,
+        ).fetchall()
+        result: dict[str, list[tuple[str, str]]] = {}
+        for row in rows:
+            entry_draft_id = str(row["entry_draft_id"] or "").strip()
+            if not entry_draft_id:
+                continue
+            status_val = _normalize_platform_job_status(
+                row["entry_platform_status"],
+                row["entry_job_status"],
+            )
+            if not status_val:
+                continue
+            result.setdefault(entry_draft_id, []).append((str(row["entry_platform"] or ""), status_val))
+        return result
+
+    def list_product_records(self, limit: int = 2000, *, list_only: bool = False) -> list[dict[str, Any]]:
         with self._connect() as conn:
             detail_column = "" if list_only else "p.product_json -> '$.publish_preview.mercadolibre.ok' AS precheck_json,"
             rows = conn.execute(
@@ -1365,11 +1564,91 @@ class ErpDatabase:
                 ORDER BY p.updated_at DESC
                 LIMIT ?
                 """,
-                (max(1, int(limit or 500)),),
+                (max(1, int(limit or 2000)),),
             ).fetchall()
             if list_only:
-                return [{**dict(row), "main_image": row["main_image"] or "",
-                         "product_file_path": f"sqlite://products/{row['product_id']}"} for row in rows]
+                product_ids = [row["product_id"] for row in rows]
+                draft_summary_rows = conn.execute(
+                    """
+                    SELECT d.draft_id, d.product_id, d.platform, d.site, d.status,
+                           json_extract(d.draft_json, '$.publish_status') AS publish_status,
+                           (SELECT json_group_array(json_object(
+                               'platform', json_extract(t.value, '$.platform'),
+                               'site', coalesce(json_extract(t.value, '$.site'), json_extract(t.value, '$.site_id')),
+                               'status', json_extract(t.value, '$.status'),
+                               'publish_status', coalesce(nullif(json_extract(t.value, '$.publish_status'), ''), json_extract(t.value, '$.publishStatus'))
+                            )) FROM json_each(d.draft_json, CASE WHEN json_type(d.draft_json, '$.target_sites') = 'array'
+                                     THEN '$.target_sites' ELSE '$.targetSites' END) t WHERE t.type = 'object') AS markets
+                    FROM platform_drafts d
+                    WHERE d.product_id IN (SELECT value FROM json_each(?))
+                    """,
+                    (json_dumps(product_ids),),
+                ).fetchall() if product_ids else []
+                jobs_by_draft = self._load_draft_publish_jobs_map(
+                    conn,
+                    [row["draft_id"] for row in draft_summary_rows],
+                )
+                product_summary: dict[str, dict[str, Any]] = {}
+                for drow in draft_summary_rows:
+                    pid = str(drow["product_id"] or "")
+                    info = product_summary.setdefault(
+                        pid,
+                        {
+                            "draft_count": 0,
+                            "platforms": [],
+                            "published_platforms": [],
+                            "published_count": 0,
+                            "publishing_count": 0,
+                            "failed_count": 0,
+                        },
+                    )
+                    info["draft_count"] += 1
+                    targets = json_loads(drow["markets"], []) or [{"platform": drow["platform"], "site": drow["site"]}]
+                    draft_platforms = _draft_platforms({"target_sites": targets}, drow["platform"])
+                    for plat in draft_platforms:
+                        if plat not in info["platforms"]:
+                            info["platforms"].append(plat)
+                    publish_state, _, _ = _resolve_draft_publish_state(
+                        draft_status=drow["status"],
+                        draft_publish_status=drow["publish_status"],
+                        primary_platform=drow["platform"],
+                        targets=targets,
+                        job_entries=jobs_by_draft.get(drow["draft_id"], []),
+                    )
+                    if publish_state == "published":
+                        info["published_count"] += 1
+                        for plat in draft_platforms:
+                            if plat not in info["published_platforms"]:
+                                info["published_platforms"].append(plat)
+                    elif publish_state == "publishing":
+                        info["publishing_count"] += 1
+                    elif publish_state == "publish_failed":
+                        info["failed_count"] += 1
+                result_rows: list[dict[str, Any]] = []
+                for row in rows:
+                    summary = product_summary.get(row["product_id"]) or {
+                        "draft_count": 0,
+                        "platforms": [],
+                        "published_platforms": [],
+                        "published_count": 0,
+                        "publishing_count": 0,
+                        "failed_count": 0,
+                    }
+                    library_stage = (
+                        "unclaimed"
+                        if summary["draft_count"] == 0
+                        else ("published" if summary["published_count"] > 0 else "claimed")
+                    )
+                    result_rows.append(
+                        {
+                            **dict(row),
+                            "main_image": row["main_image"] or "",
+                            "product_file_path": f"sqlite://products/{row['product_id']}",
+                            **summary,
+                            "library_stage": library_stage,
+                        }
+                    )
+                return result_rows
             # 工作台需要每个平台当前草稿的进度，只为本页商品批量投影进度所用字段。
             draft_rows = conn.execute("""
                 WITH ranked AS (
@@ -1405,26 +1684,28 @@ class ErpDatabase:
             drafts_by_product.setdefault(draft["product_id"], {})[platform] = summary
         return [_record_from_row(row, drafts_by_product.get(row["product_id"], {})) for row in rows]
 
-    def list_draft_rows(self, scope: str = "active", limit: int = 500) -> list[dict[str, Any]]:
-        """草稿箱只投影列表与市场选择所需字段，筛选在截取行数之前进行。"""
+    def list_draft_rows(self, scope: str = "active", limit: int = 2000) -> list[dict[str, Any]]:
+        """草稿箱只投影列表与市场选择所需字段，按真实发布态筛选后再截取行数。"""
+        resolved_limit = max(1, int(limit or 2000))
         with self._connect() as conn:
+            jobs_by_draft = self._load_draft_publish_jobs_map(conn)
             rows = conn.execute("""
-                WITH submitted AS (
-                    SELECT DISTINCT product_id, draft_id FROM publish_jobs WHERE draft_id != ''
-                )
-                SELECT d.draft_id, d.product_id, d.platform, d.site, d.created_at, d.updated_at,
-                       CASE WHEN submitted.draft_id IS NOT NULL THEN 'published' ELSE d.status END AS list_status,
+                SELECT d.draft_id, d.product_id, d.platform, d.site, d.status AS raw_status,
+                       d.created_at, d.updated_at,
                        coalesce(nullif(p.title, ''), json_extract(p.product_json, '$.name'), '') AS product_title,
                        p.source_platform, p.source_url,
                        json_extract(d.draft_json, '$.source_product_id') AS source_product_id,
                        json_extract(d.draft_json, '$.title') AS title,
-                       json_extract(d.draft_json, '$.publish_status') AS publish_status,
+                       coalesce(nullif(json_extract(d.draft_json, '$.publish_status'), ''),
+                                json_extract(d.draft_json, '$.publishStatus'), '') AS publish_status,
                        (SELECT m.preview_url FROM media_assets m WHERE m.product_id = d.product_id
                         ORDER BY m.is_main DESC, m.sort_order, m.id LIMIT 1) AS main_image,
                        (SELECT json_group_array(json_object(
                            'platform', json_extract(t.value, '$.platform'),
                            'site', coalesce(json_extract(t.value, '$.site'), json_extract(t.value, '$.site_id')),
                            'language', json_extract(t.value, '$.language'),
+                           'status', json_extract(t.value, '$.status'),
+                           'publish_status', coalesce(nullif(json_extract(t.value, '$.publish_status'), ''), json_extract(t.value, '$.publishStatus')),
                            'sites_to_sell', (SELECT json_group_array(json_object(
                                'site_id', coalesce(json_extract(m.value, '$.site_id'), json_extract(m.value, '$.siteId')),
                                'logistic_type', coalesce(json_extract(m.value, '$.logistic_type'), json_extract(m.value, '$.logisticType'))
@@ -1433,22 +1714,39 @@ class ErpDatabase:
                         )) FROM json_each(d.draft_json, CASE WHEN json_type(d.draft_json, '$.target_sites') = 'array'
                                  THEN '$.target_sites' ELSE '$.targetSites' END) t WHERE t.type = 'object') AS markets
                 FROM platform_drafts d JOIN products p ON p.product_id = d.product_id
-                LEFT JOIN submitted ON submitted.product_id = d.product_id AND submitted.draft_id = d.draft_id
-                WHERE :scope = 'all' OR (lower(list_status) = 'published') = (:scope IN ('published', 'archived'))
-                ORDER BY d.created_at DESC, d.rowid DESC LIMIT :limit
-            """, {"scope": scope, "limit": limit}).fetchall()
-        items = []
+                ORDER BY d.created_at DESC, d.rowid DESC
+            """).fetchall()
+        items: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
+            raw_status = str(item.pop("raw_status") or "")
+            raw_publish_status = str(item.get("publish_status") or "")
             targets = json_loads(item.pop("markets"), []) or [{"platform": row["platform"], "site": row["site"]}]
             for target in targets:
                 platform = str(target.get("platform") or row["platform"]).strip().lower()
                 site = marketplace_site(platform, target.get("site") or "")
                 target.update(platform=platform, site=site["code"], language=target.get("language") or site["language"])
-            item.update(status=item.pop("list_status"), language=targets[0]["language"],
-                        target_sites=targets, platforms=_draft_platforms({"target_sites": targets}, row["platform"]),
-                        source_product_id=item["source_product_id"] or item["product_id"])
+            publish_state, display_status, effective_publish_status = _resolve_draft_publish_state(
+                draft_status=raw_status,
+                draft_publish_status=raw_publish_status,
+                primary_platform=row["platform"],
+                targets=targets,
+                job_entries=jobs_by_draft.get(row["draft_id"], []),
+            )
+            if not _draft_matches_scope(publish_state, scope):
+                continue
+            item.update(
+                status=display_status,
+                publish_state=publish_state,
+                publish_status=effective_publish_status,
+                language=targets[0]["language"],
+                target_sites=targets,
+                platforms=_draft_platforms({"target_sites": targets}, row["platform"]),
+                source_product_id=item["source_product_id"] or item["product_id"],
+            )
             items.append(item)
+            if len(items) >= resolved_limit:
+                break
         return items
 
     def draft_updated_at(self, draft_id: str) -> str | None:
@@ -1467,6 +1765,7 @@ class ErpDatabase:
         scope = str(scope or "active").strip().lower()
         resolved_batch_size = max(1, int(batch_size or 200))
         with self._connect() as conn:
+            jobs_by_draft = self._load_draft_publish_jobs_map(conn)
             cursor = conn.execute(
                 """
                 SELECT d.*, p.title AS product_title, p.source_platform, p.source_url, p.product_json,
@@ -1475,25 +1774,19 @@ class ErpDatabase:
                          WHERE m.product_id = d.product_id
                          ORDER BY m.is_main DESC, m.sort_order ASC, m.id ASC
                          LIMIT 1
-                       ) AS main_image,
-                       submitted.draft_id IS NOT NULL AS publish_submitted
+                       ) AS main_image
                 FROM platform_drafts d
                 JOIN products p ON p.product_id = d.product_id
-                LEFT JOIN (
-                    SELECT DISTINCT product_id, draft_id FROM publish_jobs
-                    WHERE draft_id != ''
-                ) submitted ON submitted.product_id = d.product_id
-                           AND submitted.draft_id = d.draft_id
                 ORDER BY d.created_at DESC, d.rowid DESC
                 """,
             )
             while rows := cursor.fetchmany(resolved_batch_size):
                 for row in rows:
-                    item = self._draft_record_from_row(row)
-                    is_published = str(item.get("status") or "").lower() == "published"
-                    if scope == "published" and not is_published:
-                        continue
-                    if scope != "all" and scope != "published" and is_published:
+                    item = self._draft_record_from_row(
+                        row,
+                        job_entries=jobs_by_draft.get(row["draft_id"], []),
+                    )
+                    if not _draft_matches_scope(str(item.get("publish_state") or "unpublished"), scope):
                         continue
                     yield item
 
@@ -1513,18 +1806,14 @@ class ErpDatabase:
         return records
 
     @classmethod
-    def _draft_record_from_row(cls, row: sqlite3.Row) -> dict[str, Any]:
+    def _draft_record_from_row(
+        cls,
+        row: sqlite3.Row,
+        *,
+        job_entries: list[tuple[str, str]] | None = None,
+    ) -> dict[str, Any]:
         product = json_loads(row["product_json"], {})
         draft = cls._draft_from_row(row)
-        status = str(
-            draft.get("status")
-            or draft.get("publish_status")
-            or row["status"]
-            or "claimed"
-        )
-        # 草稿箱以成功提交任务为「已发布」；平台实际结果仍由发布任务持有。
-        if row["publish_submitted"]:
-            status = "published"
         selected_site = marketplace_site(row["platform"], row["site"])
         target_sites = (
             draft.get("target_sites")
@@ -1538,6 +1827,20 @@ class ErpDatabase:
                 }
             ]
         )
+        raw_status = str(
+            draft.get("status")
+            or draft.get("publish_status")
+            or row["status"]
+            or "claimed"
+        )
+        raw_publish_status = str(draft.get("publish_status") or "")
+        publish_state, display_status, effective_publish_status = _resolve_draft_publish_state(
+            draft_status=raw_status,
+            draft_publish_status=raw_publish_status,
+            primary_platform=row["platform"],
+            targets=target_sites,
+            job_entries=job_entries or [],
+        )
         return {
             "draft_id": row["draft_id"],
             "product_id": row["product_id"],
@@ -1549,7 +1852,8 @@ class ErpDatabase:
             "target_sites": target_sites,
             "site": row["site"],
             "language": str(draft.get("language") or ""),
-            "status": status,
+            "status": display_status,
+            "publish_state": publish_state,
             "title": draft.get("title") or "",
             "product_title": row["product_title"] or _dict(product).get("name") or "",
             "main_image": row["main_image"] or "",
@@ -1557,7 +1861,7 @@ class ErpDatabase:
             "source_url": row["source_url"] or "",
             "category_id": draft.get("category_id") or "",
             "category_path": draft.get("category_path") or "",
-            "publish_status": str(draft.get("publish_status") or ""),
+            "publish_status": effective_publish_status,
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "product_file_path": f"sqlite://products/{row['product_id']}",
@@ -2277,7 +2581,7 @@ class ErpDatabase:
                 FROM publish_jobs
                 WHERE status IN (
                     'pending', 'queued', 'running', 'retrying', 'completed',
-                    'outcome_unknown', 'pending_confirmation', 'interrupted'
+                    'outcome_unknown', 'pending_confirmation', 'interrupted', 'needs_attention'
                 )
                 ORDER BY created_at ASC
                 """,
@@ -2291,6 +2595,7 @@ class ErpDatabase:
                     "completed",
                     "outcome_unknown",
                     "interrupted",
+                    "needs_attention",
                 } and state.get("terminal_results_persisted"):
                     continue
                 states.append(state)

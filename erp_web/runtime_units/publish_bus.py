@@ -51,7 +51,7 @@ def publish_bus_terminal_status(status: str) -> str:
         return "published"
     if value == "outcome_unknown":
         return "outcome_unknown"
-    if value == "interrupted":
+    if value in {"interrupted", "needs_attention"}:
         return value
     if value in {
         "failed",
@@ -335,6 +335,7 @@ def persist_publish_bus_terminal_results(
     product = job_state.get("product") if isinstance(job_state.get("product"), dict) else {}
     job_product_id = str(product.get("product_id") or "").strip()
     persisted_drafts: dict[str, dict[str, Any]] = {}
+    persistence_errors: list[str] = []
     platforms = job_state.get("platforms") if isinstance(job_state.get("platforms"), dict) else {}
     for platform, item in platforms.items():
         if not isinstance(item, dict):
@@ -342,71 +343,77 @@ def persist_publish_bus_terminal_results(
         terminal_status = publish_bus_terminal_status(str(item.get("status") or ""))
         if not terminal_status:
             continue
-        draft_id = str(item.get("draft_id") or "").strip()
-        target_product_id = str(item.get("product_id") or job_product_id).strip()
-        if not draft_id or not target_product_id:
-            raise RuntimeError(
-                f"发布任务 {job_state.get('job_id') or ''} 缺少 draft_id 或 product_id，已阻止不安全的终态回写。"
+        try:
+            draft_id = str(item.get("draft_id") or "").strip()
+            target_product_id = str(item.get("product_id") or job_product_id).strip()
+            if not draft_id or not target_product_id:
+                raise RuntimeError(
+                    f"发布任务 {job_state.get('job_id') or ''} 缺少 draft_id 或 product_id，已阻止不安全的终态回写。"
+                )
+            with runtime_context.products.mutation_scope(
+                {"product_id": target_product_id, "draft_id": draft_id}
+            ):
+                draft = runtime_context.db.load_draft_model(draft_id)
+                if not draft:
+                    raise RuntimeError(f"发布任务绑定草稿不存在：{draft_id}")
+                stored_product_id = str(draft.get("product_id") or "").strip()
+                source_product_id = str(draft.get("source_product_id") or stored_product_id).strip()
+                target_platform = str(platform).strip().lower()
+                target_site = str(item.get("site") or "").strip().lower()
+                targets = draft_publish_targets(draft)
+                bound_target = next((target for target in targets
+                                     if target["platform"] == target_platform and target["site"].lower() == target_site), None)
+                if (
+                    stored_product_id != target_product_id
+                    or source_product_id != target_product_id
+                ):
+                    raise RuntimeError(
+                        "发布任务草稿绑定不一致："
+                        f"job={job_state.get('job_id') or ''}, draft={draft_id}, "
+                        f"expected_product={target_product_id}, "
+                        f"actual_product={stored_product_id}/{source_product_id}"
+                    )
+                if not target_site or bound_target is None:
+                    raise RuntimeError(
+                        "发布任务目标不属于绑定草稿："
+                        f"job={job_state.get('job_id') or ''}, draft={draft_id}, "
+                        f"target={target_platform}/{target_site or '-'}"
+                    )
+                last_job_id = (bound_target.get("last_publish_task") or {}).get("job_id")
+                if item.get("reconciliation") and last_job_id and last_job_id != job_state["job_id"]:
+                    last_job = runtime_context.db.load_publish_job(last_job_id)
+                    if last_job and (last_job.get("created_at", ""), last_job_id) > (job_state.get("created_at", ""), job_state["job_id"]):
+                        # 核对旧任务可更新其日志，草稿继续展示较新的发布任务。
+                        append_publish_bus_terminal_log(product, draft, job_state, str(platform), item, context=runtime_context)
+                        continue
+                draft = apply_publish_bus_result_to_draft(
+                    draft,
+                    job_state,
+                    str(platform),
+                    item,
+                )
+                runtime_context.db.upsert_draft_model(
+                    target_product_id,
+                    str(draft.get("platform") or ""),
+                    draft,
+                )
+                saved_draft = runtime_context.db.load_draft_model(draft_id)
+            append_publish_bus_terminal_log(
+                product,
+                saved_draft,
+                job_state,
+                str(platform),
+                item,
+                context=runtime_context,
             )
-        draft = runtime_context.db.load_draft_model(draft_id)
-        if not draft:
-            raise RuntimeError(f"发布任务绑定草稿不存在：{draft_id}")
-        stored_product_id = str(draft.get("product_id") or "").strip()
-        source_product_id = str(draft.get("source_product_id") or stored_product_id).strip()
-        target_platform = str(platform).strip().lower()
-        target_site = str(item.get("site") or "").strip().lower()
-        targets = draft_publish_targets(draft)
-        bound_target = next((target for target in targets
-                             if target["platform"] == target_platform and target["site"].lower() == target_site), None)
-        if (
-            stored_product_id != target_product_id
-            or source_product_id != target_product_id
-        ):
-            raise RuntimeError(
-                "发布任务草稿绑定不一致："
-                f"job={job_state.get('job_id') or ''}, draft={draft_id}, "
-                f"expected_product={target_product_id}, "
-                f"actual_product={stored_product_id}/{source_product_id}"
-            )
-        if not target_site or bound_target is None:
-            raise RuntimeError(
-                "发布任务目标不属于绑定草稿："
-                f"job={job_state.get('job_id') or ''}, draft={draft_id}, "
-                f"target={target_platform}/{target_site or '-'}"
-            )
-        last_job_id = (bound_target.get("last_publish_task") or {}).get("job_id")
-        if item.get("reconciliation") and last_job_id and last_job_id != job_state["job_id"]:
-            last_job = runtime_context.db.load_publish_job(last_job_id)
-            if last_job and (last_job.get("created_at", ""), last_job_id) > (job_state.get("created_at", ""), job_state["job_id"]):
-                # 核对旧任务可更新其日志，草稿继续展示较新的发布任务。
-                append_publish_bus_terminal_log(product, draft, job_state, str(platform), item, context=runtime_context)
-                continue
-        draft = apply_publish_bus_result_to_draft(
-            draft,
-            job_state,
-            str(platform),
-            item,
-        )
-        runtime_context.db.upsert_draft_model(
-            target_product_id,
-            str(draft.get("platform") or ""),
-            draft,
-        )
-        saved_draft = runtime_context.db.load_draft_model(draft_id)
-        append_publish_bus_terminal_log(
-            product,
-            saved_draft,
-            job_state,
-            str(platform),
-            item,
-            context=runtime_context,
-        )
-        persisted_drafts[str(platform)] = {
-            "draft_id": draft_id,
-            "product_id": target_product_id,
-            "site": str(item.get("site") or saved_draft.get("site") or ""),
-            "status": terminal_status,
-        }
+            persisted_drafts[str(platform)] = {
+                "draft_id": draft_id,
+                "product_id": target_product_id,
+                "site": str(item.get("site") or saved_draft.get("site") or ""),
+                "status": terminal_status,
+            }
+        except Exception as exc:
+            persistence_errors.append(str(exc))
     bindings = bindings_from_publish_job(job_state)
     if bindings:
         orders = OrderNotificationStore(
@@ -416,6 +423,8 @@ def persist_publish_bus_terminal_results(
     _schedule_published_online_ingest(job_state, context=runtime_context)
     if persisted_drafts:
         job_state["persisted_drafts"] = persisted_drafts
+    if persistence_errors:
+        raise RuntimeError("; ".join(persistence_errors))
     return job_state
 
 

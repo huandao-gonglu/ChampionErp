@@ -31,7 +31,7 @@ class ProductIndexParameters(DataModel):
 
 
 class DraftIndexParameters(ProductIndexParameters):
-    scope: Literal['active', 'published', 'archived', 'all'] = 'active'
+    scope: Literal['active', 'unpublished', 'publishing', 'publish_failed', 'published', 'archived', 'all'] = 'active'
 
 
 class DashboardAnalyticsParameters(DataModel):

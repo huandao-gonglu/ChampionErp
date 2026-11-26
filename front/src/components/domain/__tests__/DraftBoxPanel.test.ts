@@ -134,13 +134,15 @@ describe('DraftBoxPanel', () => {
     expect(wrapper.text()).toContain('复制草稿')
   })
 
-  it('活动草稿不会因新增或中间状态而从草稿箱消失', async () => {
+  it('草稿箱按待发布、发布中、发布失败和已发布区分展示并支持搜索', async () => {
     const wrapper = mount(DraftBoxPanel, {
       props: {
         drafts: [
           draft('category', 'category_ready', '类目已选择'),
           draft('future', 'awaiting_review', '待人工复核'),
-          draft('published', 'published', '已发布商品'),
+          { ...draft('publishing', 'publishing', '正在发布商品'), publishState: 'publishing' },
+          { ...draft('failed', 'failed', '发布失败商品'), publishState: 'publish_failed' },
+          { ...draft('published', 'published', '已发布商品'), publishState: 'published' },
         ],
         platformOptions: [],
         storeConfig: {},
@@ -148,17 +150,33 @@ describe('DraftBoxPanel', () => {
       },
     })
 
+    // 默认在「待发布」Tab
     expect(wrapper.text()).toContain('类目已选择')
     expect(wrapper.text()).toContain('待人工复核')
+    expect(wrapper.text()).not.toContain('正在发布商品')
+    expect(wrapper.text()).not.toContain('发布失败商品')
     expect(wrapper.text()).not.toContain('已发布商品')
-    expect(wrapper.text()).toContain('待处理：2')
+    expect(wrapper.text()).toContain('待发布：2')
+    expect(wrapper.text()).toContain('发布中：1')
+    expect(wrapper.text()).toContain('发布失败：1')
     expect(wrapper.text()).toContain('已发布：1')
 
-    await wrapper.findAll('select')[1].setValue('published')
+    await wrapper.get('[data-testid="draft-tab-publishing"]').trigger('click')
+    expect(wrapper.get('tbody').text()).toContain('正在发布商品')
+    expect(wrapper.get('tbody').text()).not.toContain('已发布商品')
 
-    expect(wrapper.text()).not.toContain('类目已选择')
-    expect(wrapper.text()).not.toContain('待人工复核')
-    expect(wrapper.text()).toContain('已发布商品')
+    await wrapper.get('[data-testid="draft-tab-failed"]').trigger('click')
+    expect(wrapper.get('tbody').text()).toContain('发布失败商品')
+    expect(wrapper.get('tbody').text()).not.toContain('正在发布商品')
+
+    await wrapper.get('[data-testid="draft-tab-published"]').trigger('click')
+    expect(wrapper.get('tbody').text()).toContain('已发布商品')
+    expect(wrapper.get('tbody').text()).not.toContain('类目已选择')
+
+    await wrapper.get('[data-testid="draft-tab-all"]').trigger('click')
+    await wrapper.get('input[type="search"]').setValue('发布失败')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(1)
+    expect(wrapper.get('tbody').text()).toContain('发布失败商品')
   })
 
   it('通过共享的两个选择器分别更新语言和市场', async () => {

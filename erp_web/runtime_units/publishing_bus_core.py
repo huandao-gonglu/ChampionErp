@@ -837,7 +837,7 @@ class PublishingBus:
     def retry_terminal_persistence(self) -> None:
         """已取得终态时只补偿本地回填，不再次查询或提交平台。"""
         for state in self.store.list_pending_publish_jobs():
-            if state.get("status") in {"completed", OUTCOME_UNKNOWN_JOB_STATUS, "interrupted"} and not state.get("terminal_results_persisted"):
+            if state.get("status") in {"completed", OUTCOME_UNKNOWN_JOB_STATUS, "interrupted", "needs_attention"} and not state.get("terminal_results_persisted"):
                 self._update_job_status(state["job_id"])
 
     def get_status(self, job_id: str) -> dict[str, Any]:
@@ -1355,7 +1355,7 @@ class PublishingBus:
             state["updated_at"] = current_time()
             self._write_state(job_id, state)
             if (
-                state["status"] in {"completed", OUTCOME_UNKNOWN_JOB_STATUS, "interrupted"}
+                state["status"] in {"completed", OUTCOME_UNKNOWN_JOB_STATUS, "interrupted", "needs_attention"}
                 and self.terminal_callback is not None
                 and not state.get("terminal_results_persisted")
             ):

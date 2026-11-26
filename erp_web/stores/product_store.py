@@ -1670,6 +1670,7 @@ class ProductStore:
             )
             if identity[0]
         }
+        published_states = {"published", "real_publish_success", "success"}
         for index, previous_target in changed_publish_targets.items():
             target = merged["target_sites"][index]
             persisted_target = existing_target_map.get(
@@ -1688,6 +1689,13 @@ class ProductStore:
                     if isinstance(normalized_existing.get("last_publish_task"), dict)
                     else {}
                 )
+            persisted_target_published = (
+                index not in changed_cbt_targets
+                and (
+                    str(persisted_target.get("status") or "").strip().lower() in published_states
+                    or str(persisted_target.get("publish_status") or "").strip().lower() in published_states
+                )
+            )
             target_identity = _draft_target_identity(target)
             merged["target_sites"][index] = {
                 **target,
@@ -1705,12 +1713,25 @@ class ProductStore:
                 "category_precheck": {},
                 "last_precheck": {},
                 "last_precheck_target": {},
-                "publish_status": "",
-                "status": "category_ready",
+                # 已发布事实不因编辑草稿被抹掉，只令旧预检缓存失效。
+                "publish_status": (
+                    str(persisted_target.get("publish_status") or "published")
+                    if persisted_target_published
+                    else ""
+                ),
+                "status": "published" if persisted_target_published else "category_ready",
                 # 远端商品身份是已发生的发布事实，不随草稿内容变化失效。
                 "last_publish_task": deepcopy(previous_publish_task),
             }
         if changed_publish_targets:
+            target_published_flags = [
+                str(item.get("status") or "").strip().lower() in published_states
+                or str(item.get("publish_status") or "").strip().lower() in published_states
+                for item in merged.get("target_sites", [])
+                if isinstance(item, dict)
+            ]
+            all_targets_published = bool(target_published_flags) and all(target_published_flags)
+            any_target_published = any(target_published_flags)
             merged.update(
                 {
                     "validation_errors": _trusted_pending_attribute_review_errors(
@@ -1725,8 +1746,16 @@ class ProductStore:
                     "category_precheck": {},
                     "last_precheck": {},
                     "last_precheck_target": {},
-                    "publish_status": "",
-                    "status": "category_ready",
+                    "publish_status": (
+                        "published"
+                        if all_targets_published
+                        else ("partial" if any_target_published else "")
+                    ),
+                    "status": (
+                        "published"
+                        if all_targets_published
+                        else ("partial" if any_target_published else "category_ready")
+                    ),
                     "last_publish_task": deepcopy(
                         normalized_existing.get("last_publish_task")
                         if isinstance(

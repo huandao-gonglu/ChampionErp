@@ -805,6 +805,9 @@ export type CollectBatchStatus = import('./workflow.generated').BackendCollectio
 
 
 
+export type LibraryStage = 'unclaimed' | 'claimed' | 'published'
+export type DraftPublishState = 'unpublished' | 'publishing' | 'publish_failed' | 'published'
+
 export interface ProductIndexItem {
   productId: string
   title: string
@@ -814,6 +817,12 @@ export interface ProductIndexItem {
   createdAt: string
   updatedAt: string
   platforms: Marketplace[]
+  publishedPlatforms?: Marketplace[]
+  draftCount?: number
+  publishedCount?: number
+  publishingCount?: number
+  failedCount?: number
+  libraryStage?: LibraryStage
   draftStatuses: Partial<Record<Marketplace, WorkflowStatus>>
   productFilePath: string
   collectStatus: string
@@ -840,6 +849,7 @@ export interface DraftIndexItem {
   site: string
   language: string
   status: WorkflowStatus | string
+  publishState?: DraftPublishState
   title: string
   productTitle: string
   mainImage: string

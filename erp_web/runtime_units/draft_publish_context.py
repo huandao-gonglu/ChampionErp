@@ -407,6 +407,19 @@ def _target_update_from_draft(draft: dict[str, Any]) -> dict[str, Any]:
     return {key: deepcopy(draft[key]) for key in TARGET_LISTING_KEYS if key in draft}
 
 
+_PUBLISHED_STATUS_VALUES = frozenset({"published", "real_publish_success", "success"})
+_FAILED_PUBLISH_STATUS_VALUES = frozenset({
+    "failed", "real_publish_failed", "not_ready", "interrupted",
+    "outcome_unknown", "needs_attention", "partial",
+})
+
+
+def _is_target_published(target: dict[str, Any]) -> bool:
+    status = str(target.get("status") or "").strip().lower()
+    publish_status = str(target.get("publish_status") or "").strip().lower()
+    return status in _PUBLISHED_STATUS_VALUES or publish_status in _PUBLISHED_STATUS_VALUES
+
+
 def merge_target_listing_into_draft(
     draft: dict[str, Any],
     target: dict[str, Any],
@@ -434,6 +447,20 @@ def merge_target_listing_into_draft(
             # CBT 子市场 operation 只属于 target_sites[]；根字段仅存在于当前发布投影。
             if key != "sites_to_sell" and key in updates:
                 merged[key] = deepcopy(updates[key])
+    # 多市场草稿按全部目标聚合根发布态，避免发非主市场漏标或发主市场误标整份草稿。
+    if next_targets and ("status" in updates or "publish_status" in updates):
+        published_flags = [_is_target_published(item) for item in next_targets]
+        if all(published_flags):
+            merged["status"] = "published"
+            merged["publish_status"] = "published"
+        elif any(published_flags):
+            merged["publish_status"] = "partial"
+            if str(merged.get("status") or "").strip().lower() == "published":
+                merged["status"] = "partial"
+        else:
+            updated_publish_status = str(updates.get("publish_status") or "").strip().lower()
+            if updated_publish_status in _FAILED_PUBLISH_STATUS_VALUES:
+                merged["publish_status"] = updated_publish_status
     return merged
 
 
