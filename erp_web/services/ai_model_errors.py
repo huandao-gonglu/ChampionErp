@@ -10,6 +10,103 @@ from urllib.parse import urlparse
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 
 
+AI_FATAL_MODEL_ERROR_CODES = frozenset(
+    {
+        "AI_PROVIDER_PAYMENT_REQUIRED",
+        "AI_PROVIDER_AUTH_FAILED",
+        "HTTP_401",
+        "HTTP_403",
+    }
+)
+AI_FATAL_MODEL_HTTP_STATUSES = frozenset({401, 402, 403})
+
+
+def use_case_label_for(use_case_id: str) -> str:
+    """按用例 ID 返回用户可读的功能名称，未知用例返回空字符串。"""
+
+    key = str(use_case_id or "").strip()
+    if not key:
+        return ""
+    from .ai_model_config import AI_USE_CASES
+
+    spec = AI_USE_CASES.get(key)
+    return str(spec.get("label") or "").strip() if isinstance(spec, dict) else ""
+
+
+def model_error_attribution(
+    *,
+    use_case_id: str = "",
+    use_case_label: str = "",
+    model_id: str = "",
+    model_name: str = "",
+) -> dict[str, str]:
+    """构造可安全透传到上层工具与前端的“功能 + 模型”归属字段。"""
+
+    clean_use_case_id = safe_model_error_text(use_case_id)
+    clean_use_case_label = safe_model_error_text(use_case_label) or use_case_label_for(
+        clean_use_case_id
+    )
+    clean_model_id = safe_model_error_text(model_id)
+    clean_model_name = safe_model_error_text(model_name)
+    details: dict[str, str] = {}
+    if clean_use_case_id:
+        details["use_case_id"] = clean_use_case_id
+    if clean_use_case_label:
+        details["use_case_label"] = clean_use_case_label
+    if clean_model_id:
+        details["model_id"] = clean_model_id
+    if clean_model_name:
+        details["model_name"] = clean_model_name
+    return details
+
+
+def is_fatal_model_http_status(status_code: int | None) -> bool:
+    return isinstance(status_code, int) and status_code in AI_FATAL_MODEL_HTTP_STATUSES
+
+
+def format_model_http_error_message(
+    *,
+    status_code: int,
+    raw_detail: str,
+    use_case_id: str = "",
+    use_case_label: str = "",
+    model_id: str = "",
+    model_name: str = "",
+) -> str:
+    """为 402 / 401 / 403 生成明确指认“功能 + 模型”的错误文案，同时保留脱敏后的原始明细。"""
+
+    attribution = model_error_attribution(
+        use_case_id=use_case_id,
+        use_case_label=use_case_label,
+        model_id=model_id,
+        model_name=model_name,
+    )
+    label = attribution.get("use_case_label") or attribution.get("use_case_id") or ""
+    model_display = attribution.get("model_name") or attribution.get("model_id") or ""
+    if label and model_display:
+        subject = f"「{label}」绑定的模型「{model_display}」"
+    elif label:
+        subject = f"「{label}」绑定的模型"
+    elif model_display:
+        subject = f"AI 模型「{model_display}」"
+    else:
+        subject = "AI Provider"
+
+    detail = safe_model_error_text(raw_detail)
+    suffix = f"（明细：{detail}）" if detail else ""
+    if status_code == 402:
+        return (
+            f"{subject}余额不足或计费不可用（HTTP 402），"
+            f"请充值或在「授权配置 → AI 模型」切换绑定。{suffix}"
+        )
+    if status_code in {401, 403}:
+        return (
+            f"{subject}鉴权失败或无访问权限（HTTP {status_code}），"
+            f"请检查 API Key 或在「授权配置 → AI 模型」切换绑定。{suffix}"
+        )
+    return detail or f"{subject}请求失败（HTTP {status_code}）。"
+
+
 class AIHTTPError(RuntimeError):
     """配置的 AI Model/Provider 返回 HTTP 错误。"""
 
@@ -23,6 +120,9 @@ class AIHTTPError(RuntimeError):
         model_name: str,
         api_style: str,
         endpoint: str,
+        use_case_id: str = "",
+        use_case_label: str = "",
+        model_display_name: str = "",
     ) -> None:
         self.status_code = status_code
         self.reason = reason
@@ -31,12 +131,29 @@ class AIHTTPError(RuntimeError):
         self.model_name = model_name
         self.api_style = api_style
         self.endpoint = endpoint
-        model_label = model_id or model_name or "unknown"
+        self.use_case_id = str(use_case_id or "").strip()
+        self.use_case_label = (
+            str(use_case_label or "").strip() or use_case_label_for(self.use_case_id)
+        )
+        self.model_display_name = str(model_display_name or "").strip()
+        model_label = self.model_display_name or model_id or model_name or "unknown"
         detail_text = f": {detail}" if detail else f": {reason}" if reason else ""
-        super().__init__(
+        raw_message = (
             f"AI 模型请求失败：{model_label} ({api_style}, {endpoint}) "
             f"HTTP {status_code}{detail_text}"
         )
+        if status_code in AI_FATAL_MODEL_HTTP_STATUSES:
+            message = format_model_http_error_message(
+                status_code=status_code,
+                raw_detail=raw_message,
+                use_case_id=self.use_case_id,
+                use_case_label=self.use_case_label,
+                model_id=model_id,
+                model_name=self.model_display_name or model_name or model_id,
+            )
+        else:
+            message = raw_message
+        super().__init__(message)
 
 
 class AIModelRequestError(RuntimeError):
@@ -81,22 +198,69 @@ def safe_model_error_text(value: Any) -> str:
     return _detail_text(value)
 
 
-def direct_model_error_payload(exc: Exception) -> dict[str, Any] | None:
-    """让 Agent 和业务工具保留集中 Direct Model 边界的安全失败原因。"""
+def direct_model_error_payload(
+    exc: Exception,
+    *,
+    use_case_id: str = "",
+    model_id: str = "",
+    model_name: str = "",
+) -> dict[str, Any] | None:
+    """让 Agent 和业务工具保留集中 Direct Model 边界的安全失败原因与模型归属。"""
     if not isinstance(exc, (AIHTTPError, AIModelRequestError)):
         return None
-    message = safe_model_error_text(str(exc)) or "AI 模型请求失败。"
     if isinstance(exc, AIModelRequestError):
-        return {"code": "AIModelRequestError", "message": message,
-                "retryable": True, "details": {}}
+        message = safe_model_error_text(str(exc)) or "AI 模型请求失败。"
+        return {
+            "code": "AIModelRequestError",
+            "message": message,
+            "retryable": True,
+            "details": model_error_attribution(
+                use_case_id=use_case_id,
+                model_id=model_id,
+                model_name=model_name,
+            ),
+        }
     status_code = int(exc.status_code)
-    if status_code == 402:
-        message = "AI Provider 余额不足或计费配置不可用。" + message
+    effective_use_case_id = exc.use_case_id or str(use_case_id or "").strip()
+    effective_use_case_label = exc.use_case_label or use_case_label_for(effective_use_case_id)
+    effective_model_id = exc.model_id or str(model_id or "").strip()
+    effective_model_name = (
+        exc.model_display_name
+        or exc.model_name
+        or str(model_name or "").strip()
+        or effective_model_id
+    )
+    raw_detail = safe_model_error_text(exc.detail or exc.reason or str(exc))
+    if status_code in AI_FATAL_MODEL_HTTP_STATUSES:
+        raw_message = (
+            f"HTTP {status_code}: {raw_detail}"
+            if raw_detail and f"HTTP {status_code}" not in raw_detail
+            else (raw_detail or safe_model_error_text(str(exc)))
+        )
+        message = format_model_http_error_message(
+            status_code=status_code,
+            raw_detail=raw_message,
+            use_case_id=effective_use_case_id,
+            use_case_label=effective_use_case_label,
+            model_id=effective_model_id,
+            model_name=effective_model_name,
+        )
+    else:
+        message = safe_model_error_text(str(exc)) or "AI 模型请求失败。"
+    details: dict[str, Any] = {
+        "status_code": status_code,
+        **model_error_attribution(
+            use_case_id=effective_use_case_id,
+            use_case_label=effective_use_case_label,
+            model_id=effective_model_id,
+            model_name=effective_model_name,
+        ),
+    }
     return {
         "code": "AI_PROVIDER_PAYMENT_REQUIRED" if status_code == 402 else f"HTTP_{status_code}",
         "message": message,
         "retryable": status_code in {408, 425, 429} or status_code >= 500,
-        "details": {"status_code": status_code, "model_id": safe_model_error_text(exc.model_id)},
+        "details": details,
     }
 
 
@@ -188,6 +352,8 @@ def map_pydantic_model_error(
     model_name: str,
     api_style: str,
     base_url: str,
+    use_case_id: str = "",
+    model_display_name: str = "",
 ) -> Exception:
     """把 Pydantic 的公开异常转换为不泄密的项目错误。"""
 
@@ -202,22 +368,30 @@ def map_pydantic_model_error(
             model_name=model_name or str(exc.model_name or ""),
             api_style=api_style,
             endpoint=safe_provider_endpoint(base_url, api_style),
+            use_case_id=use_case_id,
+            model_display_name=model_display_name,
         )
     if isinstance(exc, ModelAPIError):
         return AIModelRequestError(
             safe_model_error_text(exc.message)
-            or f"{exc.__class__.__name__}: {model_id or model_name or 'unknown'}"
+            or f"{exc.__class__.__name__}: {model_display_name or model_id or model_name or 'unknown'}"
         )
     return exc
 
 
 __all__ = [
+    "AI_FATAL_MODEL_ERROR_CODES",
+    "AI_FATAL_MODEL_HTTP_STATUSES",
     "AIHTTPError",
     "AIModelRequestError",
     "direct_model_error_payload",
+    "format_model_http_error_message",
+    "is_fatal_model_http_status",
     "map_pydantic_model_error",
+    "model_error_attribution",
     "model_http_error_detail",
     "model_http_error_payload",
     "safe_model_error_text",
     "safe_provider_endpoint",
+    "use_case_label_for",
 ]

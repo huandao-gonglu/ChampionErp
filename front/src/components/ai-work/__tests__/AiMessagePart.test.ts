@@ -168,13 +168,101 @@ describe('AiMessagePart', () => {
     })
     const details = wrapper.get<HTMLDetailsElement>('[data-testid="ai-tool-details"]')
     expect(details.element.open).toBe(false)
-    expect(details.get('summary').text()).toContain('脚本检查未通过')
+    expect(details.get('summary').text()).toContain('重新调整')
     expect(details.find('[data-testid="ai-script-diagnostic"]').exists()).toBe(false)
     await expand(details)
     expect(details.get('[data-testid="ai-script-diagnostic"]').text()).toBe(errorText)
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('操作失败')
     expect(wrapper.text()).not.toContain('已修复')
+  })
+
+  it('run_code 按调用函数展示业务动作标题、实时子进度、单步耗时并格式化展开脚本', async () => {
+    const outputSpy = vi.fn(() => ({ done: 20 }))
+    const wrapper = mount(AiMessagePart, {
+      props: {
+        part: {
+          type: 'tool-run_code',
+          toolCallId: 'call-batch',
+          state: 'input-available',
+          input: { code: 'import asyncio\nres = await asyncio.gather(*[category_match(draft_id=i) for i in ids])\nres' },
+          output: { toJSON: outputSpy },
+        } as unknown as AiUiPart,
+        active: true,
+        stepElapsedSeconds: 65,
+        codeProgress: {
+          tool_call_id: 'call-batch',
+          tool_name: 'category_match',
+          started: 20,
+          completed: 11,
+          failed: 1,
+          active: 9,
+          tools: [{ name: 'category_match', started: 20, completed: 11, failed: 1, active: 9 }],
+        },
+        writeReceipts: [
+          { tool_call_id: 'call-batch__1', tool_name: 'category_match', output: { ok: true } },
+          { tool_call_id: 'call-batch__2', tool_name: 'category_match', output: { ok: false } },
+        ],
+      },
+    })
+
+    expect(wrapper.get('summary').text()).toContain('批量处理 · 匹配商品类目')
+    expect(wrapper.get('summary').text()).toContain('执行中')
+    expect(wrapper.get('[data-testid="ai-tool-elapsed"]').text()).toBe('1分 5秒')
+    expect(wrapper.get('[data-testid="ai-tool-progress"]').text()).toBe('正在匹配商品类目：已完成 11/20，1 项异常')
+    expect(outputSpy).not.toHaveBeenCalled()
+
+    await expand(wrapper.get<HTMLDetailsElement>('[data-testid="ai-tool-details"]'))
+    expect(wrapper.get('[data-testid="ai-run-code-source"]').text()).toContain('category_match(draft_id=i)')
+    expect(wrapper.get('[data-testid="ai-run-code-source"]').text()).not.toContain('\\n')
+    expect(wrapper.get('[data-testid="ai-run-code-receipts"]').text()).toContain('匹配商品类目 × 2（1 项失败）')
+    expect(outputSpy).toHaveBeenCalledOnce()
+  })
+
+  it('run_code 运行中遇到首个 402 时立即在进度行下浮出红色故障告警并支持跳转模型设置', async () => {
+    const push = vi.fn().mockResolvedValue(undefined)
+    const { routerKey } = await import('vue-router')
+    const wrapper = mount(AiMessagePart, {
+      global: {
+        provide: { [routerKey as symbol]: { push } },
+      },
+      props: {
+        part: {
+          type: 'tool-run_code',
+          toolCallId: 'call-cat-402',
+          state: 'input-available',
+          input: { code: 'await category_match(draft_id="d1")' },
+        } as unknown as AiUiPart,
+        active: true,
+        codeProgress: {
+          tool_call_id: 'call-cat-402',
+          tool_name: 'category_match',
+          started: 20,
+          completed: 2,
+          failed: 2,
+          active: 18,
+          tools: [{ name: 'category_match', started: 20, completed: 2, failed: 2, active: 18 }],
+          fatal_errors: [{
+            code: 'AI_PROVIDER_PAYMENT_REQUIRED',
+            status_code: 402,
+            use_case_id: 'category.product_match',
+            use_case_label: '商品类目候选匹配',
+            model_id: 'ai_model_ds41',
+            model_name: 'deepSeekv4.1flash',
+            message: '「商品类目候选匹配」绑定的模型「deepSeekv4.1flash」余额不足或计费不可用（HTTP 402），请充值或在「授权配置 → AI 模型」切换绑定。',
+            count: 2,
+          }],
+        },
+      },
+    })
+
+    const alert = wrapper.get('[data-testid="ai-tool-fatal-alert"]')
+    expect(alert.text()).toContain('模型余额不足')
+    expect(alert.text()).toContain('商品类目候选匹配')
+    expect(alert.text()).toContain('deepSeekv4.1flash')
+    expect(alert.text()).toContain('已出现 2 次')
+    await alert.get('button').trigger('click')
+    expect(push).toHaveBeenCalledWith({ path: '/', query: { tab: 'auth', auth_section: 'ai_bindings' } })
   })
 
   it.each([

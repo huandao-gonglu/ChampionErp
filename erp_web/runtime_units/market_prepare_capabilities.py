@@ -209,10 +209,17 @@ def _prepare_copy(
             retryable=True,
         ) from exc
     if not bool(response.get("ok")):
+        error_code = text(response.get("error_code")) or "DRAFT_COPY_GENERATION_FAILED"
+        error_details = (
+            dict(response["error_details"])
+            if isinstance(response.get("error_details"), dict)
+            else None
+        )
         raise BusinessCapabilityError(
-            "DRAFT_COPY_GENERATION_FAILED",
+            error_code,
             text(response.get("error")) or "目标市场文案生成失败。",
-            retryable=True,
+            retryable=bool(response.get("retryable", True)),
+            details=error_details,
         )
     copy_payload = (
         response.get("copy") if isinstance(response.get("copy"), dict) else {}

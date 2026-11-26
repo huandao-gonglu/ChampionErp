@@ -1,8 +1,14 @@
+import type { BusinessWriteReceipt, CodeProgressSnapshot } from '@/types/aiWork'
+
 const toolLabels: Record<string, string> = {
   user_agents_update: '保存 AI 自定义指令',
   request_user_input: '补充信息',
+  search_tools: '查找可用能力',
+  business_data_catalog: '查看业务数据目录',
+  business_data_read: '读取业务数据',
   run_code: '处理业务',
   order_detail_read: '查看订单详情',
+  orders_query: '查询订单',
   orders_summary_read: '汇总订单',
   orders_sync: '同步订单',
   order_notification_update: '更新订单通知',
@@ -35,6 +41,7 @@ const toolLabels: Record<string, string> = {
   online_products_refresh_status: '查看商品同步进度',
   online_products_close: '结束待核对操作',
   online_products_change: '修改在线商品',
+  online_products_changes_apply: '批量修改在线商品',
   online_products_sync: '同步在线商品',
   online_products_reconcile: '核对在线商品',
   online_products_retry: '重试商品操作',
@@ -61,9 +68,11 @@ const toolLabels: Record<string, string> = {
   draft_duplicate: '复制草稿',
   draft_attributes_read: '查看草稿属性',
   draft_sku_attributes_update: '更新规格属性',
+  draft_sku_variants_check: '核对规格差异',
   draft_sku_selection_update: '选择商品规格',
   draft_package_estimates_preview: '比较尺寸区间运费',
   draft_package_estimates_confirm: '确认包装尺寸估算',
+  draft_package_estimates_apply: '应用包装估算',
   product_sku_facts_update: '更新商品 SKU 资料',
   draft_changes_apply: '保存草稿修改',
   copy_generate: '生成商品文案',
@@ -92,6 +101,8 @@ const toolLabels: Record<string, string> = {
   store_auth_checklist: '查看店铺授权要求',
   store_auth_check: '检查店铺授权',
   source_collect: '采集商品',
+  collection_links_add: '添加采集链接',
+  collection_links_read: '查看采集链接',
   collect_batch: '批量采集商品',
   collect_from_browser_tab: '从浏览器采集商品',
   collect_1688: '采集 1688 商品',
@@ -105,4 +116,79 @@ const toolLabels: Record<string, string> = {
 /** 将内部操作标识转换为用户可读的业务名称。 */
 export function describeAiTool(name: string): string {
   return toolLabels[name] || '处理操作'
+}
+
+const CALL_PATTERN = /\b([a-z][a-z0-9_]{2,})\s*\(/g
+
+function extractCodeToolNames(input: unknown): string[] {
+  if (!input || typeof input !== 'object') return []
+  const code = (input as { code?: unknown }).code
+  if (typeof code !== 'string' || !code.trim()) return []
+  const found: string[] = []
+  const seen = new Set<string>()
+  for (const match of code.matchAll(CALL_PATTERN)) {
+    const name = match[1]
+    if (name === 'run_code' || seen.has(name) || !(name in toolLabels)) continue
+    seen.add(name)
+    found.push(name)
+  }
+  return found
+}
+
+/**
+ * 为 run_code 生成可读的业务动作标题（仅展示用途，不反解析业务结果）。
+ * 优先复用服务端实时进度或写回执中的真实子工具名，其次匹配脚本中调用的已登记业务函数。
+ */
+export function describeRunCodeAction(
+  input: unknown,
+  progress?: CodeProgressSnapshot,
+  writeReceipts?: BusinessWriteReceipt[],
+  toolCallId?: string,
+): string {
+  const names: string[] = []
+  const seen = new Set<string>()
+  const pushName = (name: string) => {
+    if (!name || name === 'run_code' || seen.has(name)) return
+    seen.add(name)
+    names.push(name)
+  }
+  if (progress?.tools?.length) {
+    for (const item of progress.tools) pushName(item.name)
+  }
+  if (!names.length && toolCallId && writeReceipts?.length) {
+    const prefix = `${toolCallId}__`
+    for (const receipt of writeReceipts) {
+      if (receipt.tool_call_id.startsWith(prefix)) pushName(receipt.tool_name)
+    }
+  }
+  if (!names.length) {
+    for (const name of extractCodeToolNames(input)) pushName(name)
+  }
+  const labels: string[] = []
+  for (const name of names) {
+    const label = toolLabels[name]
+    if (label && !labels.includes(label)) labels.push(label)
+  }
+  if (!labels.length) {
+    const code = input && typeof input === 'object' ? (input as { code?: unknown }).code : undefined
+    return typeof code === 'string' && code.trim() ? '整理与计算数据' : toolLabels.run_code
+  }
+  const shown = labels.slice(0, 2).join('、')
+  return labels.length > 2 ? `批量处理 · ${shown}等 ${labels.length} 项` : `批量处理 · ${shown}`
+}
+
+/** 将瞬态 data-code-progress 格式化为可读的子步骤实时进度。 */
+export function formatCodeProgress(progress?: CodeProgressSnapshot): string {
+  if (!progress || progress.started <= 0) return ''
+  const currentTool = progress.tools.find(item => item.name === progress.tool_name)
+    ?? progress.tools.at(-1)
+  const label = describeAiTool(currentTool?.name || progress.tool_name)
+  const failSuffix = progress.failed > 0 ? `，${progress.failed} 项异常` : ''
+  if (progress.active === 0) {
+    return `已完成 ${progress.completed}/${progress.started} 项${label}${failSuffix}，正在整理结果…`
+  }
+  if (progress.tools.length > 1 && currentTool) {
+    return `正在${label}：${currentTool.completed}/${currentTool.started}（本步共 ${progress.completed}/${progress.started}${failSuffix}）`
+  }
+  return `正在${label}：已完成 ${progress.completed}/${progress.started}${failSuffix}`
 }

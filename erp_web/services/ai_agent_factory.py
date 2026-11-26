@@ -61,7 +61,10 @@ from .ai_model_factory import (
 )
 from .ai_model_context_projection import project_model_request
 from .ai_model_errors import (
+    AI_FATAL_MODEL_HTTP_STATUSES,
     direct_model_error_payload,
+    format_model_http_error_message,
+    model_error_attribution,
     model_http_error_payload,
     safe_model_error_text,
 )
@@ -82,6 +85,17 @@ OutputValidator = Callable[[RunContext[AiAgentDependencies], OutputT], OutputT]
 ModelBindingFactory = Callable[..., PydanticModelBinding]
 
 
+def _deadline_reserve_reached(ctx: RunContext[AiAgentDependencies]) -> bool:
+    support = ctx.deps.tool_runtime.run_support
+    if support is None:
+        return False
+    # 在原生工具准备阶段保留收尾时间；不另建重试循环或超时状态机。
+    execution = ctx.deps.execution_context
+    if not hasattr(support, "deadline_reserve_seconds"):
+        support.deadline_reserve_seconds = min(90, execution.remaining_seconds() / 10)
+    return execution.remaining_seconds() < support.deadline_reserve_seconds
+
+
 def _prepare_tools_within_usage_limit(
     ctx: RunContext[AiAgentDependencies],
     tool_defs: list[ToolDefinition],
@@ -90,15 +104,8 @@ def _prepare_tools_within_usage_limit(
     limit = ctx.deps.tool_runtime.max_tool_calls
     if limit is not None and ctx.usage.tool_calls >= limit:
         return []
-    support = ctx.deps.tool_runtime.run_support
-    if support is not None:
-        # 在原生工具准备阶段保留收尾时间；不另建重试循环或超时状态机。
-        execution = ctx.deps.execution_context
-        if not hasattr(support, "deadline_reserve_seconds"):
-            support.deadline_reserve_seconds = min(90, execution.remaining_seconds() / 10)
-        reserve = support.deadline_reserve_seconds
-        if execution.remaining_seconds() < reserve:
-            return []
+    if _deadline_reserve_reached(ctx):
+        return []
     return tool_defs
 
 
@@ -204,6 +211,9 @@ def _safe_agent_error(
     trace_id: str = "",
     tool_call_limit: int | None = None,
     tool_calls_used: int = 0,
+    use_case_id: str = "",
+    model_id: str = "",
+    model_name: str = "",
 ) -> AiAgentExecutionError:
     correlation = {
         "conversation_id": conversation_id,
@@ -211,7 +221,12 @@ def _safe_agent_error(
         "run_id": run_id,
         "trace_id": trace_id,
     }
-    direct_error = direct_model_error_payload(exc)
+    direct_error = direct_model_error_payload(
+        exc,
+        use_case_id=use_case_id,
+        model_id=model_id,
+        model_name=model_name,
+    )
     if direct_error is not None:
         # 输出校验中的翻译等 Direct Model 调用已在集中请求边界转换过异常。
         # 保留该服务的实际失败原因，不能归为模型输出无效或通用 Agent 错误。
@@ -219,17 +234,31 @@ def _safe_agent_error(
     if isinstance(exc, ModelHTTPError):
         provider_error = model_http_error_payload(exc)
         status_code = int(provider_error["status_code"])
-        message = f"HTTP {provider_error['status_code']}: {provider_error['message']}"
-        message += f" (code={provider_error['code']})"
+        effective_model_name = model_name or str(getattr(exc, "model_name", "") or "").strip()
+        attribution = model_error_attribution(
+            use_case_id=use_case_id,
+            model_id=model_id,
+            model_name=effective_model_name,
+        )
+        raw_message = f"HTTP {provider_error['status_code']}: {provider_error['message']}"
+        raw_message += f" (code={provider_error['code']})"
         if provider_error["request_id"]:
-            message += f" (request_id={provider_error['request_id']})"
-        if status_code == 402:
-            message = "AI Provider 余额不足或计费配置不可用。" + message
+            raw_message += f" (request_id={provider_error['request_id']})"
+        if status_code in AI_FATAL_MODEL_HTTP_STATUSES:
+            message = format_model_http_error_message(
+                status_code=status_code,
+                raw_detail=raw_message,
+                use_case_id=use_case_id,
+                model_id=model_id,
+                model_name=effective_model_name,
+            )
+        else:
+            message = raw_message
         return AiAgentExecutionError(
             "AI_PROVIDER_PAYMENT_REQUIRED" if status_code == 402 else str(provider_error["code"]),
             message,
             retryable=(status_code in {408, 425, 429} or status_code >= 500),
-            details=provider_error,
+            details={**provider_error, **attribution},
             **correlation,
         )
     if isinstance(exc, ModelAPIError):
@@ -237,6 +266,11 @@ def _safe_agent_error(
             exc.__class__.__name__,
             safe_model_error_text(exc.message) or exc.__class__.__name__,
             retryable=True,
+            details=model_error_attribution(
+                use_case_id=use_case_id,
+                model_id=model_id,
+                model_name=model_name,
+            ),
             **correlation,
         )
     if isinstance(exc, UnexpectedModelBehavior):
@@ -363,6 +397,8 @@ class AiAgentStreamSession(Generic[OutputT]):
         deferred_tool_results: DeferredToolResults | None = None,
         run_support: Any = None,
         usage: RunUsage | None = None,
+        model_id: str = "",
+        model_name: str = "",
     ) -> None:
         """只有绑定会话存储的运行负责提交原生历史与 Deferred。"""
 
@@ -378,6 +414,8 @@ class AiAgentStreamSession(Generic[OutputT]):
         self._deferred_tool_results = deferred_tool_results
         self._run_support = run_support
         self._usage = usage
+        self._model_id = str(model_id or "").strip()
+        self._model_name = str(model_name or "").strip()
         self._run_id = execution_context.attempt_id
         self._started = False
         self._history_persisted = False
@@ -496,6 +534,9 @@ class AiAgentStreamSession(Generic[OutputT]):
                 trace_id=self.trace_id,
                 tool_call_limit=self._profile.max_tool_calls,
                 tool_calls_used=self._dependencies.tool_runtime.unique_call_count,
+                use_case_id=self._profile.use_case_id,
+                model_id=self._model_id,
+                model_name=self._model_name,
             )
             if self._run_support is not None:
                 summary = self._run_support.failure_summary()
@@ -598,8 +639,8 @@ class AiAgentFactory:
             limit = ctx.deps.tool_runtime.max_tool_calls
             if limit is not None and limit - ctx.usage.tool_calls <= 1:
                 current["parallel_tool_calls"] = False
-            if limit is not None and ctx.usage.tool_calls >= limit:
-                # 同时约束 Provider 的工具选择，避免模型继续调用历史里已隐藏的查询工具。
+            if (limit is not None and ctx.usage.tool_calls >= limit) or _deadline_reserve_reached(ctx):
+                # 同时约束 Provider 的工具选择，避免模型继续调用历史里已隐藏的查询工具或空壳 run_code。
                 current["tool_choice"] = ToolOrOutput(function_tools=[])
             return current
 
@@ -762,6 +803,8 @@ class AiAgentFactory:
         trace_id = ""
         captured_messages: list[ModelMessage] = []
         session: AiAgentStreamSession[OutputT] | None = None
+        binding_model_id = ""
+        binding_model_name = ""
         try:
             binding = self.model_binding_factory(
                 self.app_dir,
@@ -770,6 +813,10 @@ class AiAgentFactory:
                 timeout_seconds=effective_timeout,
                 default_timeout_seconds=profile.timeout_seconds,
             )
+            binding_model_id = str(binding.model_id or "").strip()
+            binding_model_name = str(
+                binding.model_config.get("name") or binding.model_name or binding.model_id or ""
+            ).strip()
             runtime = AiToolRuntime(
                 toolset=toolset,
                 execution_context=execution_context,
@@ -819,6 +866,8 @@ class AiAgentFactory:
                         deferred_tool_results=deferred_tool_results,
                         run_support=run_support,
                         usage=usage,
+                        model_id=binding_model_id,
+                        model_name=binding_model_name,
                     )
                     try:
                         yield session
@@ -835,6 +884,9 @@ class AiAgentFactory:
                 task_run_id=execution_context.task_run_id,
                 run_id=run_id,
                 trace_id=trace_id,
+                use_case_id=profile.use_case_id,
+                model_id=binding_model_id,
+                model_name=binding_model_name,
             )
             if session is None and run_support is not None:
                 run_support.fail([], run_id, error={

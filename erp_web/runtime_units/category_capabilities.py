@@ -160,10 +160,16 @@ def match_category(
                     label="目标站点",
                     reason="请明确类目匹配的目标站点。",
                 )
+            failure_details = (
+                dict(failure.get("details"))
+                if isinstance(failure.get("details"), Mapping)
+                else None
+            )
             raise BusinessCapabilityError(
                 code,
                 message,
                 retryable=bool(failure.get("retryable")),
+                details=failure_details,
             )
         selected_category_id = text(match_result.get("selected_category_id"))
         if not selected_category_id:

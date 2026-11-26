@@ -76,8 +76,12 @@ const isAdmin = computed(() => Boolean(accountStore?.isAdmin))
 type AuthSettingsTab = 'ai_models' | 'ai_bindings' | 'stores' | 'research' | 'image_hosting' | 'crossborderbus' | 'alibaba'
 const activeAuthSettingsTab = ref<AuthSettingsTab>('ai_models')
 const authRoute = inject(routeLocationKey, undefined)
+const validAuthSections = new Set<AuthSettingsTab>(['ai_models', 'ai_bindings', 'stores', 'research', 'image_hosting', 'crossborderbus', 'alibaba'])
 watch(() => authRoute?.query.auth_section, section => {
-  if (section === 'crossborderbus' || section === 'alibaba') activeAuthSettingsTab.value = section
+  const value = Array.isArray(section) ? section[0] : section
+  if (value && validAuthSections.has(value as AuthSettingsTab)) {
+    activeAuthSettingsTab.value = value as AuthSettingsTab
+  }
 }, { immediate: true })
 const selectedAiModelIndex = ref(0)
 const aiModels = ref<UnknownRecord[]>([])
@@ -589,7 +593,107 @@ function aiModelProviderLabel(model: UnknownRecord): string {
   return providerOptions.value.find((item) => item.id === providerId)?.label
     || providerLabel(providerId)
 }
+const DEFAULT_GENERAL_USE_CASE_ID = 'global.chat'
+const IMAGE_TRANSLATE_USE_CASE_ID = 'image.translate'
+const PRIMARY_USE_CASE_ORDER = [DEFAULT_GENERAL_USE_CASE_ID, IMAGE_TRANSLATE_USE_CASE_ID] as const
+const INHERITING_USE_CASE_IDS = new Set([
+  'category.product_match',
+  'copy.generate',
+  'copy.preview',
+  'text.translate',
+  'image.plan',
+])
 const bindableUseCases = computed(() => aiUseCases.value.filter(useCase => useCase.global_binding !== false))
+const primaryBindableUseCases = computed(() => (
+  PRIMARY_USE_CASE_ORDER
+    .map(id => bindableUseCases.value.find(useCase => firstText(useCase.id) === id))
+    .filter((item): item is UnknownRecord => Boolean(item))
+))
+const overrideBindableUseCases = computed(() => (
+  bindableUseCases.value.filter(useCase => !PRIMARY_USE_CASE_ORDER.includes(firstText(useCase.id) as typeof PRIMARY_USE_CASE_ORDER[number]))
+))
+const defaultGeneralModelId = computed(() => useCaseBindingField(DEFAULT_GENERAL_USE_CASE_ID, 'model_id'))
+const defaultGeneralModel = computed(() => (
+  defaultGeneralModelId.value
+    ? aiModels.value.find(model => firstText(model.id) === defaultGeneralModelId.value && model.enabled !== false) || null
+    : null
+))
+const defaultGeneralModelLabel = computed(() => (
+  defaultGeneralModel.value ? firstText(defaultGeneralModel.value.name, defaultGeneralModel.value.id) : ''
+))
+const activeModelOverrideCount = computed(() => (
+  overrideBindableUseCases.value.filter(useCase => Boolean(useCaseBindingField(firstText(useCase.id), 'model_id'))).length
+))
+const activeParamOverrideCount = computed(() => (
+  bindableUseCases.value.filter(useCase => {
+    const id = firstText(useCase.id)
+    const binding = asRecord(aiUseCaseBindings.value[id])
+    return Boolean(firstText(binding.timeout_override_seconds) || useCaseBindingGenerationPayload(binding))
+  }).length
+))
+const advancedOverrideSummary = computed(() => {
+  const parts: string[] = []
+  if (activeModelOverrideCount.value > 0) parts.push(`已单独覆盖 ${activeModelOverrideCount.value} 项模型`)
+  if (activeParamOverrideCount.value > 0) parts.push(`${activeParamOverrideCount.value} 项参数覆盖`)
+  return parts.length ? parts.join(' · ') : '均跟随默认通用模型'
+})
+function resetAllModelOverrides() {
+  if (aiControlsLocked.value) return
+  for (const useCase of overrideBindableUseCases.value) {
+    const id = firstText(useCase.id)
+    if (id && useCaseBindingField(id, 'model_id')) setUseCaseBinding(id, '')
+  }
+}
+function primaryUseCaseTitle(useCase: UnknownRecord): string {
+  const id = firstText(useCase.id)
+  if (id === DEFAULT_GENERAL_USE_CASE_ID) return '默认通用模型'
+  if (id === IMAGE_TRANSLATE_USE_CASE_ID) return '图片翻译/重绘模型'
+  return firstText(useCase.label, id)
+}
+function primaryUseCaseDescription(useCase: UnknownRecord): string {
+  const id = firstText(useCase.id)
+  if (id === DEFAULT_GENERAL_USE_CASE_ID) {
+    return '负责全局 AI 对话、商品类目匹配、文案生成、翻译，以及支持识图时的套图规划。'
+  }
+  if (id === IMAGE_TRANSLATE_USE_CASE_ID) {
+    return '负责商品图与草稿套图的图片翻译和重绘（例如内置 Gemini Canvas）。'
+  }
+  return ''
+}
+function useCaseDefaultOptionLabel(useCase: UnknownRecord): string {
+  const id = firstText(useCase.id)
+  if (INHERITING_USE_CASE_IDS.has(id)) {
+    return defaultGeneralModelLabel.value
+      ? `跟随默认通用模型（${defaultGeneralModelLabel.value}）`
+      : '跟随默认通用模型'
+  }
+  return '自动匹配'
+}
+function missingCapabilitiesForModel(model: UnknownRecord, useCase: UnknownRecord): string[] {
+  const capabilities = new Set(modelCapabilities(model))
+  const isApi = normalizeConnectionType(model.connection_type) === API_CONNECTION_TYPE
+  return useCaseRequiredCapabilities(useCase)
+    .filter(capability => (capability === 'image_understanding' && !isApi) || !capabilities.has(capability))
+    .map(capability => capabilityLabelByValue[capability] || capability)
+}
+function inheritedCapabilityGapText(useCase: UnknownRecord): string {
+  const id = firstText(useCase.id)
+  if (!INHERITING_USE_CASE_IDS.has(id) || useCaseBindingField(id, 'model_id') || !defaultGeneralModel.value) return ''
+  const missing = missingCapabilitiesForModel(defaultGeneralModel.value, useCase)
+  if (!missing.length) return ''
+  return `默认通用模型「${defaultGeneralModelLabel.value}」缺少：${missing.join('、')}，需在此单独选择支持该能力的模型。`
+}
+const defaultGeneralCapabilityGaps = computed(() => {
+  if (!defaultGeneralModel.value) return []
+  return overrideBindableUseCases.value
+    .filter(useCase => INHERITING_USE_CASE_IDS.has(firstText(useCase.id)) && !useCaseBindingField(firstText(useCase.id), 'model_id'))
+    .map(useCase => ({
+      id: firstText(useCase.id),
+      label: firstText(useCase.label, useCase.id),
+      missing: missingCapabilitiesForModel(defaultGeneralModel.value!, useCase),
+    }))
+    .filter(item => item.missing.length > 0)
+})
 const activeAuthSettingsTabMeta = computed(() => authSettingsTabs.find((tab) => tab.key === activeAuthSettingsTab.value) || authSettingsTabs[0])
 const capabilityLabelByValue = Object.fromEntries(capabilityOptions.map((item) => [item.value, item.label]))
 const selectedAiModelConnectionType = computed(() => normalizeConnectionType(modelField('connection_type', API_CONNECTION_TYPE)))
@@ -1096,7 +1200,10 @@ function effectiveModelForUseCase(useCase: UnknownRecord): UnknownRecord | null 
   const boundModelId = useCaseBindingField(useCaseId, 'model_id')
   const compatible = compatibleModelsForUseCase(useCase)
   if (boundModelId) return compatible.find((model) => firstText(model.id) === boundModelId) || null
-  return compatible[0] || null
+  if (INHERITING_USE_CASE_IDS.has(useCaseId) && defaultGeneralModelId.value) {
+    return compatible.find((model) => firstText(model.id) === defaultGeneralModelId.value) || null
+  }
+  return compatible.find((model) => model.canvas_managed !== true) || compatible[0] || null
 }
 
 function derivedGenerationCapabilities(model: UnknownRecord | null): UnknownRecord {
@@ -2056,118 +2163,298 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h3 class="font-semibold text-accent-950 dark:text-white">功能绑定</h3>
-              <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">功能声明所需能力；这里只显示满足能力要求的模型，并可单独覆盖超时。</p>
+              <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">只需配置默认通用模型与图片翻译/重绘模型；文本与类目等子功能默认继承通用模型，按需在下方高级区单独覆盖。</p>
             </div>
             <button data-testid="save-ai-bindings" class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="saveAiSettings('bindings')">保存功能绑定</button>
           </div>
-          <div v-if="bindableUseCases.length" class="mt-4 grid gap-3 xl:grid-cols-2">
-            <div v-for="useCase in bindableUseCases" :key="String(useCase.id)" class="rounded-lg border border-accent-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">
-              <div class="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <span class="block text-sm font-semibold text-accent-950 dark:text-white">{{ useCase.label || useCase.id }}</span>
-                  <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">需要：{{ useCaseCapabilityText(useCase) }}</span>
+          <template v-if="bindableUseCases.length">
+            <!-- 主视图：仅突出 2 个核心槽位 -->
+            <div v-if="primaryBindableUseCases.length" class="mt-4 grid gap-3 xl:grid-cols-2" data-testid="ai-bindings-primary">
+              <div
+                v-for="useCase in primaryBindableUseCases"
+                :key="String(useCase.id)"
+                :data-testid="`primary-binding-card-${String(useCase.id)}`"
+                class="rounded-lg border border-accent-200 bg-white p-4 dark:border-dark-700 dark:bg-dark-900"
+              >
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <span class="block text-sm font-semibold text-accent-950 dark:text-white">{{ primaryUseCaseTitle(useCase) }}</span>
+                    <span v-if="primaryUseCaseDescription(useCase)" class="mt-1 block text-xs text-accent-500 dark:text-accent-400">{{ primaryUseCaseDescription(useCase) }}</span>
+                    <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">需要：{{ useCaseCapabilityText(useCase) }}</span>
+                  </div>
+                  <span class="badge-muted">{{ useCase.id }}</span>
                 </div>
-                <span class="badge-muted">{{ useCase.id }}</span>
+                <label class="mt-3 block">
+                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型</span>
+                  <select
+                    class="input"
+                    :data-testid="`binding-model-${String(useCase.id || '')}`"
+                    :value="useCaseBindingField(String(useCase.id || ''), 'model_id')"
+                    @change="setUseCaseBinding(String(useCase.id || ''), eventText($event))"
+                  >
+                    <option value="">{{ useCaseDefaultOptionLabel(useCase) }}</option>
+                    <option v-for="model in compatibleModelsForUseCase(useCase)" :key="String(model.id)" :disabled="model.connection_type !== API_CONNECTION_TYPE && ((desktopShell && !localOperations) || !useCase.desktop_capability)" :value="String(model.id)">{{ model.name || model.id }} · {{ model.provider }}</option>
+                  </select>
+                </label>
+                <p v-if="modelOperationReason(String(useCase.id))" role="status" class="muted mt-2">{{ modelOperationReason(String(useCase.id)) }}</p>
+                <div
+                  v-if="String(useCase.id) === DEFAULT_GENERAL_USE_CASE_ID && defaultGeneralCapabilityGaps.length"
+                  class="mt-3 rounded-md border border-amber-200 bg-amber-50/80 px-3 py-2 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
+                  data-testid="default-model-capability-gaps"
+                >
+                  <p v-for="gap in defaultGeneralCapabilityGaps" :key="gap.id">
+                    「{{ gap.label }}」需 {{ gap.missing.join('、') }}，当前默认模型未启用，请在下方「高级：按功能单独覆盖」中单独指定。
+                  </p>
+                </div>
               </div>
-              <label class="mt-3 block">
-                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型</span>
-                <select class="input" :value="useCaseBindingField(String(useCase.id || ''), 'model_id')" @change="setUseCaseBinding(String(useCase.id || ''), eventText($event))">
-                  <option value="">自动匹配</option>
-                  <option v-for="model in compatibleModelsForUseCase(useCase)" :key="String(model.id)" :disabled="model.connection_type !== API_CONNECTION_TYPE && ((desktopShell && !localOperations) || !useCase.desktop_capability)" :value="String(model.id)">{{ model.name || model.id }} · {{ model.provider }}</option>
-                </select>
-              </label>
-              <p v-if="modelOperationReason(String(useCase.id))" role="status" class="muted mt-2">{{ modelOperationReason(String(useCase.id)) }}</p>
-              <label class="mt-3 block">
-                <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">超时覆盖（秒）</span>
-                <input
-                  class="input"
-                  type="number"
-                  min="1"
-                  step="1"
-                  placeholder="留空继承模型设置"
-                  :value="useCaseBindingField(String(useCase.id || ''), 'timeout_override_seconds')"
-                  @input="setUseCaseBindingField(String(useCase.id || ''), 'timeout_override_seconds', eventText($event))"
-                />
-              </label>
-              <details v-if="useCaseSupportsTextGeneration(useCase)" :data-testid="`generation-settings-${String(useCase.id || '')}`" class="mt-3 rounded-lg border border-dashed border-accent-200 bg-accent-50/60 px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-950/50">
-                <summary class="cursor-pointer font-semibold text-accent-700 dark:text-accent-200">高级生成设置</summary>
-                <div class="mt-2 text-xs text-accent-500 dark:text-accent-400">当前：{{ useCaseGenerationModelText(useCase) }}。留空表示继承业务默认值。</div>
-                <div class="mt-3 grid gap-3 sm:grid-cols-2">
-                  <label class="block">
-                    <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Temperature</span>
-                    <input
-                      class="input"
-                      type="number"
-                      min="0"
-                      max="2"
-                      step="0.1"
-                      placeholder="继承"
-                      :data-testid="`generation-temperature-${String(useCase.id || '')}`"
-                      :disabled="aiControlsLocked || !useCaseGenerationFieldSupported(useCase, 'temperature')"
-                      :value="useCaseGenerationField(String(useCase.id || ''), 'temperature')"
-                      @input="setUseCaseGenerationField(String(useCase.id || ''), 'temperature', eventText($event))"
-                    />
-                  </label>
-                  <label class="block">
-                    <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">最大输出 Token</span>
-                    <input
-                      class="input"
-                      type="number"
-                      min="1"
-                      step="1"
-                      placeholder="继承"
-                      :data-testid="`generation-max-output-${String(useCase.id || '')}`"
-                      :disabled="aiControlsLocked || !useCaseGenerationFieldSupported(useCase, 'max_output_tokens')"
-                      :value="useCaseGenerationField(String(useCase.id || ''), 'max_output_tokens')"
-                      @input="setUseCaseGenerationField(String(useCase.id || ''), 'max_output_tokens', eventText($event))"
-                    />
-                  </label>
-                  <label class="block">
-                    <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">推理开关</span>
-                    <select
-                      class="input"
-                      :data-testid="`generation-reasoning-mode-${String(useCase.id || '')}`"
-                      :disabled="aiControlsLocked || !useCaseReasoningSupported(useCase)"
-                      :value="useCaseGenerationField(String(useCase.id || ''), 'mode', true)"
-                      @change="setUseCaseGenerationField(String(useCase.id || ''), 'mode', eventText($event), true)"
-                    >
-                      <option value="">继承模型默认</option>
-                      <option value="disabled">关闭</option>
-                      <option value="enabled">开启</option>
-                    </select>
-                  </label>
-                  <label v-if="useCaseReasoningEfforts(useCase).length" class="block">
-                    <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">推理强度</span>
-                    <select
-                      class="input"
-                      :data-testid="`generation-reasoning-effort-${String(useCase.id || '')}`"
-                      :disabled="aiControlsLocked || useCaseGenerationField(String(useCase.id || ''), 'mode', true) === 'disabled'"
-                      :value="useCaseGenerationField(String(useCase.id || ''), 'effort', true)"
-                      @change="setUseCaseGenerationField(String(useCase.id || ''), 'effort', eventText($event), true)"
-                    >
-                      <option value="">厂商默认（转换为 medium）</option>
-                      <option v-for="effort in useCaseReasoningEfforts(useCase)" :key="effort" :value="effort">{{ reasoningEffortLabel(effort) }}</option>
-                    </select>
-                  </label>
-                  <label v-if="useCaseReasoningBudgetSupported(useCase)" class="block">
-                    <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">推理预算 Token</span>
-                    <input
-                      class="input"
-                      type="number"
-                      min="1"
-                      step="1"
-                      placeholder="厂商默认"
-                      :disabled="aiControlsLocked || useCaseGenerationField(String(useCase.id || ''), 'mode', true) === 'disabled'"
-                      :value="useCaseGenerationField(String(useCase.id || ''), 'budget_tokens', true)"
-                      @input="setUseCaseGenerationField(String(useCase.id || ''), 'budget_tokens', eventText($event), true)"
-                    />
-                  </label>
-                </div>
-                <p class="mt-3 text-xs text-accent-500 dark:text-accent-400">{{ useCaseReasoningCapabilities(useCase).note || '当前模型未声明推理参数映射。' }}</p>
-                <p class="mt-1 text-xs text-amber-700 dark:text-amber-300">关闭推理通常能降低首字延迟，但不能保证翻译准确率；温度设为 0 也只提高稳定性，不等于结果必然正确。</p>
-              </details>
             </div>
-          </div>
+
+            <!-- 折叠区：按功能单独覆盖模型与超时/生成参数 -->
+            <details
+              data-testid="ai-bindings-advanced"
+              class="mt-4 rounded-lg border border-dashed border-accent-300 bg-white/80 p-4 dark:border-dark-600 dark:bg-dark-900/70"
+            >
+              <summary class="flex cursor-pointer flex-wrap items-center justify-between gap-2 text-sm font-semibold text-accent-800 dark:text-accent-100">
+                <span class="flex flex-wrap items-center gap-2">
+                  <span>高级：按功能单独覆盖</span>
+                  <span
+                    class="rounded px-2 py-0.5 text-xs font-normal"
+                    :class="activeModelOverrideCount > 0 ? 'bg-amber-100 text-amber-800 dark:bg-amber-500/20 dark:text-amber-200' : 'bg-accent-100 text-accent-600 dark:bg-dark-800 dark:text-accent-300'"
+                    data-testid="ai-bindings-advanced-summary"
+                  >
+                    {{ advancedOverrideSummary }}
+                  </span>
+                </span>
+                <button
+                  v-if="activeModelOverrideCount > 0"
+                  type="button"
+                  class="btn btn-outline py-1 text-xs font-normal"
+                  data-testid="reset-all-model-overrides"
+                  :disabled="aiControlsLocked"
+                  @click.stop.prevent="resetAllModelOverrides"
+                >
+                  全部恢复跟随默认
+                </button>
+              </summary>
+
+              <div v-if="overrideBindableUseCases.length" class="mt-4 grid gap-3 xl:grid-cols-2" data-testid="ai-bindings-overrides">
+                <div v-for="useCase in overrideBindableUseCases" :key="String(useCase.id)" class="rounded-lg border border-accent-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">
+                  <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <span class="block text-sm font-semibold text-accent-950 dark:text-white">{{ useCase.label || useCase.id }}</span>
+                      <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">需要：{{ useCaseCapabilityText(useCase) }}</span>
+                    </div>
+                    <span class="badge-muted">{{ useCase.id }}</span>
+                  </div>
+                  <label class="mt-3 block">
+                    <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">模型</span>
+                    <select
+                      class="input"
+                      :data-testid="`binding-model-${String(useCase.id || '')}`"
+                      :value="useCaseBindingField(String(useCase.id || ''), 'model_id')"
+                      @change="setUseCaseBinding(String(useCase.id || ''), eventText($event))"
+                    >
+                      <option value="">{{ useCaseDefaultOptionLabel(useCase) }}</option>
+                      <option v-for="model in compatibleModelsForUseCase(useCase)" :key="String(model.id)" :disabled="model.connection_type !== API_CONNECTION_TYPE && ((desktopShell && !localOperations) || !useCase.desktop_capability)" :value="String(model.id)">{{ model.name || model.id }} · {{ model.provider }}</option>
+                    </select>
+                  </label>
+                  <p v-if="inheritedCapabilityGapText(useCase)" role="status" class="mt-2 text-xs text-amber-700 dark:text-amber-300">{{ inheritedCapabilityGapText(useCase) }}</p>
+                  <p v-if="modelOperationReason(String(useCase.id))" role="status" class="muted mt-2">{{ modelOperationReason(String(useCase.id)) }}</p>
+                  <label class="mt-3 block">
+                    <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">超时覆盖（秒）</span>
+                    <input
+                      class="input"
+                      type="number"
+                      min="1"
+                      step="1"
+                      placeholder="留空继承模型设置"
+                      :value="useCaseBindingField(String(useCase.id || ''), 'timeout_override_seconds')"
+                      @input="setUseCaseBindingField(String(useCase.id || ''), 'timeout_override_seconds', eventText($event))"
+                    />
+                  </label>
+                  <details v-if="useCaseSupportsTextGeneration(useCase)" :data-testid="`generation-settings-${String(useCase.id || '')}`" class="mt-3 rounded-lg border border-dashed border-accent-200 bg-accent-50/60 px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-950/50">
+                    <summary class="cursor-pointer font-semibold text-accent-700 dark:text-accent-200">高级生成设置</summary>
+                    <div class="mt-2 text-xs text-accent-500 dark:text-accent-400">当前：{{ useCaseGenerationModelText(useCase) }}。留空表示继承业务默认值。</div>
+                    <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                      <label class="block">
+                        <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Temperature</span>
+                        <input
+                          class="input"
+                          type="number"
+                          min="0"
+                          max="2"
+                          step="0.1"
+                          placeholder="继承"
+                          :data-testid="`generation-temperature-${String(useCase.id || '')}`"
+                          :disabled="aiControlsLocked || !useCaseGenerationFieldSupported(useCase, 'temperature')"
+                          :value="useCaseGenerationField(String(useCase.id || ''), 'temperature')"
+                          @input="setUseCaseGenerationField(String(useCase.id || ''), 'temperature', eventText($event))"
+                        />
+                      </label>
+                      <label class="block">
+                        <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">最大输出 Token</span>
+                        <input
+                          class="input"
+                          type="number"
+                          min="1"
+                          step="1"
+                          placeholder="继承"
+                          :data-testid="`generation-max-output-${String(useCase.id || '')}`"
+                          :disabled="aiControlsLocked || !useCaseGenerationFieldSupported(useCase, 'max_output_tokens')"
+                          :value="useCaseGenerationField(String(useCase.id || ''), 'max_output_tokens')"
+                          @input="setUseCaseGenerationField(String(useCase.id || ''), 'max_output_tokens', eventText($event))"
+                        />
+                      </label>
+                      <label class="block">
+                        <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">推理开关</span>
+                        <select
+                          class="input"
+                          :data-testid="`generation-reasoning-mode-${String(useCase.id || '')}`"
+                          :disabled="aiControlsLocked || !useCaseReasoningSupported(useCase)"
+                          :value="useCaseGenerationField(String(useCase.id || ''), 'mode', true)"
+                          @change="setUseCaseGenerationField(String(useCase.id || ''), 'mode', eventText($event), true)"
+                        >
+                          <option value="">继承模型默认</option>
+                          <option value="disabled">关闭</option>
+                          <option value="enabled">开启</option>
+                        </select>
+                      </label>
+                      <label v-if="useCaseReasoningEfforts(useCase).length" class="block">
+                        <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">推理强度</span>
+                        <select
+                          class="input"
+                          :data-testid="`generation-reasoning-effort-${String(useCase.id || '')}`"
+                          :disabled="aiControlsLocked || useCaseGenerationField(String(useCase.id || ''), 'mode', true) === 'disabled'"
+                          :value="useCaseGenerationField(String(useCase.id || ''), 'effort', true)"
+                          @change="setUseCaseGenerationField(String(useCase.id || ''), 'effort', eventText($event), true)"
+                        >
+                          <option value="">厂商默认（转换为 medium）</option>
+                          <option v-for="effort in useCaseReasoningEfforts(useCase)" :key="effort" :value="effort">{{ reasoningEffortLabel(effort) }}</option>
+                        </select>
+                      </label>
+                      <label v-if="useCaseReasoningBudgetSupported(useCase)" class="block">
+                        <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">推理预算 Token</span>
+                        <input
+                          class="input"
+                          type="number"
+                          min="1"
+                          step="1"
+                          placeholder="厂商默认"
+                          :disabled="aiControlsLocked || useCaseGenerationField(String(useCase.id || ''), 'mode', true) === 'disabled'"
+                          :value="useCaseGenerationField(String(useCase.id || ''), 'budget_tokens', true)"
+                          @input="setUseCaseGenerationField(String(useCase.id || ''), 'budget_tokens', eventText($event), true)"
+                        />
+                      </label>
+                    </div>
+                    <p class="mt-3 text-xs text-accent-500 dark:text-accent-400">{{ useCaseReasoningCapabilities(useCase).note || '当前模型未声明推理参数映射。' }}</p>
+                    <p class="mt-1 text-xs text-amber-700 dark:text-amber-300">关闭推理通常能降低首字延迟，但不能保证翻译准确率；温度设为 0 也只提高稳定性，不等于结果必然正确。</p>
+                  </details>
+                </div>
+              </div>
+
+              <!-- 主槽位的超时与生成参数也收纳在高级区，保持主视图简洁 -->
+              <div v-if="primaryBindableUseCases.length" class="mt-4 border-t border-accent-200 pt-4 dark:border-dark-700">
+                <p class="text-xs font-semibold text-accent-600 dark:text-accent-300">主槽位超时与生成参数</p>
+                <div class="mt-3 grid gap-3 xl:grid-cols-2">
+                  <div v-for="useCase in primaryBindableUseCases" :key="`adv-${String(useCase.id)}`" class="rounded-lg border border-accent-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                      <span class="text-sm font-semibold text-accent-950 dark:text-white">{{ primaryUseCaseTitle(useCase) }}</span>
+                      <span class="badge-muted">{{ useCase.id }}</span>
+                    </div>
+                    <label class="mt-3 block">
+                      <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">超时覆盖（秒）</span>
+                      <input
+                        class="input"
+                        type="number"
+                        min="1"
+                        step="1"
+                        placeholder="留空继承模型设置"
+                        :value="useCaseBindingField(String(useCase.id || ''), 'timeout_override_seconds')"
+                        @input="setUseCaseBindingField(String(useCase.id || ''), 'timeout_override_seconds', eventText($event))"
+                      />
+                    </label>
+                    <details v-if="useCaseSupportsTextGeneration(useCase)" :data-testid="`generation-settings-${String(useCase.id || '')}`" class="mt-3 rounded-lg border border-dashed border-accent-200 bg-accent-50/60 px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-950/50">
+                      <summary class="cursor-pointer font-semibold text-accent-700 dark:text-accent-200">高级生成设置</summary>
+                      <div class="mt-2 text-xs text-accent-500 dark:text-accent-400">当前：{{ useCaseGenerationModelText(useCase) }}。留空表示继承业务默认值。</div>
+                      <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                        <label class="block">
+                          <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Temperature</span>
+                          <input
+                            class="input"
+                            type="number"
+                            min="0"
+                            max="2"
+                            step="0.1"
+                            placeholder="继承"
+                            :data-testid="`generation-temperature-${String(useCase.id || '')}`"
+                            :disabled="aiControlsLocked || !useCaseGenerationFieldSupported(useCase, 'temperature')"
+                            :value="useCaseGenerationField(String(useCase.id || ''), 'temperature')"
+                            @input="setUseCaseGenerationField(String(useCase.id || ''), 'temperature', eventText($event))"
+                          />
+                        </label>
+                        <label class="block">
+                          <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">最大输出 Token</span>
+                          <input
+                            class="input"
+                            type="number"
+                            min="1"
+                            step="1"
+                            placeholder="继承"
+                            :data-testid="`generation-max-output-${String(useCase.id || '')}`"
+                            :disabled="aiControlsLocked || !useCaseGenerationFieldSupported(useCase, 'max_output_tokens')"
+                            :value="useCaseGenerationField(String(useCase.id || ''), 'max_output_tokens')"
+                            @input="setUseCaseGenerationField(String(useCase.id || ''), 'max_output_tokens', eventText($event))"
+                          />
+                        </label>
+                        <label class="block">
+                          <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">推理开关</span>
+                          <select
+                            class="input"
+                            :data-testid="`generation-reasoning-mode-${String(useCase.id || '')}`"
+                            :disabled="aiControlsLocked || !useCaseReasoningSupported(useCase)"
+                            :value="useCaseGenerationField(String(useCase.id || ''), 'mode', true)"
+                            @change="setUseCaseGenerationField(String(useCase.id || ''), 'mode', eventText($event), true)"
+                          >
+                            <option value="">继承模型默认</option>
+                            <option value="disabled">关闭</option>
+                            <option value="enabled">开启</option>
+                          </select>
+                        </label>
+                        <label v-if="useCaseReasoningEfforts(useCase).length" class="block">
+                          <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">推理强度</span>
+                          <select
+                            class="input"
+                            :data-testid="`generation-reasoning-effort-${String(useCase.id || '')}`"
+                            :disabled="aiControlsLocked || useCaseGenerationField(String(useCase.id || ''), 'mode', true) === 'disabled'"
+                            :value="useCaseGenerationField(String(useCase.id || ''), 'effort', true)"
+                            @change="setUseCaseGenerationField(String(useCase.id || ''), 'effort', eventText($event), true)"
+                          >
+                            <option value="">厂商默认（转换为 medium）</option>
+                            <option v-for="effort in useCaseReasoningEfforts(useCase)" :key="effort" :value="effort">{{ reasoningEffortLabel(effort) }}</option>
+                          </select>
+                        </label>
+                        <label v-if="useCaseReasoningBudgetSupported(useCase)" class="block">
+                          <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">推理预算 Token</span>
+                          <input
+                            class="input"
+                            type="number"
+                            min="1"
+                            step="1"
+                            placeholder="厂商默认"
+                            :disabled="aiControlsLocked || useCaseGenerationField(String(useCase.id || ''), 'mode', true) === 'disabled'"
+                            :value="useCaseGenerationField(String(useCase.id || ''), 'budget_tokens', true)"
+                            @input="setUseCaseGenerationField(String(useCase.id || ''), 'budget_tokens', eventText($event), true)"
+                          />
+                        </label>
+                      </div>
+                      <p class="mt-3 text-xs text-accent-500 dark:text-accent-400">{{ useCaseReasoningCapabilities(useCase).note || '当前模型未声明推理参数映射。' }}</p>
+                      <p class="mt-1 text-xs text-amber-700 dark:text-amber-300">关闭推理通常能降低首字延迟，但不能保证翻译准确率；温度设为 0 也只提高稳定性，不等于结果必然正确。</p>
+                    </details>
+                  </div>
+                </div>
+              </div>
+            </details>
+          </template>
           <div v-else class="mt-4 rounded-lg border border-dashed border-accent-300 bg-white p-6 text-center text-sm text-accent-500 dark:border-dark-600 dark:bg-dark-900 dark:text-accent-300">
             当前没有可配置的 AI 功能。
           </div>

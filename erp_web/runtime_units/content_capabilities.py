@@ -36,6 +36,11 @@ from erp_web.schemas.content_capabilities import (
     TextTranslateRequest,
     TextTranslateResult,
 )
+from erp_web.services.ai_model_errors import (
+    AI_FATAL_MODEL_ERROR_CODES,
+    AI_FATAL_MODEL_HTTP_STATUSES,
+    direct_model_error_payload,
+)
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_errors import BusinessCapabilityError
 
@@ -153,10 +158,27 @@ def copy_generate(
         scope.app_config_loader(),
     )
     if not isinstance(result, dict) or not result.get("ok"):
+        error_code = (
+            _text(result.get("error_code"))
+            if isinstance(result, dict)
+            else ""
+        ) or "COPY_GENERATE_FAILED"
+        error_details = (
+            dict(result["error_details"])
+            if isinstance(result, dict) and isinstance(result.get("error_details"), dict)
+            else None
+        )
+        retryable = (
+            bool(result.get("retryable", True))
+            if isinstance(result, dict)
+            else False
+        )
         raise BusinessCapabilityError(
-            "COPY_GENERATE_FAILED",
+            error_code,
             _text(result.get("error") if isinstance(result, dict) else "")
             or "本地化文案生成失败。",
+            retryable=retryable,
+            details=error_details,
         )
     copy_record = {
         **result["copy"],
@@ -208,6 +230,8 @@ def copy_generate_batch(
         request.platform or "mercadolibre",
         request.language,
         request.mode or "rewrite",
+        include_products=False,
+        include_index=False,
     )
     if not isinstance(result, dict) or not result.get("ok"):
         raise BusinessCapabilityError(
@@ -215,10 +239,33 @@ def copy_generate_batch(
             _text(result.get("error") if isinstance(result, dict) else "")
             or "批量文案生成失败。",
         )
+    # 批量文案回执只返回有界摘要，不把整份商品与图片池塞进模型输出导致超限。
+    compact_items = tuple(
+        {
+            key: value
+            for key, value in item.items()
+            if key != "product"
+        }
+        for item in _dict_rows(result.get("items"))
+    )
+    success_count = int(result.get("success_count") or 0)
+    failed_count = int(result.get("failed_count") or 0)
+    if success_count == 0 and failed_count > 0:
+        for item in compact_items:
+            item_code = _text(item.get("error_code"))
+            item_details = item.get("error_details") if isinstance(item.get("error_details"), dict) else {}
+            item_status = item_details.get("status_code")
+            if item_code in AI_FATAL_MODEL_ERROR_CODES or item_status in AI_FATAL_MODEL_HTTP_STATUSES:
+                raise BusinessCapabilityError(
+                    item_code or f"HTTP_{item_status}",
+                    _text(item.get("error")) or "批量文案生成失败。",
+                    retryable=False,
+                    details=dict(item_details) if item_details else None,
+                )
     return CopyGenerateBatchResult(
-        success_count=int(result.get("success_count") or 0),
-        failed_count=int(result.get("failed_count") or 0),
-        items=_dict_rows(result.get("items")),
+        success_count=success_count,
+        failed_count=failed_count,
+        items=compact_items,
     )
 
 
@@ -282,6 +329,16 @@ def text_translate(
             "INVALID_TRANSLATION_REQUEST",
             str(exc) or "翻译请求无效。",
         ) from exc
+    except Exception as exc:
+        direct_error = direct_model_error_payload(exc, use_case_id="text.translate")
+        if direct_error is not None:
+            raise BusinessCapabilityError(
+                str(direct_error["code"]),
+                str(direct_error["message"]),
+                retryable=bool(direct_error.get("retryable", False)),
+                details=dict(direct_error.get("details") or {}),
+            ) from exc
+        raise
     return TextTranslateResult(
         target_language=request.target_language,
         translations=dict(translations),

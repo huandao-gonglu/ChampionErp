@@ -552,3 +552,181 @@ def test_repeated_tool_markup_exhausts_native_retries_without_executing(tmp_path
     assert ui.dump_ui_messages(CONVERSATION)["run_status"] == "failed"
     assert not executions
     assert not any((m.metadata or {}).get("chat_final") for m in ui.chat_service.trusted_history(CONVERSATION))
+
+
+def test_run_code_emits_transient_code_progress_chunks_without_polluting_history(tmp_path):
+    """run_code 内嵌套调用发出瞬态 data-code-progress SSE 事件，不写入持久化消息历史。"""
+    seen = []
+
+    async def model(messages, info):
+        if not business_returns(messages):
+            yield {0: code_delta(
+                "import asyncio\n"
+                "res = await asyncio.gather(lookup_row(draft_id='d1'), lookup_row(draft_id='d2'))\n"
+                "res",
+                "code-progress-call",
+            )}
+        else:
+            yield "两项查询完成。"
+
+    lookup = binding("lookup_row", lambda args, ctx: seen.append(args) or {"ok": True, "id": args["draft_id"]})
+    ui = service(tmp_path, FunctionModel(stream_function=model), tools(lookup))
+    raw_chunks = []
+    asyncio.run(ui.prepare_run(body("批量查询两条草稿")).stream(raw_chunks.append))
+
+    progress_events = []
+    for raw in raw_chunks:
+        text = raw.decode("utf-8")
+        for line in text.splitlines():
+            if not line.startswith("data: "):
+                continue
+            payload = line[6:].strip()
+            if not payload or payload == "[DONE]":
+                continue
+            event = json.loads(payload)
+            if event.get("type") == "data-code-progress":
+                progress_events.append(event)
+
+    assert len(seen) == 2
+    assert progress_events, "应在 SSE 流中收到瞬态 data-code-progress 事件"
+    assert all(event.get("transient") is True for event in progress_events)
+    final_progress = progress_events[-1]["data"]
+    assert final_progress["tool_call_id"] == "code-progress-call"
+    assert final_progress["tool_name"] == "lookup_row"
+    assert final_progress["started"] == 2
+    assert final_progress["completed"] == 2
+    assert final_progress["failed"] == 0
+    assert final_progress["active"] == 0
+
+    dumped = ui.dump_ui_messages(CONVERSATION)
+    all_part_types = [part["type"] for msg in dumped["messages"] for part in msg["parts"]]
+    assert "data-code-progress" not in all_part_types
+
+
+def test_run_code_and_search_tools_close_when_tool_budget_exhausted(tmp_path, monkeypatch):
+    """工具调用额度耗尽后，run_code 与 search_tools 必须一并隐藏并强制最终答复。"""
+    from pydantic_ai.settings import ToolOrOutput
+
+    monkeypatch.setattr(
+        global_agent_chat_service,
+        "GLOBAL_CHAT_PROFILE",
+        replace(global_agent_chat_service.GLOBAL_CHAT_PROFILE, max_tool_calls=2),
+    )
+    seen_tools: list[list[str]] = []
+    seen_tool_choices: list[object] = []
+
+    async def model(messages, info):
+        names = [tool.name for tool in info.function_tools]
+        seen_tools.append(names)
+        seen_tool_choices.append((info.model_settings or {}).get("tool_choice"))
+        if len(seen_tools) == 1:
+            discovery = discover_tools(info, "lookup_row")
+            assert discovery is not None
+            yield {0: discovery}
+        elif len(seen_tools) == 2:
+            yield {0: DeltaToolCall(name="lookup_row", json_args='{"draft_id":"d1"}', tool_call_id="c1")}
+        else:
+            yield "工具额度已用尽，直接汇总已完成结果。"
+
+    ts = replace(tools(binding("lookup_row", lambda args, ctx: {"ok": True})), defer_loading=True)
+    ui = service(tmp_path, FunctionModel(stream_function=model), ts)
+    asyncio.run(ui.prepare_run(body("检查一条草稿")).stream(lambda _: None))
+
+    assert len(seen_tools) == 3
+    assert "run_code" in seen_tools[0] and "search_tools" in seen_tools[0]
+    assert seen_tools[2] == []
+    assert seen_tool_choices[2] == ToolOrOutput(function_tools=[])
+    assert ui.dump_ui_messages(CONVERSATION)["run_status"] == "completed"
+
+
+def test_run_code_closes_when_deadline_reserve_reached(tmp_path, monkeypatch):
+    """进入最后收尾保留时间窗口后，即使仍有工具额度也必须关闭 run_code 并设置 tool_choice。"""
+    from pydantic_ai.settings import ToolOrOutput
+    from erp_web.schemas.ai_trace import AiExecutionContext
+
+    phase = {"closing": False}
+    monkeypatch.setattr(
+        AiExecutionContext,
+        "remaining_seconds",
+        lambda self, *, now=None: 45.0 if phase["closing"] else 900.0,
+    )
+    seen_tools: list[list[str]] = []
+    seen_tool_choices: list[object] = []
+
+    def lookup(args, ctx):
+        del args, ctx
+        phase["closing"] = True
+        return {"ok": True}
+
+    async def model(messages, info):
+        seen_tools.append([tool.name for tool in info.function_tools])
+        seen_tool_choices.append((info.model_settings or {}).get("tool_choice"))
+        if len(seen_tools) == 1:
+            yield {0: DeltaToolCall(name="lookup_row", json_args='{"draft_id":"d1"}', tool_call_id="c1")}
+        else:
+            yield "进入收尾窗口，直接输出当前进度。"
+
+    ui = service(tmp_path, FunctionModel(stream_function=model), tools(binding("lookup_row", lookup)))
+    asyncio.run(ui.prepare_run(body("检查一条草稿")).stream(lambda _: None))
+
+    assert len(seen_tools) == 2
+    assert "run_code" in seen_tools[0] and "lookup_row" in seen_tools[0]
+    assert seen_tools[1] == []
+    assert seen_tool_choices[1] == ToolOrOutput(function_tools=[])
+    assert ui.dump_ui_messages(CONVERSATION)["run_status"] == "completed"
+
+
+def test_run_code_emits_deduped_fatal_model_errors_in_code_progress(tmp_path):
+    """run_code 内嵌套调用遭遇 402 等致命模型故障时，实时进度事件立即携带去重告警摘要。"""
+    fatal_output = {
+        "ok": False,
+        "error": {
+            "code": "AI_PROVIDER_PAYMENT_REQUIRED",
+            "message": "「商品类目候选匹配」绑定的模型「deepSeekv4.1flash」余额不足或计费不可用（HTTP 402），请充值或在「授权配置 → AI 模型」切换绑定。",
+            "retryable": False,
+            "details": {
+                "status_code": 402,
+                "use_case_id": "category.product_match",
+                "use_case_label": "商品类目候选匹配",
+                "model_id": "ai_model_ds41",
+                "model_name": "deepSeekv4.1flash",
+            },
+        },
+    }
+
+    async def model(messages, info):
+        if not business_returns(messages):
+            yield {0: code_delta(
+                "r1 = await match_row(draft_id='d1')\n"
+                "r2 = await match_row(draft_id='d2')\n"
+                "[r1['ok'], r2['ok']]",
+                "fatal-progress-call",
+            )}
+        else:
+            yield "子模型余额不足，请切换模型后重试。"
+
+    matcher = binding("match_row", lambda args, ctx: fatal_output, write=True)
+    ui = service(tmp_path, FunctionModel(stream_function=model), tools(matcher))
+    raw_chunks = []
+    asyncio.run(ui.prepare_run(body("批量匹配类目")).stream(raw_chunks.append))
+
+    progress_events = []
+    for raw in raw_chunks:
+        for line in raw.decode("utf-8").splitlines():
+            if not line.startswith("data: "):
+                continue
+            payload = line[6:].strip()
+            if not payload or payload == "[DONE]":
+                continue
+            event = json.loads(payload)
+            if event.get("type") == "data-code-progress":
+                progress_events.append(event["data"])
+
+    with_fatal = [item for item in progress_events if item.get("fatal_errors")]
+    assert with_fatal, "首个 402 发生时应立即在 data-code-progress 浮出致命故障摘要"
+    last_fatal = with_fatal[-1]["fatal_errors"]
+    assert len(last_fatal) == 1
+    assert last_fatal[0]["code"] == "AI_PROVIDER_PAYMENT_REQUIRED"
+    assert last_fatal[0]["use_case_label"] == "商品类目候选匹配"
+    assert last_fatal[0]["model_name"] == "deepSeekv4.1flash"
+    assert last_fatal[0]["count"] == 2

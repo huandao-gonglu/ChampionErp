@@ -19,9 +19,19 @@ def model_platform_reason(config, use_case, *, desktop_reason=None, require_mode
     try:
         model = ai_model_config.resolve_ai_model(config, use_case)
     except RuntimeError as exc:
+        inherited_default = (
+            use_case in ai_model_config.GENERAL_MODEL_INHERITING_USE_CASES
+            and bool(
+                ai_model_config.ai_use_case_binding(
+                    config, ai_model_config.DEFAULT_GENERAL_USE_CASE_ID
+                ).get("model_id")
+            )
+        )
         if use_case == 'image.plan':
+            if inherited_default or ai_model_config.ai_use_case_binding(config, use_case).get('model_id'):
+                return str(exc)
             return '套图规划需要具备文本、JSON 和图片理解能力的 API 模型，请在模型设置中测试并绑定。'
-        if require_model or ai_model_config.ai_use_case_binding(config, use_case).get('model_id'):
+        if require_model or ai_model_config.ai_use_case_binding(config, use_case).get('model_id') or inherited_default:
             return str(exc)
         return ''
     if ai_model_config.model_connection_type(model) == ai_model_config.CONNECTION_TYPE_API:

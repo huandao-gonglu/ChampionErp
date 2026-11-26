@@ -4,12 +4,13 @@ import type { UIMessage } from 'ai'
 import AiMessagePart from './AiMessagePart.vue'
 import AiAssistantTurn from './AiAssistantTurn.vue'
 import AiManualActionReceipt from './AiManualActionReceipt.vue'
-import type { PendingToolCall } from '@/types/aiWork'
+import type { CodeProgressSnapshot, PendingToolCall } from '@/types/aiWork'
 import { groupAiMessages } from '@/utils/aiMessagePresentation'
 
 const props = defineProps<{
   messages: UIMessage[]
   pendingToolCalls?: PendingToolCall[]
+  codeProgress?: Record<string, CodeProgressSnapshot>
   active?: boolean
   allowBranch?: boolean
 }>()
@@ -35,6 +36,7 @@ const groups = computed(() => groupAiMessages(props.messages))
           v-if="message.role === 'assistant'"
           :parts="message.parts"
           :write-receipts="message.writeReceipts"
+          :code-progress="groupIndex === groups.length - 1 ? codeProgress : undefined"
           :pending-tool-calls="pendingToolCalls"
           :active="active && groupIndex === groups.length - 1"
           :timing="message.timing"

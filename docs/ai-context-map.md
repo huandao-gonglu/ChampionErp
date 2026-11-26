@@ -20,6 +20,9 @@
 职责、限制、原生机制选型及验收见 [通用 Python 执行](agent-python-execution.md)。
 脚本对外结果通过原生输出 hook 转为 JSON 可编码值，避免 `type(...)` 等 Python
 对象使整轮历史编码失败；内核与业务回执不变，版本缺口与移除条件见[共用业务数据读取](business-data-access.md)。
+`PythonToolBudget` 对 `run_code` 内嵌套工具调用发射原生 `CodeProgressEvent(CapabilityEvent)`（限频 150ms），并在遭遇 402/401/403 等致命模型故障时附带去重的 `fatal_errors` 立即推送；`vercel_ai_ui_service.py` 通过 `VercelAIEventStream.handle_capability_event` 映射为瞬态 `DataChunk(type="data-code-progress", transient=True)`；前端 `aiChat` 经 `onData` 接收并仅作实时展示，不写入消息历史。`ai_model_errors.py` 与 `ai_agent_factory.py` 在 402/401/403 时统一注入「功能 + 模型」归属文案及 `use_case_id`/`use_case_label`/`model_id`/`model_name` 详情，前端 `aiMessagePresentation.ts` 将 `business_write_receipts` 中嵌套的致命模型故障按模型去重提取至关注区红色告警卡并提供直达授权配置的入口。
+`ai_model_config.resolve_ai_model` 以 `global.chat` 作为默认通用模型：未单独覆盖时，文本/多模态通用功能（`category.product_match`/`copy.generate`/`copy.preview`/`text.translate`/`image.plan`）显式继承 `global.chat`，能力不足（如缺少识图）时明确报错而非按列表顺序静默回落；前端「功能绑定」主视图收敛为「默认通用模型 + 图片翻译/重绘模型」，其余用例及超时/生成参数收纳于折叠的「高级：按功能单独覆盖」。
+当原生 `PrepareTools` 因工具额度耗尽或进入最后收尾保留窗口清空内部工具时，`DirectAndPythonToolset.get_tools` 同步返回空工具集，`AiAgentFactory._bounded_model_settings` 同步设置 `ToolOrOutput(function_tools=[])`，避免模型在收尾阶段继续调用空壳 `run_code`。
 
 `ai_tool_bridge.py` 将已有输出 Schema 通过原生 `Tool.prepare` / `ToolDefinition.return_schema`
 交给 CodeMode 生成返回类型；`ai_tool_contract_description.py` 只补充 Python 签名不显示的参数约束说明。
@@ -46,7 +49,7 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
 采集箱使用 `products.index(view=list)`，只读商品行和主图。直接进入采集链接队列、采集箱、草稿箱、在线商品、订单、任务或调研页时只初始化配置，各页独立加载数据；需要当前商品的工作区才读取完整状态。
 工作台商品进度按商品和平台批量读取当前草稿摘要。在线商品页使用 `/api/online-products?view=list`，分组及仓库状态来自本地快照，编辑内容及逐项同步回执通过所选刊登或任务的详情读取。
 编辑器通过 `/api/load-draft` 的 `editor_only` 读取所选草稿和商品上下文，省去两份全库索引及商品的其他草稿。
-图片任务检查携带已加载版本，版本一致时只返回批次状态。属性、图片、文案、核价、`draft_read`/`draft_save`/`inspect_source_facts` 及 SKU 包装/勾选操作使用内容入口，不构建全库页面索引。`ai_agent_budget.agent_budget_instructions` 仅在临近/耗尽额度或剩余不足 2 分钟时切换提示，常规轮次保持静态以避免击穿模型前缀缓存；`ai_tool_discovery.match_tool_queries` 对连续中文词补充双字子词匹配。
+图片任务检查携带已加载版本，版本一致时只返回批次状态。属性、图片、文案、核价、`draft_read`/`draft_save`/`inspect_source_facts` 及 SKU 包装/勾选操作使用内容入口，不构建全库页面索引。`batch_generate_copy_for_products` 对互不重叠的商品采用有界并发（默认 5 并发，经 `copy_context` 保持空间隔离）并保留输入顺序；AI 工具 `copy_generate_batch` 传入 `include_products=False, include_index=False` 只返回紧凑逐项回执，HTTP `/api/generate-copy-batch` 保持原有字段兼容。`ai_agent_budget.agent_budget_instructions` 仅在临近/耗尽额度或剩余不足 2 分钟时切换提示，常规轮次保持静态以避免击穿模型前缀缓存；`ai_tool_discovery.match_tool_queries` 对连续中文词补充双字子词匹配。
 
 ## 共用业务数据目录
 

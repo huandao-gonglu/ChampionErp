@@ -230,7 +230,27 @@ def generate_copy(
         )
         result = _normalized_generated_copy(outcome.output)
     except Exception as exc:
-        return {
+        from .ai_agent_factory import AiAgentExecutionError
+        from .ai_model_errors import direct_model_error_payload
+
+        error_code = ""
+        error_details: dict[str, Any] = {}
+        retryable = True
+        if isinstance(exc, AiAgentExecutionError):
+            error_code = exc.code
+            error_details = dict(exc.details or {})
+            retryable = exc.retryable
+        else:
+            direct_error = direct_model_error_payload(
+                exc,
+                use_case_id="copy.generate",
+                model_id=str(model.get("id") or ""),
+            )
+            if direct_error is not None:
+                error_code = str(direct_error.get("code") or "")
+                error_details = dict(direct_error.get("details") or {})
+                retryable = bool(direct_error.get("retryable", False))
+        payload: dict[str, Any] = {
             "ok": False,
             "provider": str(model.get("provider") or ""),
             "ai_model_id": str(model.get("id") or ""),
@@ -240,6 +260,13 @@ def generate_copy(
             "copy": {},
             "error": f"本地化文案生成失败：{exc}",
         }
+        if error_code:
+            payload["error_code"] = error_code
+        if error_details:
+            payload["error_details"] = error_details
+        if not retryable:
+            payload["retryable"] = False
+        return payload
     return {
         "ok": True,
         "provider": str(model.get("provider") or ""),

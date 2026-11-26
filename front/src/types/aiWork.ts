@@ -40,6 +40,38 @@ export interface BusinessWriteReceipt {
   output: Record<string, unknown>
 }
 
+export interface CodeProgressToolCount {
+  name: string
+  started: number
+  completed: number
+  failed: number
+  active: number
+}
+
+export interface CodeProgressFatalError {
+  code: string
+  message: string
+  tool_name?: string
+  status_code?: number
+  use_case_id?: string
+  use_case_label?: string
+  model_id?: string
+  model_name?: string
+  count?: number
+}
+
+/** 服务端经瞬态 data-code-progress 事件推送的 run_code 子工具实时进度。 */
+export interface CodeProgressSnapshot {
+  tool_call_id: string
+  tool_name: string
+  started: number
+  completed: number
+  failed: number
+  active: number
+  tools: CodeProgressToolCount[]
+  fatal_errors?: CodeProgressFatalError[]
+}
+
 /**
  * `/ui-messages` 派生读取响应。`messages` 是官方 Adapter `dump_messages()`
  * 以 JSON alias 序列化出的 Vercel `UIMessage[]`。

@@ -83,7 +83,7 @@ describe('AI 对话按轮次展示', () => {
     expect(turns).toHaveLength(2)
     expect(turns[0].find('[data-testid="ai-turn-progress"]').exists()).toBe(false)
     expect(turns[1].get('[data-testid="ai-turn-timeline"]').text()).toContain('查询采购记录')
-    expect(turns[1].get('[role="status"]').text()).toBe('等待结果')
+    expect(turns[1].get('[role="status"]').text()).toBe('执行中')
     expect(wrapper.find('[data-testid="ai-turn-progress"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('先不要付款')
   })
@@ -135,7 +135,7 @@ describe('AI 对话按轮次展示', () => {
     const timeline = wrapper.get('[data-testid="ai-turn-timeline"]')
     const checkDetails = timeline.get<HTMLDetailsElement>('[data-testid="ai-tool-details"]')
     expect(checkDetails.element.open).toBe(false)
-    expect(checkDetails.get('summary').text()).toContain('脚本检查未通过')
+    expect(checkDetails.get('summary').text()).toContain('重新调整')
     expect(timeline.findAll('[role="alert"]').map(alert => alert.text())).toEqual(['当前商品有待核对的修改'])
 
     await wrapper.setProps({ active: false })
@@ -143,11 +143,11 @@ describe('AI 对话按轮次展示', () => {
     await expand(wrapper.get<HTMLDetailsElement>('[data-testid="ai-turn-process"]'))
     await expand(wrapper.get<HTMLDetailsElement>('[data-testid="ai-turn-process"] [data-testid="ai-tool-details"]'))
     expect(wrapper.get('[data-testid="ai-turn-process"]').text()).toContain('unresolved-reference')
-    expect(wrapper.get('[data-testid="ai-turn-attention"]').text()).not.toContain('脚本检查未通过')
+    expect(wrapper.get('[data-testid="ai-turn-attention"]').text()).not.toContain('重新调整')
     expect(wrapper.get('[data-testid="ai-turn-attention"] [role="alert"]').text()).toBe('当前商品有待核对的修改')
 
     await wrapper.setProps({ messages: [user(), reply('saved-check', [check]), reply('saved-result', parts.slice(1))] })
-    expect(wrapper.get('[data-testid="ai-turn-process"]').text()).toContain('脚本检查未通过')
+    expect(wrapper.get('[data-testid="ai-turn-process"]').text()).toContain('重新调整')
     expect(wrapper.get('[data-testid="ai-turn-attention"]').text()).toContain('当前商品有待核对的修改')
     expect(JSON.stringify(parts)).toBe(saved)
   })
@@ -160,7 +160,7 @@ describe('AI 对话按轮次展示', () => {
     expect(wrapper.find('[data-testid="ai-turn-attention"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="ai-turn-response"]').text()).toBe('查询完成。')
     await expand(wrapper.get<HTMLDetailsElement>('[data-testid="ai-turn-process"]'))
-    expect(wrapper.get('[data-testid="ai-turn-process"]').text()).toContain('脚本检查未通过')
+    expect(wrapper.get('[data-testid="ai-turn-process"]').text()).toContain('重新调整')
   })
 
   it('运行时诊断在实时和历史中均默认折叠，失败提示继续保留', async () => {
@@ -190,7 +190,7 @@ describe('AI 对话按轮次展示', () => {
     expect(wrapper.find('[data-testid="ai-turn-progress"]').exists()).toBe(false)
     const rows = wrapper.findAll('[data-testid="ai-part-tool"]')
     expect(rows[0].get('summary').text()).toContain('正在准备')
-    expect(rows[1].get('summary').text()).toContain('等待结果')
+    expect(rows[1].get('summary').text()).toContain('执行中')
     const detail = rows[0].get<HTMLDetailsElement>('details').element
     expect(detail.open).toBe(false)
     detail.open = true
@@ -332,6 +332,133 @@ describe('AI 对话按轮次展示', () => {
       target: '/aiWork',
       state: { imageOperation: { conversation_id: conversationId, tool_call_id: 'script-2__1' } },
     })
+    expect(JSON.stringify(messages)).toBe(saved)
+  })
+
+  it('长任务运行中自动收纳早期已完成步骤，并透出当前 run_code 子进度', async () => {
+    const runStep = (id: string, code: string, state = 'output-available'): AiUiPart => ({
+      type: 'tool-run_code',
+      toolCallId: id,
+      state,
+      input: { code },
+      ...(state === 'output-available' ? { output: { ok: true } } : {}),
+    } as AiUiPart)
+    const parts = [
+      runStep('s1', 'await draft_read(draft_id="d1")'),
+      runStep('s2', 'await category_match(draft_id="d1")'),
+      runStep('s3', 'await copy_generate_batch(product_ids=["p1"])'),
+      runStep('s4', 'await category_attributes_query(category_id="1")'),
+      runStep('s5', 'await draft_attributes_read(draft_id="d1")'),
+      runStep('s6', 'await draft_changes_apply(draft_id="d1")', 'input-available'),
+    ]
+    const wrapper = mount(AiMessageList, {
+      props: {
+        active: true,
+        messages: [user('u1', '批量准备草稿'), reply('r1', parts)],
+        codeProgress: {
+          s6: {
+            tool_call_id: 's6',
+            tool_name: 'draft_changes_apply',
+            started: 18,
+            completed: 7,
+            failed: 0,
+            active: 11,
+            tools: [{ name: 'draft_changes_apply', started: 18, completed: 7, failed: 0, active: 11 }],
+          },
+        },
+      },
+    })
+
+    expect(wrapper.get('[data-testid="ai-turn-step-count"]').text()).toBe('第 6/6 步')
+    const earlier = wrapper.get<HTMLDetailsElement>('[data-testid="ai-turn-earlier-steps"]')
+    expect(earlier.element.open).toBe(false)
+    expect(earlier.get('summary').text()).toContain('已完成 3 个前置步骤')
+    expect(wrapper.findAll('[data-testid="ai-part-tool"]')).toHaveLength(3)
+    expect(wrapper.get('[data-testid="ai-tool-progress"]').text()).toBe('正在保存草稿修改：已完成 7/18')
+
+    await expand(earlier)
+    expect(wrapper.findAll('[data-testid="ai-part-tool"]')).toHaveLength(6)
+    expect(earlier.text()).toContain('批量处理 · 查看草稿')
+  })
+
+  it('run_code 嵌套的 402/401 致命模型故障按模型去重提取到关注区红色告警卡，不被绿色完成态掩盖', async () => {
+    const push = vi.fn().mockResolvedValue(undefined)
+    const { routerKey } = await import('vue-router')
+    const make402 = (callId: string) => ({
+      tool_call_id: callId,
+      tool_name: 'category_match',
+      output: {
+        ok: false,
+        error: {
+          code: 'AI_PROVIDER_PAYMENT_REQUIRED',
+          message: '「商品类目候选匹配」绑定的模型「deepSeekv4.1flash」余额不足或计费不可用（HTTP 402），请充值或在「授权配置 → AI 模型」切换绑定。',
+          details: {
+            status_code: 402,
+            use_case_id: 'category.product_match',
+            use_case_label: '商品类目候选匹配',
+            model_id: 'ai_model_ds41',
+            model_name: 'deepSeekv4.1flash',
+          },
+        },
+      },
+    })
+    const make401 = (callId: string) => ({
+      tool_call_id: callId,
+      tool_name: 'copy_generate',
+      output: {
+        ok: false,
+        error: {
+          code: 'HTTP_401',
+          message: '「商品 AI 文案」绑定的模型「badKeyModel」鉴权失败或无访问权限（HTTP 401），请检查 API Key 或在「授权配置 → AI 模型」切换绑定。',
+          details: {
+            status_code: 401,
+            use_case_id: 'copy.generate',
+            use_case_label: '商品 AI 文案',
+            model_id: 'ai_model_bad',
+            model_name: 'badKeyModel',
+          },
+        },
+      },
+    })
+    const messages: UIMessage[] = [
+      user('u1', '批量准备所选草稿'),
+      {
+        ...reply('r1', [
+          { type: 'tool-run_code', toolCallId: 'script-1', state: 'output-available', input: { code: 'await category_match()' }, output: { ok: true } } as AiUiPart,
+          text('已汇总处理情况。'),
+        ]),
+        metadata: {
+          business_write_receipts: [
+            make402('script-1__1'),
+            make402('script-1__2'),
+            make402('script-1__3'),
+            make401('script-1__4'),
+          ],
+        },
+      },
+    ]
+    const saved = JSON.stringify(messages)
+    const wrapper = mount(AiMessageList, {
+      global: { provide: { [routerKey as symbol]: { push } } },
+      props: { messages },
+    })
+
+    // 绿色 run_code 收起在过程区，而去重后的 2 条致命模型告警直接外显在关注区。
+    expect(wrapper.get<HTMLDetailsElement>('[data-testid="ai-turn-process"]').element.open).toBe(false)
+    const attention = wrapper.get('[data-testid="ai-turn-attention"]')
+    expect(attention.element.closest('details')).toBeNull()
+    const alerts = attention.findAll('[data-testid="ai-model-infra-alert"]')
+    expect(alerts).toHaveLength(2)
+    expect(alerts[0].text()).toContain('商品类目候选匹配')
+    expect(alerts[0].text()).toContain('deepSeekv4.1flash')
+    expect(alerts[0].get('[data-testid="ai-model-infra-alert-count"]').text()).toContain('影响 3 次调用')
+    expect(alerts[1].text()).toContain('商品 AI 文案')
+    expect(alerts[1].text()).toContain('badKeyModel')
+
+    await alerts[0].get('[data-testid="ai-model-alert-open-bindings"]').trigger('click')
+    expect(push).toHaveBeenCalledWith({ path: '/', query: { tab: 'auth', auth_section: 'ai_bindings' } })
+    await alerts[0].get('[data-testid="ai-model-alert-open-models"]').trigger('click')
+    expect(push).toHaveBeenCalledWith({ path: '/', query: { tab: 'auth', auth_section: 'ai_models' } })
     expect(JSON.stringify(messages)).toBe(saved)
   })
 })

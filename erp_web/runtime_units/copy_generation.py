@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from pathlib import Path
 from typing import Any
 
@@ -110,25 +112,35 @@ def save_copy_result(
     )
 
 
+_BATCH_COPY_MAX_WORKERS = 5
+
+
 def batch_generate_copy_for_products(
     product_ids: list[str],
     platform: str = "mercadolibre",
     language: str = "",
     mode: str = "rewrite",
+    *,
+    include_products: bool = True,
+    include_index: bool = True,
+    max_workers: int = _BATCH_COPY_MAX_WORKERS,
 ) -> dict[str, Any]:
     target_platform = str(platform or "mercadolibre").strip().lower() or "mercadolibre"
     if target_platform not in PLATFORMS:
         return {"ok": False, "success_count": 0, "failed_count": 0, "items": [], "error": "不支持的平台"}
     language = str(language or default_marketplace_site(target_platform).get("language") or "English").strip()
     app_cfg = get_context().config.load_app_config()
-    items: list[dict[str, Any]] = []
-    for product_id in [str(item or "").strip() for item in product_ids if str(item or "").strip()]:
-        row = {
+    normalized_ids = [str(item or "").strip() for item in product_ids if str(item or "").strip()]
+
+    def _generate_one(product_id: str) -> dict[str, Any]:
+        row: dict[str, Any] = {
             "product_id": product_id,
+            "draft_id": "",
             "platform": target_platform,
             "ok": False,
             "status": "failed",
             "title": "",
+            "description_length": 0,
             "warning": "",
             "error": "",
         }
@@ -142,33 +154,59 @@ def batch_generate_copy_for_products(
             source_platform = str((product.get("source") or {}).get("source_platform") or target_platform)
             result = generate_ai_copy_bundle(product, source_platform, target_platform, language, mode, app_cfg)
             if not result.get("ok"):
+                if result.get("error_code"):
+                    row["error_code"] = str(result.get("error_code") or "")
+                if isinstance(result.get("error_details"), dict) and result.get("error_details"):
+                    row["error_details"] = dict(result["error_details"])
                 raise RuntimeError(str(result.get("error") or "本地化文案生成失败"))
-            copy_payload = {**(result.get("copy") or {}), "language": result.get("language", language), "source_platform": result.get("source_platform", source_platform), "mode": result.get("mode", mode)}
+            copy_payload = {
+                **(result.get("copy") or {}),
+                "language": result.get("language", language),
+                "source_platform": result.get("source_platform", source_platform),
+                "mode": result.get("mode", mode),
+            }
             saved = save_copy_result(product, result.get("target_market") or target_platform, copy_payload)
             draft = ((saved.get("drafts") or {}).get(target_platform) or {}) if isinstance(saved.get("drafts"), dict) else {}
             row.update(
                 {
                     "ok": True,
+                    "draft_id": str(draft.get("draft_id") or ""),
                     "status": draft.get("status") or "copy_ready",
                     "title": draft.get("title") or "",
+                    "description_length": len(str(draft.get("description") or "")),
                     "warning": "",
-                    "product": saved,
                 }
             )
+            if include_products:
+                row["product"] = saved
         except Exception as exc:
             row["error"] = str(exc)
-        items.append(row)
-    return {
+        return row
+
+    worker_count = min(max(1, int(max_workers or 1)), len(normalized_ids))
+    # 互不重叠的商品并发生成文案（复制 ContextVar 保持当前账号空间隔离），保留原始顺序。
+    if worker_count > 1 and len(set(normalized_ids)) == len(normalized_ids):
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [executor.submit(copy_context().run, _generate_one, pid) for pid in normalized_ids]
+            items = [future.result() for future in futures]
+    else:
+        items = [_generate_one(pid) for pid in normalized_ids]
+
+    success_count = sum(1 for item in items if item.get("ok"))
+    failed_count = len(items) - success_count
+    payload: dict[str, Any] = {
         "ok": True,
         "platform": target_platform,
         "language": language,
         "total": len(items),
-        "success_count": sum(1 for item in items if item.get("ok")),
-        "failed_count": sum(1 for item in items if not item.get("ok")),
+        "success_count": success_count,
+        "failed_count": failed_count,
         "items": items,
-        "message": f"成功 {sum(1 for item in items if item.get('ok'))}/{len(items)}，失败 {sum(1 for item in items if not item.get('ok'))}。",
-        "productsIndex": get_context().products.load_products_index(),
+        "message": f"成功 {success_count}/{len(items)}，失败 {failed_count}。",
     }
+    if include_index:
+        payload["productsIndex"] = get_context().products.load_products_index()
+    return payload
 
 
 def apply_product_drafts_to_plan(product: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:

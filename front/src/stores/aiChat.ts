@@ -10,7 +10,7 @@ import { apiClient } from '@/api/client'
 import { matchChatCommand } from '@/services/chatCommands'
 import type { ChatCommandContext } from '@/services/chatCommands'
 import { GLOBAL_CHAT_CONVERSATION_PREFIX } from '@/types/aiWork'
-import type { AiWorkUiMessagesResponse, ManualAiAction, PendingToolCall } from '@/types/aiWork'
+import type { AiWorkUiMessagesResponse, CodeProgressSnapshot, ManualAiAction, PendingToolCall } from '@/types/aiWork'
 import { useAiPageContextStore } from './aiPageContext'
 import { projectChatMessages } from '@/utils/aiChatMessages'
 import { handoffModelOperation, type DesktopChatState } from '@/utils/desktopHandoff'
@@ -43,6 +43,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
   const runActive = ref(false)
   const latestMessageId = ref<string | null>(null)
   const pendingToolCalls = ref<PendingToolCall[]>([])
+  const codeProgress = ref<Record<string, CodeProgressSnapshot>>({})
   const receivedNotice = ref('')
   const localError = ref<AiChatError>()
   const targetDraftIds = ref<string[]>([])
@@ -278,7 +279,28 @@ export const useAiChatStore = defineStore('aiChat', () => {
           return { body: { id, trigger, queue_if_busy: true, messages: latest ? [latest] : [], ...body } }
         },
       }),
+      onData: (part) => {
+        if (activeConversationId.value !== conversationId || part?.type !== 'data-code-progress') return
+        const payload = part.data as Partial<CodeProgressSnapshot> | undefined
+        if (!payload || typeof payload.tool_call_id !== 'string' || !payload.tool_call_id) return
+        codeProgress.value = {
+          ...codeProgress.value,
+          [payload.tool_call_id]: {
+            tool_call_id: payload.tool_call_id,
+            tool_name: String(payload.tool_name ?? ''),
+            started: Number(payload.started ?? 0),
+            completed: Number(payload.completed ?? 0),
+            failed: Number(payload.failed ?? 0),
+            active: Number(payload.active ?? 0),
+            tools: Array.isArray(payload.tools) ? payload.tools : [],
+            ...(Array.isArray(payload.fatal_errors) && payload.fatal_errors.length
+              ? { fatal_errors: payload.fatal_errors }
+              : {}),
+          },
+        }
+      },
       onFinish: () => {
+        if (activeConversationId.value === conversationId) codeProgress.value = {}
         if (!stopping.value) void nextTick().then(() => resyncFromServer(conversationId))
       },
       onError: (cause) => {
@@ -305,6 +327,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     activeConversationId.value = id
     historyVersion.value = 0
     pendingToolCalls.value = []
+    codeProgress.value = {}
     receivedMessages.value = []
     parallelReplies.value = []
     queueAction.value = ''
@@ -522,6 +545,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     stopping.value = Boolean(runActive.value && detail.run_status === 'cancelled')
     latestMessageId.value = detail.latest_message_id ?? null
     pendingToolCalls.value = detail.pending_tool_calls ?? []
+    codeProgress.value = {}
     localError.value = detail.run_error ? Object.assign(new Error(detail.run_error.message), { code: detail.run_error.code }) : undefined
     targetDraftIds.value = storedInput?.draftIds ?? []
     directRunMessageId = null
@@ -604,7 +628,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
   }
   function clearError(): void { localError.value = undefined; chat.value?.clearError() }
   return { images, resumeOpen, openResume, activeTitle, conversationListVersion, applyConversationChange, activeConversationId, conversationLinkId, chat, input, floatingOpen, historyVersion, stopping, canStop, status, messages,
-    error, isBusy, isRunning, canSend, pendingToolCalls, receivedNotice, receivedMessages, startConversation,
+    error, isBusy, isRunning, canSend, pendingToolCalls, codeProgress, receivedNotice, receivedMessages, startConversation,
     restoring, restoreError, restoreConversation, actOnQueue, queueAction, queueRows, parallelReplies, stopParallelReply, respondToParallelApproval,
     sendMessage, stopStreaming, respondToApproval, answerQuestion, clearError, openConversation, connectEvents, disconnectEvents,
     prepareDrafts, estimatePackageDimensions, restoreDesktopInput, refreshHistory, startManualAction, finishManualAction, forking, forkConversation,

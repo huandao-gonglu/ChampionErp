@@ -746,6 +746,171 @@ def test_copy_generate_batch_counts(
     assert unsupported.value.code == "COPY_GENERATE_BATCH_FAILED"
 
 
+def test_copy_generate_batch_is_compact_concurrent_and_skips_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+    from erp_web.runtime_units.copy_generation import batch_generate_copy_for_products
+
+    context = get_context()
+    product_ids = (
+        "product-batch-compact-1",
+        "product-batch-compact-2",
+        "product-batch-compact-3",
+    )
+    for pid in product_ids:
+        product = _seed_product(pid, with_draft=False)
+        product["attributes"] = {
+            f"attr_{idx}": "X" * 200
+            for idx in range(100)
+        }
+        context.products.save_product(product)
+
+    scope = _content_scope()
+    barrier = threading.Barrier(len(product_ids), timeout=3.0)
+
+    def concurrent_copy_bundle(
+        product: dict[str, Any],
+        source_platform: str,
+        target_platform: str,
+        language: str,
+        mode: str,
+        app_cfg: dict[str, Any],
+    ) -> dict[str, Any]:
+        del app_cfg
+        assert get_context() is context
+        # 只有真正并发执行时三个线程才能同时到达栅栏，串行会超时失败。
+        barrier.wait()
+        pid = str(product.get("product_id") or "")
+        return {
+            "ok": True,
+            "target_market": target_platform,
+            "source_platform": source_platform,
+            "language": language or "es",
+            "mode": mode or "rewrite",
+            "copy": {
+                "title": f"Localized {pid}",
+                "description": f"Detailed description for {pid}",
+                "highlights": ["Compact", "Durable"],
+                "search_terms": ["fan"],
+            },
+        }
+
+    monkeypatch.setattr(
+        "erp_web.runtime_units.copy_generation.generate_ai_copy_bundle",
+        concurrent_copy_bundle,
+    )
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            context.products,
+            "load_products_index",
+            lambda *args, **kwargs: pytest.fail("AI 批量文案工具不应扫描全库 productsIndex"),
+        )
+        result = copy_generate_batch(
+            CopyGenerateBatchRequest(
+                product_ids=product_ids,
+                platform="mercadolibre",
+            ),
+            scope=scope,
+            execution=_execution(),
+        )
+
+    assert result.success_count == 3
+    assert result.failed_count == 0
+    assert [item["product_id"] for item in result.items] == list(product_ids)
+    for item in result.items:
+        assert item["ok"] is True
+        assert item["draft_id"]
+        assert item["description_length"] > 0
+        assert "product" not in item
+    # 即使商品源属性较大，AI 工具回执也应保持紧凑，不触发输出体积超限。
+    assert len(json.dumps(list(result.items), ensure_ascii=False).encode("utf-8")) < 4000
+
+    # HTTP 路由默认调用仍保留兼容字段（product 与 productsIndex）。
+    monkeypatch.setattr(
+        "erp_web.runtime_units.copy_generation.generate_ai_copy_bundle",
+        _fake_copy_bundle("Default HTTP Title"),
+    )
+    http_payload = batch_generate_copy_for_products(
+        [product_ids[0]],
+        platform="mercadolibre",
+    )
+    assert http_payload["ok"] is True
+    assert "productsIndex" in http_payload
+    assert "product" in http_payload["items"][0]
+
+
+def test_category_match_and_text_translate_preserve_fatal_model_error_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from erp_web.runtime_units.category_capabilities import CategoryCapabilityScope, category_match
+    from erp_web.schemas.market_prepare_capabilities import CategoryMatchRequest
+    from erp_web.services.ai_model_errors import AIHTTPError
+
+    context = get_context()
+    saved = _seed_product("product-cat-402")
+    draft_id = str(saved["drafts"]["mercadolibre"]["draft_id"])
+    expected_details = {
+        "status_code": 402,
+        "use_case_id": "category.product_match",
+        "use_case_label": "商品类目候选匹配",
+        "model_id": "ai_model_ds41",
+        "model_name": "deepSeekv4.1flash",
+    }
+
+    def failing_matcher(*_args, **_kwargs):
+        return {
+            "ok": False,
+            "status": "failed",
+            "failure": {
+                "code": "AI_PROVIDER_PAYMENT_REQUIRED",
+                "message": "「商品类目候选匹配」绑定的模型「deepSeekv4.1flash」余额不足或计费不可用（HTTP 402），请充值或在「授权配置 → AI 模型」切换绑定。",
+                "retryable": False,
+                "details": expected_details,
+            },
+        }
+
+    with pytest.raises(BusinessCapabilityError) as cat_err:
+        category_match(
+            CategoryMatchRequest(draft_id=draft_id, target_platform="mercadolibre"),
+            scope=CategoryCapabilityScope(products=context.products, matcher=failing_matcher),
+            execution=_execution(),
+        )
+    assert cat_err.value.code == "AI_PROVIDER_PAYMENT_REQUIRED"
+    assert cat_err.value.retryable is False
+    assert cat_err.value.details == expected_details
+    assert "deepSeekv4.1flash" in str(cat_err.value)
+
+    def failing_translate(*_args, **_kwargs):
+        raise AIHTTPError(
+            status_code=402,
+            reason="Payment Required",
+            detail="Insufficient Balance",
+            model_id="ai_model_tr",
+            model_name="deepseek-chat",
+            api_style="openai_compatible",
+            endpoint="api.deepseek.com/openai_compatible",
+            use_case_id="text.translate",
+            model_display_name="翻译测试模型",
+        )
+
+    monkeypatch.setattr(
+        "erp_web.runtime_units.content_capabilities.translate_texts",
+        failing_translate,
+    )
+    with pytest.raises(BusinessCapabilityError) as tr_err:
+        text_translate(
+            TextTranslateRequest(target_language="ru", content={"a": "黑色"}),
+            scope=_content_scope(),
+        )
+    assert tr_err.value.code == "AI_PROVIDER_PAYMENT_REQUIRED"
+    assert tr_err.value.retryable is False
+    assert "「翻译」绑定的模型「翻译测试模型」" in str(tr_err.value)
+    assert tr_err.value.details["use_case_id"] == "text.translate"
+    assert tr_err.value.details["model_name"] == "翻译测试模型"
+
+
 def test_image_prompts_generate_builds_prompt_pack() -> None:
     _seed_product("product-prompt-1")
     scope = _content_scope()

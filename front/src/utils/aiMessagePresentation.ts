@@ -74,6 +74,102 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 const DESKTOP_IMAGE_TOOLS = new Set(['image_translate', 'image_edit', 'draft_images_prepare'])
+const FATAL_MODEL_ERROR_CODES = new Set([
+  'AI_PROVIDER_PAYMENT_REQUIRED',
+  'AI_PROVIDER_AUTH_FAILED',
+  'HTTP_401',
+  'HTTP_403',
+])
+const FATAL_MODEL_HTTP_STATUSES = new Set([401, 402, 403])
+
+export interface FatalModelInfraError {
+  code: string
+  message: string
+  statusCode?: number
+  useCaseId: string
+  useCaseLabel: string
+  modelId: string
+  modelName: string
+  affectedCount: number
+}
+
+function asNonEmptyString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+export function fatalModelInfraErrorFromOutput(output: unknown): FatalModelInfraError | null {
+  const root = record(output)
+  if (root.ok !== false) return null
+  const error = record(root.error)
+  const details = record(error.details)
+  const code = asNonEmptyString(error.code)
+  const rawStatus = details.status_code
+  const parsedStatus = typeof rawStatus === 'number'
+    ? rawStatus
+    : (typeof rawStatus === 'string' && /^\d+$/.test(rawStatus.trim()) ? Number(rawStatus.trim()) : undefined)
+  const statusCode = parsedStatus !== undefined && Number.isFinite(parsedStatus) ? parsedStatus : undefined
+  if (!FATAL_MODEL_ERROR_CODES.has(code) && !(statusCode !== undefined && FATAL_MODEL_HTTP_STATUSES.has(statusCode))) {
+    return null
+  }
+  const affectedCount = typeof root._affected_count === 'number' && root._affected_count > 1
+    ? Math.floor(root._affected_count)
+    : 1
+  return {
+    code: code || (statusCode === 402 ? 'AI_PROVIDER_PAYMENT_REQUIRED' : `HTTP_${statusCode}`),
+    message: asNonEmptyString(error.message),
+    ...(statusCode !== undefined ? { statusCode } : {}),
+    useCaseId: asNonEmptyString(details.use_case_id),
+    useCaseLabel: asNonEmptyString(details.use_case_label),
+    modelId: asNonEmptyString(details.model_id),
+    modelName: asNonEmptyString(details.model_name),
+    affectedCount,
+  }
+}
+
+export function fatalModelErrorInfo(part: AiUiPart): FatalModelInfraError | null {
+  if (!isAiToolPart(part)) return null
+  return fatalModelInfraErrorFromOutput((part as ToolPartView).output)
+}
+
+function fatalModelErrorDedupeKey(info: FatalModelInfraError, fallbackToolName: string): string {
+  const statusOrCode = info.statusCode === 402 || info.code === 'AI_PROVIDER_PAYMENT_REQUIRED'
+    ? 'AI_PROVIDER_PAYMENT_REQUIRED'
+    : (info.statusCode ? `HTTP_${info.statusCode}` : info.code)
+  return `${statusOrCode}|${info.useCaseId}|${info.modelId || info.modelName || fallbackToolName}`
+}
+
+function fatalModelReceiptParts(
+  receipts: BusinessWriteReceipt[],
+  seenToolCallIds: Set<string>,
+  existingParts: AiUiPart[],
+): DisplayPart[] {
+  const existingKeys = new Set<string>()
+  for (const part of existingParts) {
+    const info = fatalModelErrorInfo(part)
+    if (info) existingKeys.add(fatalModelErrorDedupeKey(info, aiToolName(part)))
+  }
+  const deduped = new Map<string, { receipt: BusinessWriteReceipt; count: number }>()
+  for (const receipt of receipts) {
+    if (seenToolCallIds.has(receipt.tool_call_id)) continue
+    const info = fatalModelInfraErrorFromOutput(receipt.output)
+    if (!info) continue
+    const key = fatalModelErrorDedupeKey(info, receipt.tool_name)
+    if (existingKeys.has(key)) continue
+    const current = deduped.get(key)
+    if (current) current.count += 1
+    else deduped.set(key, { receipt, count: 1 })
+  }
+  return [...deduped.values()].map(({ receipt, count }) => ({
+    key: `fatal-receipt:${receipt.tool_call_id}`,
+    part: {
+      type: 'dynamic-tool',
+      toolName: receipt.tool_name,
+      toolCallId: receipt.tool_call_id,
+      state: 'output-available',
+      output: count > 1 ? { ...receipt.output, _affected_count: count } : receipt.output,
+    } as unknown as AiUiPart,
+  }))
+}
 
 function desktopImageActionFromOutput(toolName: string, toolCallId: string | undefined, output: unknown) {
   if (!DESKTOP_IMAGE_TOOLS.has(toolName)) return
@@ -174,9 +270,18 @@ export function presentAssistantParts(
       .map(entry => String((entry.part as ToolPartView).toolCallId)),
   )
   const receiptActions = desktopImageReceiptParts(writeReceipts, seenToolCallIds)
+  const fatalReceiptAlerts = fatalModelReceiptParts(
+    writeReceipts,
+    seenToolCallIds,
+    entries.map(entry => entry.part),
+  )
   // 待审批或后台执行时仍保留完整时间线；结束后才派生折叠的过程。
   const live = active || entries.some(entry => entry.pendingKind !== undefined)
-  const timeline = [...entries.filter(({ part }) => part.type !== 'text' || part.text.trim()), ...receiptActions]
+  const timeline = [
+    ...entries.filter(({ part }) => part.type !== 'text' || part.text.trim()),
+    ...receiptActions,
+    ...fatalReceiptAlerts,
+  ]
   // 不按文本内容猜测“最终答案”，也不丢弃中途问题、附件或来源。
   let lastTool = -1
   entries.forEach((entry, index) => { if (isAiToolPart(entry.part)) lastTool = index })
@@ -201,6 +306,6 @@ export function presentAssistantParts(
       process.push(entry)
     }
   }
-  attention.push(...receiptActions)
+  attention.push(...receiptActions, ...fatalReceiptAlerts)
   return { live, timeline, process, attention, response, hasActiveTool }
 }

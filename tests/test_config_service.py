@@ -72,6 +72,67 @@ def test_merge_config_reads_key_from_config_not_code(app_dir: Path) -> None:
     assert cfg["model"] == "deepseek-chat"
 
 
+def test_resolve_ai_model_inherits_default_general_model_without_list_fallback() -> None:
+    """未单独覆盖子功能时，文本/类目/文案/翻译/套图规划统一继承 global.chat，不按列表顺序误选其他模型。"""
+    config = {
+        "ai_models": [
+            {
+                "id": "legacy_vision",
+                "name": "旧全能模型",
+                "connection_type": "api",
+                "provider_id": "openai",
+                "model": "gpt-4o",
+                "capabilities": ["chat", "json", "tool_calling", "image_understanding"],
+                "enabled": True,
+            },
+            {
+                "id": "main_deepseek",
+                "name": "pniccDeepSeek",
+                "connection_type": "api",
+                "provider_id": "openai",
+                "model": "deepseek-chat",
+                "capabilities": ["chat", "json", "tool_calling"],
+                "enabled": True,
+            },
+        ],
+        "ai_use_case_bindings": {
+            "global.chat": {"model_id": "main_deepseek"},
+        },
+    }
+
+    for use_case in ("global.chat", "category.product_match", "copy.generate", "text.translate"):
+        assert ai_model_config.resolve_ai_model(config, use_case)["id"] == "main_deepseek"
+
+    # image.plan 需要识图：不静默回落到排在第一位的 legacy_vision，而是明确提示缺少图片理解能力。
+    with pytest.raises(RuntimeError) as missing_vision:
+        ai_model_config.resolve_ai_model(config, "image.plan")
+    assert "套图规划" in str(missing_vision.value)
+    assert "pniccDeepSeek" in str(missing_vision.value)
+    assert "图片理解" in str(missing_vision.value)
+    assert "高级：按功能单独覆盖" in str(missing_vision.value)
+
+    # 仅在显式单独覆写 image.plan 时走独立模型；其余仍继承 global.chat。
+    overridden = {
+        **config,
+        "ai_use_case_bindings": {
+            "global.chat": {"model_id": "main_deepseek"},
+            "image.plan": {"model_id": "legacy_vision"},
+        },
+    }
+    assert ai_model_config.resolve_ai_model(overridden, "image.plan")["id"] == "legacy_vision"
+    assert ai_model_config.resolve_ai_model(overridden, "category.product_match")["id"] == "main_deepseek"
+
+    # 切换默认通用模型后，所有未单独覆盖的子功能同步切换。
+    switched = {
+        **config,
+        "ai_use_case_bindings": {
+            "global.chat": {"model_id": "legacy_vision"},
+        },
+    }
+    for use_case in ("global.chat", "category.product_match", "copy.generate", "text.translate", "image.plan"):
+        assert ai_model_config.resolve_ai_model(switched, use_case)["id"] == "legacy_vision"
+
+
 def test_browser_presets_remain_available_after_the_user_deletes_the_model(app_dir: Path, monkeypatch) -> None:
     from desktop_runtime.config import LocalConfig
     from desktop_runtime.dispatcher import dispatch

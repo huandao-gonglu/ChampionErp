@@ -239,8 +239,108 @@ def test_direct_model_error_in_validator_preserves_cause_and_history(
     if status:
         assert f"HTTP {status}" in str(error)
         assert "invalid_request_error" in str(error)
-        assert error.details == {"status_code": status, "model_id": "translation"}
+        assert error.details["status_code"] == status
+        assert error.details["model_id"] == "translation"
+        assert error.details["model_name"] == "translation"
+        assert error.details["use_case_id"] == "equivalence.translation.fail"
     assert calls == 1
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_code", "expected_phrase"),
+    [
+        (402, "AI_PROVIDER_PAYMENT_REQUIRED", "余额不足或计费不可用（HTTP 402）"),
+        (401, "authentication_error", "鉴权失败或无访问权限（HTTP 401）"),
+        (403, "forbidden_error", "鉴权失败或无访问权限（HTTP 403）"),
+    ],
+)
+def test_agent_model_http_fatal_errors_include_use_case_and_model_attribution(
+    tmp_path: Path,
+    status_code: int,
+    expected_code: str,
+    expected_phrase: str,
+) -> None:
+    """子 Agent 遭遇 402/401/403 时，文案和 details 均明确指认功能与模型。"""
+
+    def failing_model(_messages, _info):
+        raise ModelHTTPError(
+            status_code,
+            "deepseek-chat",
+            {"error": {"code": expected_code, "message": "Account billing/auth rejected"}},
+        )
+
+    def fake_binding(*_args, **_kwargs) -> PydanticModelBinding:
+        return PydanticModelBinding(
+            model=streaming_function_model(FunctionModel(failing_model)),
+            model_settings={},
+            model_id="ai_model_ds41",
+            model_name="deepseek-chat",
+            provider_id="openai",
+            provider_family="openai",
+            api_style="openai_compatible",
+            model_config={"id": "ai_model_ds41", "name": "deepSeekv4.1flash", "model": "deepseek-chat"},
+        )
+
+    factory = AiAgentFactory(
+        app_dir=tmp_path,
+        app_config={},
+        model_binding_factory=fake_binding,
+    )
+    profile = _profile(
+        retries=1,
+        toolset_id=EMPTY_TOOLSET_ID,
+        use_case_id="category.product_match",
+    )
+    with pytest.raises(AiAgentExecutionError) as caught:
+        factory.run_sync(
+            profile=profile,
+            instructions="匹配类目。",
+            user_prompt="执行。",
+            toolset=EMPTY_TOOLSET,
+        )
+
+    error = caught.value
+    assert error.code == expected_code
+    assert error.retryable is False
+    assert "「商品类目候选匹配」绑定的模型「deepSeekv4.1flash」" in str(error)
+    assert expected_phrase in str(error)
+    assert "授权配置 → AI 模型" in str(error)
+    assert error.details["status_code"] == status_code
+    assert error.details["use_case_id"] == "category.product_match"
+    assert error.details["use_case_label"] == "商品类目候选匹配"
+    assert error.details["model_id"] == "ai_model_ds41"
+    assert error.details["model_name"] == "deepSeekv4.1flash"
+
+
+def test_direct_model_error_payload_preserves_use_case_and_display_name() -> None:
+    from erp_web.services.ai_model_errors import direct_model_error_payload
+
+    original = ModelHTTPError(
+        402,
+        "deepseek-chat",
+        {"error": {"code": "insufficient_balance", "message": "Insufficient Balance"}},
+    )
+    mapped = map_pydantic_model_error(
+        original,
+        model_id="model_copy_1",
+        model_name="deepseek-chat",
+        api_style="openai_compatible",
+        base_url="https://api.deepseek.com/v1",
+        use_case_id="copy.generate",
+        model_display_name="文案模型A",
+    )
+    payload = direct_model_error_payload(mapped)
+    assert payload is not None
+    assert payload["code"] == "AI_PROVIDER_PAYMENT_REQUIRED"
+    assert payload["retryable"] is False
+    assert "「商品 AI 文案」绑定的模型「文案模型A」" in payload["message"]
+    assert payload["details"] == {
+        "status_code": 402,
+        "use_case_id": "copy.generate",
+        "use_case_label": "商品 AI 文案",
+        "model_id": "model_copy_1",
+        "model_name": "文案模型A",
+    }
 
 
 def test_tool_executor_failure_maps_to_safe_error_once(tmp_path: Path) -> None:

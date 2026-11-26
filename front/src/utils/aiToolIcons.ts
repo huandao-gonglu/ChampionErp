@@ -16,6 +16,7 @@ const groups: [Component, string[]][] = [
     'store_auth_checklist',
   ]],
   [PhMagnifyingGlass, [
+    'search_tools', 'business_data_catalog', 'business_data_read', 'orders_query', 'collection_links_read',
     'order_purchase_query', 'order_alibaba_options', 'order_alibaba_batch_options',
     'order_alibaba_addresses', 'order_alibaba_payment_status', 'order_fulfillment_services',
     'online_products_read', 'online_products_refresh_status', 'conversation_facts_query',
@@ -28,9 +29,9 @@ const groups: [Component, string[]][] = [
   [PhPencilSimple, [
     'order_notification_update', 'order_source_select', 'order_purchase_record',
     'order_address_note_update', 'order_receiving_warehouse_update', 'order_fulfillment_update',
-    'online_products_change', 'product_attributes_update', 'product_save', 'product_profile_patch',
+    'online_products_change', 'online_products_changes_apply', 'product_attributes_update', 'product_save', 'product_profile_patch',
     'draft_save', 'draft_sku_attributes_update', 'draft_sku_selection_update',
-    'product_sku_facts_update', 'draft_changes_apply', 'draft_pricing_apply',
+    'product_sku_facts_update', 'draft_changes_apply', 'draft_pricing_apply', 'draft_package_estimates_apply',
     'copy_generate', 'copy_generate_batch',
   ]],
   [PhArrowsClockwise, [
@@ -39,12 +40,12 @@ const groups: [Component, string[]][] = [
   ]],
   [PhCheckSquare, [
     'order_alibaba_reconcile', 'online_products_reconcile', 'category_match',
-    'category_precheck', 'product_publish_validate', 'store_auth_check',
+    'category_precheck', 'product_publish_validate', 'store_auth_check', 'draft_sku_variants_check',
   ]],
   [PhTrash, ['product_delete', 'draft_delete', 'order_purchase_cancel']],
   [PhPaperPlaneTilt, ['order_buyer_chat_send', 'product_publish_request']],
   [PhCreditCard, ['order_alibaba_pay', 'order_alibaba_cashier']],
-  [PhPlusCircle, ['order_alibaba_create']],
+  [PhPlusCircle, ['order_alibaba_create', 'collection_links_add']],
   [PhCopy, ['draft_duplicate']],
   [PhTranslate, ['text_translate', 'order_alibaba_parse_address', 'image_translate']],
   [PhImage, ['product_image_read', 'product_images_prepare', 'image_prompts_generate', 'image_pool_save', 'image_pool_action', 'image_edit']],

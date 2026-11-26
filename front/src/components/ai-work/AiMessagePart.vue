@@ -1,11 +1,20 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { PhBrain, PhCaretRight } from '@phosphor-icons/vue'
-import type { AiUiPart } from '@/types/aiWork'
-import { describeAiTool } from '@/utils/aiToolLabels'
+import { computed, inject, ref } from 'vue'
+import { routerKey } from 'vue-router'
+import { PhBrain, PhCaretRight, PhWarningCircle } from '@phosphor-icons/vue'
+import type { AiUiPart, BusinessWriteReceipt, CodeProgressFatalError, CodeProgressSnapshot } from '@/types/aiWork'
+import { describeAiTool, describeRunCodeAction, formatCodeProgress } from '@/utils/aiToolLabels'
 import { aiToolIcon } from '@/utils/aiToolIcons'
 import { splitAssistantText } from '@/utils/aiThinkingPresentation'
-import { aiToolName, aiToolStatus, desktopImageAction, isAiToolPart, toolNeedsAttention, type ToolPartView } from '@/utils/aiMessagePresentation'
+import {
+  aiToolName,
+  aiToolStatus,
+  desktopImageAction,
+  fatalModelErrorInfo,
+  isAiToolPart,
+  toolNeedsAttention,
+  type ToolPartView,
+} from '@/utils/aiMessagePresentation'
 import { launchDesktop } from '@/utils/desktopHandoff'
 import { hasLocalOperations } from '@/utils/desktop'
 import { continueImageOperation } from '@/api/draftImages'
@@ -15,6 +24,9 @@ const props = defineProps<{
   part: AiUiPart
   pendingKind?: 'approval' | 'external' | 'input'
   progress?: string
+  codeProgress?: CodeProgressSnapshot
+  writeReceipts?: BusinessWriteReceipt[]
+  stepElapsedSeconds?: number
   active?: boolean
 }>()
 
@@ -26,8 +38,14 @@ function toggleDetails(event: Event, key: string) {
 
 const isToolPart = computed(() => isAiToolPart(props.part))
 const tool = computed(() => props.part as ToolPartView)
-const toolName = computed(() => describeAiTool(aiToolName(props.part)))
-const toolIcon = computed(() => aiToolIcon(aiToolName(props.part)))
+const rawToolName = computed(() => aiToolName(props.part))
+const isRunCode = computed(() => rawToolName.value === 'run_code')
+const toolName = computed(() => (
+  isRunCode.value
+    ? describeRunCodeAction(tool.value.input, props.codeProgress, props.writeReceipts, tool.value.toolCallId)
+    : describeAiTool(rawToolName.value)
+))
+const toolIcon = computed(() => aiToolIcon(rawToolName.value))
 
 const businessResult = computed(() => (
   tool.value.output && typeof tool.value.output === 'object'
@@ -35,7 +53,41 @@ const businessResult = computed(() => (
     : undefined
 ))
 const status = computed(() => aiToolStatus(props.part, props.pendingKind, props.active))
+const isActiveStatus = computed(() => ['preparing', 'waiting', 'running'].includes(status.value))
 const toolStatusLabel = computed(() => statusLabels[status.value])
+const stepElapsedText = computed(() => {
+  if (!isActiveStatus.value || !props.stepElapsedSeconds || props.stepElapsedSeconds < 2) return ''
+  const seconds = Math.floor(props.stepElapsedSeconds)
+  const minutes = Math.floor(seconds / 60)
+  return minutes ? `${minutes}分 ${seconds % 60}秒` : `${seconds}秒`
+})
+const liveProgress = computed(() => (
+  props.progress || (isActiveStatus.value ? formatCodeProgress(props.codeProgress) : '')
+))
+const liveFatalErrors = computed<CodeProgressFatalError[]>(() => (
+  isActiveStatus.value && Array.isArray(props.codeProgress?.fatal_errors)
+    ? props.codeProgress.fatal_errors
+    : []
+))
+const fatalModelError = computed(() => fatalModelErrorInfo(props.part))
+const fatalModelTitle = computed(() => {
+  const err = fatalModelError.value
+  if (!err) return ''
+  if (err.code === 'AI_PROVIDER_PAYMENT_REQUIRED' || err.statusCode === 402) return 'AI 模型余额不足或计费不可用'
+  return 'AI 模型鉴权失败或无访问权限'
+})
+const router = inject(routerKey, undefined)
+function openAiModelSettings(section: 'ai_models' | 'ai_bindings' = 'ai_bindings') {
+  if (router) {
+    void router.push({ path: '/', query: { tab: 'auth', auth_section: section } })
+  } else if (typeof window !== 'undefined') {
+    window.location.assign(`/?tab=auth&auth_section=${section}`)
+  }
+}
+function fatalErrorHeading(err: CodeProgressFatalError): string {
+  if (err.code === 'AI_PROVIDER_PAYMENT_REQUIRED' || err.status_code === 402) return '模型余额不足'
+  return '模型鉴权失败'
+}
 const imageAction = computed(() => desktopImageAction(props.part))
 const imageTargetLabel = computed(() => {
   if (!imageAction.value) return ''
@@ -102,6 +154,24 @@ function formatJson(value: unknown): string {
   }
 }
 
+const runCodeSource = computed(() => {
+  if (!isRunCode.value || !tool.value.input || typeof tool.value.input !== 'object') return ''
+  const code = (tool.value.input as { code?: unknown }).code
+  return typeof code === 'string' ? code.trim() : ''
+})
+const nestedReceiptSummary = computed(() => {
+  if (!isRunCode.value || !tool.value.toolCallId || !props.writeReceipts?.length) return []
+  const prefix = `${tool.value.toolCallId}__`
+  const counts = new Map<string, { label: string; total: number; failed: number }>()
+  for (const receipt of props.writeReceipts) {
+    if (!receipt.tool_call_id.startsWith(prefix)) continue
+    const entry = counts.get(receipt.tool_name) ?? { label: describeAiTool(receipt.tool_name), total: 0, failed: 0 }
+    entry.total += 1
+    if (receipt.output?.ok === false) entry.failed += 1
+    counts.set(receipt.tool_name, entry)
+  }
+  return [...counts.values()]
+})
 const toolInputJson = computed(() => formatJson(tool.value.input))
 const toolOutputJson = computed(() => formatJson(tool.value.output))
 
@@ -153,14 +223,14 @@ const statusLabels: Record<string, string> = {
   running: '处理中',
   approval: '等待确认',
   input: '等待回复',
-  waiting: '等待结果',
+  waiting: '执行中',
   unknown: '结果未确认',
   failed: '操作失败',
   partial: '部分完成',
   denied: '未获批准',
   completed: '已完成',
   submitted: '已提交',
-  script_error: '脚本检查未通过',
+  script_error: '重新调整',
   desktop: '等待桌面',
 }
 </script>
@@ -202,6 +272,53 @@ const statusLabels: Record<string, string> = {
     </p>
   </details>
 
+  <!-- 致命模型基础设施故障（欠费 / 鉴权失败）：以醒目红色告警卡外显，避免被折叠或绿标掩盖 -->
+  <div
+    v-else-if="isToolPart && fatalModelError"
+    class="min-w-0 rounded-lg border border-rose-200 bg-rose-50/90 px-3 py-2.5 text-xs text-rose-900 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-100"
+    role="alert"
+    data-testid="ai-model-infra-alert"
+  >
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <div class="flex min-w-0 items-center gap-1.5 font-semibold text-rose-800 dark:text-rose-200">
+        <PhWarningCircle :size="16" class="shrink-0 text-rose-600 dark:text-rose-300" aria-hidden="true" />
+        <span>{{ fatalModelTitle }}</span>
+        <span
+          v-if="fatalModelError.useCaseLabel || fatalModelError.modelName"
+          class="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-medium text-rose-700 dark:bg-rose-500/20 dark:text-rose-200"
+        >
+          {{ [fatalModelError.useCaseLabel, fatalModelError.modelName].filter(Boolean).join(' · ') }}
+        </span>
+        <span
+          v-if="fatalModelError.affectedCount > 1"
+          class="rounded bg-rose-200/70 px-1.5 py-0.5 text-[10px] font-medium text-rose-800 dark:bg-rose-500/30 dark:text-rose-100"
+          data-testid="ai-model-infra-alert-count"
+        >
+          影响 {{ fatalModelError.affectedCount }} 次调用
+        </span>
+      </div>
+      <div class="flex shrink-0 flex-wrap items-center gap-2">
+        <button
+          type="button"
+          class="rounded border border-rose-300 bg-white px-2 py-0.5 text-[11px] font-medium text-rose-700 hover:bg-rose-100 dark:border-rose-500/50 dark:bg-dark-900 dark:text-rose-200 dark:hover:bg-rose-500/20"
+          data-testid="ai-model-alert-open-bindings"
+          @click="openAiModelSettings('ai_bindings')"
+        >
+          切换功能绑定
+        </button>
+        <button
+          type="button"
+          class="rounded border border-rose-200 bg-transparent px-2 py-0.5 text-[11px] text-rose-700 hover:bg-rose-100/70 dark:border-rose-500/40 dark:text-rose-200 dark:hover:bg-rose-500/20"
+          data-testid="ai-model-alert-open-models"
+          @click="openAiModelSettings('ai_models')"
+        >
+          检查 AI 模型
+        </button>
+      </div>
+    </div>
+    <p class="mt-1.5 break-words leading-5 text-rose-800 dark:text-rose-100">{{ fatalModelError.message || toolError }}</p>
+  </div>
+
   <!-- 工具在原位置更新；仅展开时展示参数和回执。 -->
   <div v-else-if="isToolPart" class="min-w-0" data-testid="ai-part-tool">
     <details data-testid="ai-tool-details" class="group/tool" @toggle="toggleDetails($event, 'tool')">
@@ -209,14 +326,34 @@ const statusLabels: Record<string, string> = {
         <component :is="toolIcon" :size="16" class="shrink-0 text-slate-500 dark:text-accent-300" aria-hidden="true" />
         <span class="min-w-0 break-words text-slate-600 dark:text-accent-200">{{ toolName }}<template v-if="imageTargetLabel"> · {{ imageTargetLabel }}</template></span>
         <span
-          class="shrink-0 rounded px-1.5 py-0.5 text-[10px]"
+          class="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px]"
           :class="toolStatusClass"
-          :role="['preparing', 'waiting', 'running'].includes(status) ? 'status' : undefined"
-        >{{ toolStatusLabel }}</span>
+          :role="isActiveStatus ? 'status' : undefined"
+        >
+          <span v-if="isActiveStatus" class="size-1.5 shrink-0 rounded-full bg-current motion-safe:animate-pulse" aria-hidden="true" />
+          {{ toolStatusLabel }}
+        </span>
+        <span
+          v-if="stepElapsedText"
+          class="shrink-0 text-[11px] tabular-nums text-slate-400 dark:text-accent-400"
+          data-testid="ai-tool-elapsed"
+        >{{ stepElapsedText }}</span>
         <PhCaretRight :size="12" class="shrink-0 text-slate-400 transition-transform group-open/tool:rotate-90" aria-hidden="true" />
       </summary>
       <div v-if="expanded.tool" class="ml-3 space-y-2 border-l border-slate-200 py-2 pl-3 dark:border-dark-700">
-        <template v-if="toolInputJson">
+        <template v-if="nestedReceiptSummary.length">
+          <p class="text-xs text-slate-500">子操作回执</p>
+          <ul class="space-y-0.5 text-xs text-slate-600 dark:text-accent-200" data-testid="ai-run-code-receipts">
+            <li v-for="item in nestedReceiptSummary" :key="item.label">
+              {{ item.label }} × {{ item.total }}<span v-if="item.failed" class="text-rose-600 dark:text-rose-300">（{{ item.failed }} 项失败）</span>
+            </li>
+          </ul>
+        </template>
+        <template v-if="runCodeSource">
+          <p class="text-xs text-slate-500">执行脚本</p>
+          <pre data-testid="ai-run-code-source" class="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-50 p-2 font-mono text-[11px] leading-5 text-slate-600 dark:bg-dark-800/70 dark:text-accent-200">{{ runCodeSource }}</pre>
+        </template>
+        <template v-else-if="toolInputJson">
           <p class="text-xs text-slate-500">操作详情</p>
           <pre class="max-h-64 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-600 dark:text-accent-200">{{ toolInputJson }}</pre>
         </template>
@@ -230,7 +367,37 @@ const statusLabels: Record<string, string> = {
         </template>
       </div>
     </details>
-    <p v-if="progress" role="status" class="ml-3 mt-1 text-xs text-slate-500 dark:text-accent-300">{{ progress }}</p>
+    <p v-if="liveProgress" role="status" class="ml-6 mt-0.5 flex items-center gap-1.5 text-xs text-slate-500 dark:text-accent-300" data-testid="ai-tool-progress">
+      <span v-if="isActiveStatus" class="size-1 shrink-0 rounded-full bg-sky-500 motion-safe:animate-pulse" aria-hidden="true" />
+      {{ liveProgress }}
+    </p>
+    <div
+      v-if="liveFatalErrors.length"
+      class="ml-6 mt-1.5 space-y-1.5"
+      data-testid="ai-tool-fatal-alerts"
+    >
+      <div
+        v-for="(fatal, idx) in liveFatalErrors"
+        :key="`${fatal.code}-${fatal.use_case_id || ''}-${fatal.model_id || idx}`"
+        class="rounded-md border border-rose-200 bg-rose-50/90 px-2.5 py-2 text-xs text-rose-800 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-100"
+        role="alert"
+        data-testid="ai-tool-fatal-alert"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span class="font-semibold">
+            {{ fatalErrorHeading(fatal) }}<template v-if="fatal.use_case_label || fatal.model_name"> · {{ [fatal.use_case_label, fatal.model_name].filter(Boolean).join(' / ') }}</template><template v-if="fatal.count && fatal.count > 1">（已出现 {{ fatal.count }} 次）</template>
+          </span>
+          <button
+            type="button"
+            class="underline hover:text-rose-950 dark:hover:text-white"
+            @click="openAiModelSettings('ai_bindings')"
+          >
+            前往授权配置 → AI 模型
+          </button>
+        </div>
+        <p v-if="fatal.message" class="mt-1 break-words leading-5">{{ fatal.message }}</p>
+      </div>
+    </div>
     <div v-if="imageAction" class="ml-3 mt-1 space-y-1">
       <p class="text-xs text-amber-800 dark:text-amber-200">{{ toolError }}</p>
       <button type="button" class="btn btn-outline btn-sm" :disabled="continuing" @click="continueImage">在桌面继续</button>

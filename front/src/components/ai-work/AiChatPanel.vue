@@ -192,6 +192,7 @@ onBeforeUnmount(() => { disposed = true; resizeObserver?.disconnect() })
             <section v-for="turn in turns" v-show="turn.messages.length" :key="turn.key">
               <AiMessageList
                 :messages="turn.messages" :pending-tool-calls="turn.reply?.pending_tool_calls ?? chatStore.pendingToolCalls"
+                :code-progress="turn.reply ? undefined : chatStore.codeProgress"
                 :active="turn.active" :allow-branch="!turn.reply && !chatStore.canStop && !chatStore.forking" @branch="chatStore.forkConversation"
               />
               <template v-if="turn.reply && turn.messages.at(-1)?.id === turn.reply.messages.at(-1)?.id">

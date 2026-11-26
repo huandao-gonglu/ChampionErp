@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { PhCaretRight, PhCheck, PhCopy, PhGitBranch } from '@phosphor-icons/vue'
-import type { AiTurnTiming, AiUiPart, BusinessWriteReceipt, PendingToolCall } from '@/types/aiWork'
-import { presentAssistantParts } from '@/utils/aiMessagePresentation'
+import type { AiTurnTiming, AiUiPart, BusinessWriteReceipt, CodeProgressSnapshot, PendingToolCall } from '@/types/aiWork'
+import { aiToolStatus, isAiToolPart, presentAssistantParts, type DisplayPart, type ToolPartView } from '@/utils/aiMessagePresentation'
 import { visibleAssistantText } from '@/utils/aiThinkingPresentation'
 import AiMessagePart from './AiMessagePart.vue'
 
 const props = defineProps<{
   parts: AiUiPart[]
   writeReceipts?: BusinessWriteReceipt[]
+  codeProgress?: Record<string, CodeProgressSnapshot>
   active?: boolean
   pendingToolCalls?: PendingToolCall[]
   timing?: AiTurnTiming
@@ -16,8 +17,12 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{ branch: [] }>()
 const processOpen = ref(false)
+const earlierOpen = ref(false)
 function toggleProcess(event: Event) {
   processOpen.value = (event.target as HTMLDetailsElement).open
+}
+function toggleEarlier(event: Event) {
+  earlierOpen.value = (event.target as HTMLDetailsElement).open
 }
 const display = computed(() => presentAssistantParts(props.parts, props.pendingToolCalls, props.active, props.writeReceipts))
 const timeline = computed(() => display.value.timeline.filter(entry => entry.part.type !== 'reasoning'))
@@ -29,6 +34,57 @@ watch(() => display.value.live, live => {
   now.value = Date.now()
   if (live) timer = setInterval(() => { now.value = Date.now() }, 1000)
 }, { immediate: true })
+const activeStepStarts = ref<Record<string, number>>({})
+watch([timeline, () => display.value.live], ([entries, live]) => {
+  if (!live) {
+    activeStepStarts.value = {}
+    return
+  }
+  const next: Record<string, number> = {}
+  const current = Date.now()
+  for (const entry of entries) {
+    if (!isAiToolPart(entry.part)) continue
+    const st = aiToolStatus(entry.part, entry.pendingKind, true)
+    if (['preparing', 'waiting', 'running'].includes(st)) {
+      next[entry.key] = activeStepStarts.value[entry.key] ?? current
+    }
+  }
+  activeStepStarts.value = next
+}, { immediate: true })
+function stepElapsedSeconds(key: string): number {
+  const started = activeStepStarts.value[key]
+  return started ? Math.max(0, Math.floor((now.value - started) / 1000)) : 0
+}
+function entryCodeProgress(entry: DisplayPart): CodeProgressSnapshot | undefined {
+  if (!props.codeProgress || !isAiToolPart(entry.part)) return undefined
+  const callId = (entry.part as ToolPartView).toolCallId
+  return callId ? props.codeProgress[callId] : undefined
+}
+const liveToolSummary = computed(() => {
+  const tools = timeline.value.filter(entry => isAiToolPart(entry.part))
+  if (tools.length < 2) return ''
+  const done = tools.filter(entry => !['preparing', 'waiting', 'running', 'approval', 'input'].includes(aiToolStatus(entry.part, entry.pendingKind, true))).length
+  return done < tools.length ? `第 ${Math.min(done + 1, tools.length)}/${tools.length} 步` : `已完成 ${done} 步`
+})
+const liveSplit = computed(() => {
+  const entries = timeline.value
+  const keepTail = 3
+  if (entries.length <= keepTail + 2) {
+    return { earlier: [] as DisplayPart[], recent: entries }
+  }
+  let cutoff = 0
+  const maxCutoff = entries.length - keepTail
+  while (cutoff < maxCutoff) {
+    const entry = entries[cutoff]
+    if (isAiToolPart(entry.part)) {
+      const st = aiToolStatus(entry.part, entry.pendingKind, true)
+      if (st !== 'completed' && st !== 'script_error') break
+    }
+    cutoff += 1
+  }
+  if (cutoff < 3) return { earlier: [] as DisplayPart[], recent: entries }
+  return { earlier: entries.slice(0, cutoff), recent: entries.slice(cutoff) }
+})
 const startedAt = computed(() => Date.parse(props.timing?.started_at ?? ''))
 const finishedAt = computed(() => Date.parse(props.timing?.finished_at ?? ''))
 const duration = computed(() => {
@@ -78,13 +134,42 @@ const showProgress = computed(() => {
 <template>
   <div class="space-y-3" data-testid="ai-assistant-turn">
     <div v-if="display.live" class="space-y-1" data-testid="ai-turn-timeline">
-      <p class="mb-3 border-b border-slate-200 pb-3 text-xs text-slate-500 dark:border-dark-700 dark:text-accent-300" data-testid="ai-turn-timing" aria-live="off">{{ processLabel }}</p>
+      <div class="mb-3 flex items-center justify-between gap-2 border-b border-slate-200 pb-3 text-xs text-slate-500 dark:border-dark-700 dark:text-accent-300">
+        <p data-testid="ai-turn-timing" aria-live="off">{{ processLabel }}</p>
+        <span v-if="liveToolSummary" class="shrink-0 tabular-nums text-slate-400 dark:text-accent-400" data-testid="ai-turn-step-count">{{ liveToolSummary }}</span>
+      </div>
+      <details
+        v-if="liveSplit.earlier.length"
+        class="group/earlier min-w-0 pb-1"
+        data-testid="ai-turn-earlier-steps"
+        @toggle="toggleEarlier"
+      >
+        <summary class="flex cursor-pointer list-none items-center gap-1.5 py-1 text-xs text-slate-400 hover:text-slate-600 focus-visible:outline-primary-500 dark:text-accent-400 dark:hover:text-accent-200 [&::-webkit-details-marker]:hidden">
+          已完成 {{ liveSplit.earlier.length }} 个前置步骤
+          <PhCaretRight :size="12" class="shrink-0 transition-transform group-open/earlier:rotate-90" aria-hidden="true" />
+        </summary>
+        <div v-if="earlierOpen" class="mt-1 space-y-1 border-l border-slate-200 pl-3 dark:border-dark-700">
+          <AiMessagePart
+            v-for="entry in liveSplit.earlier"
+            :key="entry.key"
+            :part="entry.part"
+            :pending-kind="entry.pendingKind"
+            :progress="entry.progress"
+            :code-progress="entryCodeProgress(entry)"
+            :write-receipts="writeReceipts"
+            :active="display.live"
+          />
+        </div>
+      </details>
       <AiMessagePart
-        v-for="entry in timeline"
+        v-for="entry in liveSplit.recent"
         :key="entry.key"
         :part="entry.part"
         :pending-kind="entry.pendingKind"
         :progress="entry.progress"
+        :code-progress="entryCodeProgress(entry)"
+        :write-receipts="writeReceipts"
+        :step-elapsed-seconds="stepElapsedSeconds(entry.key)"
         :active="display.live"
       />
       <p v-if="showProgress" role="status" class="flex items-center gap-2 py-1 text-xs text-slate-500 dark:text-accent-300" data-testid="ai-turn-progress">
@@ -109,6 +194,7 @@ const showProgress = computed(() => {
             :key="entry.key"
             :part="entry.part"
             :pending-kind="entry.pendingKind"
+            :write-receipts="writeReceipts"
             :active="active"
           />
         </div>
@@ -121,6 +207,7 @@ const showProgress = computed(() => {
           :key="entry.key"
           :part="entry.part"
           :pending-kind="entry.pendingKind"
+          :write-receipts="writeReceipts"
           :active="active"
         />
       </div>

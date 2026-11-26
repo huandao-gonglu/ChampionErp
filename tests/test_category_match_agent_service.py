@@ -560,9 +560,14 @@ def test_provider_http_error_keeps_status_code_message_and_request_id() -> None:
         )
 
     assert captured.value.code == "PERMISSION_DENIED"
-    assert str(captured.value) == (
-        "HTTP 403: Free quota exhausted. (code=PERMISSION_DENIED) (request_id=request-403)"
+    assert "「商品类目候选匹配」绑定的模型「test-model」" in str(captured.value)
+    assert "HTTP 403: Free quota exhausted. (code=PERMISSION_DENIED) (request_id=request-403)" in str(
+        captured.value
     )
+    assert captured.value.details["use_case_id"] == "category.product_match"
+    assert captured.value.details["use_case_label"] == "商品类目候选匹配"
+    assert captured.value.details["model_id"] == "test-model"
+    assert captured.value.details["model_name"] == "test-model"
     assert captured.value.retryable is False
     history = get_context().pydantic_messages.get(captured.value.conversation_id)
     assert history is None

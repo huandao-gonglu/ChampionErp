@@ -596,7 +596,7 @@ describe('AuthSettingsPanel AI 功能绑定高级设置', () => {
       ai_use_case_prompts: { 'image.plan': { path: 'config/prompts/image_set_plan.json' } },
     })
     const toggle = wrapper.findAll('label').find(label => label.text().trim() === '图片理解')!.get('input')
-    const select = wrapper.findAll('select').find(item => item.findAll('option').some(option => option.text() === '自动匹配'))!
+    const select = wrapper.get('[data-testid="binding-model-image.plan"]')
     expect(select.find('option[value="qwen_translation"]').exists()).toBe(false)
     await toggle.setValue(true)
     expect(wrapper.text()).toContain('两张测试图片')
@@ -700,6 +700,88 @@ describe('AuthSettingsPanel AI 功能绑定高级设置', () => {
     const bindings = payload.ai_use_case_bindings as Record<string, Record<string, unknown>>
     expect(bindings['text.translate'].generation).toEqual({
       reasoning: { mode: 'enabled', effort: 'low' },
+    })
+  })
+
+  it('功能绑定收敛为 2 个主槽位与折叠高级覆盖，支持跟随默认通用模型与一键恢复', async () => {
+    const simplifiedConfig = {
+      ...qwenConfig,
+      ai_models: [
+        {
+          id: 'main_ds',
+          name: 'pniccDeepSeek',
+          connection_type: 'api',
+          provider: 'OpenAI（官方 / 兼容协议）',
+          provider_id: 'openai',
+          api_style: 'openai_compatible',
+          base_url: 'https://v2.pincc.ai/v1',
+          model: 'deepseek-chat',
+          capabilities: ['chat', 'json', 'tool_calling'],
+          enabled: true,
+        },
+        {
+          id: 'vision_model',
+          name: '识图专用模型',
+          connection_type: 'api',
+          provider: 'OpenAI（官方 / 兼容协议）',
+          provider_id: 'openai',
+          api_style: 'openai_compatible',
+          base_url: 'https://api.openai.com/v1',
+          model: 'gpt-4o',
+          capabilities: ['chat', 'json', 'tool_calling', 'image_understanding'],
+          enabled: true,
+        },
+        {
+          id: 'gemini_canvas_browser',
+          name: 'Gemini Canvas 修图',
+          connection_type: 'browser',
+          provider: 'Gemini Canvas',
+          browser_provider: 'gemini',
+          capabilities: ['image_edit'],
+          canvas_managed: true,
+          enabled: true,
+        },
+      ],
+      ai_use_cases: [
+        { id: 'global.chat', label: '全局 AI', required_capabilities: ['chat', 'tool_calling'] },
+        { id: 'image.translate', label: '图片翻译/重绘', desktop_capability: 'image_edit', required_capabilities: ['image_edit'] },
+        { id: 'category.product_match', label: '商品类目候选匹配', required_capabilities: ['chat', 'json', 'tool_calling'] },
+        { id: 'copy.generate', label: '商品 AI 文案', required_capabilities: ['chat', 'json'] },
+        { id: 'text.translate', label: '翻译', required_capabilities: ['chat', 'json'] },
+        { id: 'image.plan', label: '套图规划（需支持识图）', required_capabilities: ['chat', 'json', 'image_understanding'] },
+      ],
+      ai_use_case_bindings: {
+        'global.chat': { model_id: 'main_ds' },
+        'category.product_match': { model_id: 'vision_model' },
+      },
+    }
+
+    const wrapper = mountPanel(simplifiedConfig)
+    await wrapper.get('[data-testid="auth-settings-tab-ai_bindings"]').trigger('click')
+
+    const primary = wrapper.get('[data-testid="ai-bindings-primary"]')
+    expect(primary.findAll('[data-testid^="primary-binding-card-"]')).toHaveLength(2)
+    expect(primary.text()).toContain('默认通用模型')
+    expect(primary.text()).toContain('图片翻译/重绘模型')
+    // 默认模型不支持图片理解，主槽位直接提醒套图规划需单独覆盖
+    expect(wrapper.get('[data-testid="default-model-capability-gaps"]').text()).toContain('套图规划')
+    expect(wrapper.get('[data-testid="default-model-capability-gaps"]').text()).toContain('图片理解')
+
+    const advanced = wrapper.get<HTMLDetailsElement>('[data-testid="ai-bindings-advanced"]')
+    expect(advanced.element.open).toBe(false)
+    expect(wrapper.get('[data-testid="ai-bindings-advanced-summary"]').text()).toContain('已单独覆盖 1 项模型')
+
+    // 子功能默认选项为“跟随默认通用模型（pniccDeepSeek）”
+    const copySelect = wrapper.get('[data-testid="binding-model-copy.generate"]')
+    expect(copySelect.find('option[value=""]').text()).toBe('跟随默认通用模型（pniccDeepSeek）')
+
+    // 点击“全部恢复跟随默认”清除旧的 category.product_match 单独绑定并保存
+    await wrapper.get('[data-testid="reset-all-model-overrides"]').trigger('click')
+    expect(wrapper.get('[data-testid="ai-bindings-advanced-summary"]').text()).toContain('均跟随默认通用模型')
+    await wrapper.get('[data-testid="save-ai-bindings"]').trigger('click')
+    const payload = wrapper.emitted('saveAi')?.[0]?.[0] as Record<string, unknown>
+    expect(payload.ai_use_case_bindings).toEqual({
+      'global.chat': { model_id: 'main_ds', timeout_override_seconds: '' },
     })
   })
 })

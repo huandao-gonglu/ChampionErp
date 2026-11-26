@@ -787,6 +787,19 @@ def _format_capability_names(capabilities: list[str]) -> str:
     )
 
 
+DEFAULT_GENERAL_USE_CASE_ID = "global.chat"
+# 未单独覆盖模型时，文本/多模态通用功能统一继承默认通用模型（global.chat）。
+GENERAL_MODEL_INHERITING_USE_CASES = frozenset(
+    {
+        "category.product_match",
+        "copy.generate",
+        "copy.preview",
+        "text.translate",
+        "image.plan",
+    }
+)
+
+
 def resolve_ai_model(
     app_config: dict[str, Any] | None,
     use_case_id: str,
@@ -810,6 +823,28 @@ def resolve_ai_model(
                     )
                 return model
         raise RuntimeError(f"AI 模型不存在或未启用: {preferred_id}")
+    if use_case_id in GENERAL_MODEL_INHERITING_USE_CASES:
+        default_general_id = str(
+            (bindings.get(DEFAULT_GENERAL_USE_CASE_ID) or {}).get("model_id") or ""
+        ).strip()
+        if default_general_id:
+            use_case_label = str(
+                (AI_USE_CASES.get(use_case_id) or {}).get("label") or use_case_id
+            ).strip()
+            for model in candidates:
+                if str(model.get("id") or "") == default_general_id:
+                    missing = missing_model_capabilities(model, required) if required else []
+                    if missing:
+                        label = str(model.get("name") or default_general_id).strip()
+                        raise RuntimeError(
+                            f"「{use_case_label}」继承默认通用模型「{label}」，"
+                            f"但该模型不满足能力要求，缺少：{_format_capability_names(missing)}。"
+                            "请在「授权配置 → 功能绑定」的「高级：按功能单独覆盖」中单独指定支持对应能力的模型，或更换默认通用模型。"
+                        )
+                    return model
+            raise RuntimeError(
+                f"「{use_case_label}」继承的默认通用模型不存在或未启用: {default_general_id}"
+            )
     for model in candidates:
         if model.get("canvas_managed"):
             continue

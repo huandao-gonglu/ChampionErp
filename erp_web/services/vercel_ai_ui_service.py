@@ -13,6 +13,7 @@ from uuid import uuid4
 from pydantic import ValidationError
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelRequest, ModelResponse, TextPart, ThinkingPart, ToolCallPart, ToolReturnPart, RetryPromptPart
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter, VercelAIEventStream
+from pydantic_ai.ui.vercel_ai.response_types import DataChunk
 from pydantic_ai.ui.vercel_ai.request_types import (
     FileUIPart,
     RegenerateMessage,
@@ -24,6 +25,7 @@ from erp_web.services.chat_images import (
     IMAGE_TYPES, MAX_CHAT_IMAGES, MAX_CHAT_TOTAL_BYTES, chat_image_reason, identify_uploads, prompt_summary, validate_image_attachment,
 )
 from erp_web.schemas.chat_conversations import is_global_id
+from erp_web.services.ai_code_mode import CodeProgressEvent
 from erp_web.services.chat_conversation_service import (
     AcceptedChatInput, ChatConversationError as VercelUiProtocolError,
     ChatConversationRun, ChatConversationService, MAX_USER_TEXT_CHARS,
@@ -45,8 +47,32 @@ VERCEL_SDK_VERSION = 7
 MAX_DELIVERY_QUEUE_CHUNKS = 1024
 
 
+class _ErpVercelAIEventStream(VercelAIEventStream):
+    """将原生 CodeMode 子工具进度能力事件映射为瞬态 Vercel data chunk，不写入历史。"""
+
+    async def handle_capability_event(self, event):
+        if isinstance(event, CodeProgressEvent):
+            yield DataChunk(
+                type="data-code-progress",
+                data={
+                    "tool_call_id": event.parent_tool_call_id,
+                    "tool_name": event.nested_tool_name,
+                    "started": event.started,
+                    "completed": event.completed,
+                    "failed": event.failed,
+                    "active": event.active,
+                    "tools": event.tools,
+                    **({"fatal_errors": event.fatal_errors} if event.fatal_errors else {}),
+                },
+                transient=True,
+            )
+            return
+        async for chunk in super().handle_capability_event(event):
+            yield chunk
+
+
 def new_event_stream(conversation_id: str) -> VercelAIEventStream:
-    return VercelAIEventStream(
+    return _ErpVercelAIEventStream(
         SubmitMessage(id=conversation_id, messages=[]), sdk_version=VERCEL_SDK_VERSION
     )
 

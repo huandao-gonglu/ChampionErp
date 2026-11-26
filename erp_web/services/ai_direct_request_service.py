@@ -473,6 +473,8 @@ def _chat_response(
             model_name=binding.model_name,
             api_style=binding.api_style,
             base_url=ai_model_config.model_base_url(binding.model_config),
+            use_case_id=use_case_id,
+            model_display_name=str(binding.model_config.get("name") or "").strip(),
         )
         if mapped is exc:
             raise
@@ -727,6 +729,8 @@ def generate_images(
             model_name=binding.model_name,
             api_style=binding.api_style,
             base_url=ai_model_config.model_base_url(binding.model_config),
+            use_case_id=use_case_id,
+            model_display_name=str(binding.model_config.get("name") or "").strip(),
         )
         if mapped is exc:
             raise
@@ -820,6 +824,8 @@ def edit_images(
             model_name=binding.model_name,
             api_style=binding.api_style,
             base_url=ai_model_config.model_base_url(binding.model_config),
+            use_case_id=use_case_id,
+            model_display_name=str(binding.model_config.get("name") or "").strip(),
         )
         if mapped is last_error:
             raise last_error
@@ -867,6 +873,8 @@ def request_for_probe(
             model_name=binding.model_name,
             api_style=binding.api_style,
             base_url=ai_model_config.model_base_url(binding.model_config),
+            use_case_id="config.ai_model_probe",
+            model_display_name=str(binding.model_config.get("name") or "").strip(),
         )
         if mapped is exc:
             raise
