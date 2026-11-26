@@ -131,3 +131,37 @@ def test_parse_1688_api_product_defaults_unitless_dimensions_to_millimetres() ->
         "width_cm": "5.5",
         "height_cm": "15.5",
     }
+
+
+def test_parse_1688_api_product_normalizes_weight_units() -> None:
+    url = "https://detail.1688.com/offer/735716533861.html"
+    # 属性中的克正确换算为千克，不再剥离单位把 20g 写成 20kg。
+    from_grams_attr = parse_1688_api_product(
+        {"result": {"subject": "饰品", "attributes": [{"name": "重量", "value": "20g"}]}},
+        url,
+        "735716533861",
+    )
+    assert from_grams_attr["weight_kg"] == "0.02"
+
+    # 无单位卖家属性不猜测单位，留空避免把 1900g 当成 1900kg。
+    from_unitless_attr = parse_1688_api_product(
+        {"result": {"subject": "电烤炉", "attributes": [{"name": "重量", "value": "1900"}]}},
+        url,
+        "735716533861",
+    )
+    assert from_unitless_attr["weight_kg"] == ""
+
+    # 结构化字段带 weightUnit=g 时换算为千克，默认千克直接保留。
+    from_structured_grams = parse_1688_api_product(
+        {"result": {"subject": "手套", "weight": 400, "weightUnit": "g"}},
+        url,
+        "735716533861",
+    )
+    assert from_structured_grams["weight_kg"] == "0.4"
+
+    from_structured_kg = parse_1688_api_product(
+        {"result": {"subject": "打气泵", "weight": 2.1}},
+        url,
+        "735716533861",
+    )
+    assert from_structured_kg["weight_kg"] == "2.1"

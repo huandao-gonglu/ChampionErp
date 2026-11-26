@@ -89,7 +89,7 @@ def test_direct_read_and_single_save_use_business_tools_without_python(subject, 
             assert returned.tool_name == "draft_attributes_read" and returned.content["sku_count"] == 2
             yield {0: DeltaToolCall(name="draft_sku_attributes_update", json_args=json.dumps({
                 "draft_id": draft_id, "platform": "ozon", "site": "global", "category_id": "94765",
-                "sku_id": "s0", "updates": {"color": "黑色"},
+                "sku_id": "s0", "updates": {"color": "Черный"},
             }), tool_call_id="save")}
         else:
             yield "已保存。"
@@ -99,7 +99,7 @@ def test_direct_read_and_single_save_use_business_tools_without_python(subject, 
     asyncio.run(ui.prepare_run(body(target_draft_ids=[draft_id])).stream(chunks.append))
     assert saved_calls == [1], b"".join(chunks).decode()
     assert len(requests) == 3
-    assert app.products.draft_record(draft_id)["sku_items"][0]["attributes_by_target"]["ozon:global"]["color"] == "黑色"
+    assert app.products.draft_record(draft_id)["sku_items"][0]["attributes_by_target"]["ozon:global"]["color"] == "Черный"
     returned = business_returns(ui.chat_service.trusted_history(CONVERSATION))
     assert [p.tool_name for p in returned] == ["draft_attributes_read", "draft_sku_attributes_update"]
     receipts = ui.call_store.current_turn_receipts(CONVERSATION)

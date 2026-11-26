@@ -3,6 +3,7 @@ import { draftListTitle } from '@/utils/draftDisplayTitle'
 import { computed, ref, watch } from 'vue'
 import { PhMagnifyingGlass, PhX } from '@phosphor-icons/vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
+import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import { useAiChatStore } from '@/stores/aiChat'
 import { useAiPageContext } from '@/composables/useAiPageContext'
 import DraftLanguageSelect from '@/components/domain/DraftLanguageSelect.vue'
@@ -95,11 +96,22 @@ const draftRows = computed(() => allDraftRows.value.filter((row) => {
 
 const selectedDrafts = computed(() => props.drafts.filter((item) => selectedDraftIds.value.includes(draftIdOf(item))))
 const selectedCount = computed(() => selectedDrafts.value.length)
+const deletableSelectedDrafts = computed(() => selectedDrafts.value.filter((item) => draftPublishStateOf(item) !== 'publishing'))
+const blockedPublishingSelectedCount = computed(() => selectedDrafts.value.length - deletableSelectedDrafts.value.length)
+const pendingDeleteConfirmation = ref<{ mode: 'single'; item: DraftIndexItem } | { mode: 'batch'; items: DraftIndexItem[]; skippedPublishingCount: number } | null>(null)
 useAiPageContext(() => ({
   page: 'drafts', selected_draft_ids: selectedDrafts.value.map(draftIdOf).filter(Boolean),
 }), 1)
 const visibleDraftIds = computed(() => draftRows.value.map(draftIdOf).filter(Boolean))
 const allChecked = computed(() => visibleDraftIds.value.length > 0 && visibleDraftIds.value.every((id) => selectedDraftIds.value.includes(id)))
+
+function isPublishingDraft(item: DraftIndexItem) {
+  return draftPublishStateOf(item) === 'publishing'
+}
+
+function isPublishedDraft(item: DraftIndexItem) {
+  return draftPublishStateOf(item) === 'published'
+}
 
 function draftIdOf(item: DraftIndexItem) {
   return String(item.draftId || '').trim()
@@ -130,9 +142,35 @@ function selectVisibleDrafts(checked: boolean) {
   selectedDraftIds.value = Array.from(new Set([...selectedDraftIds.value, ...visibleDraftIds.value]))
 }
 
+function requestDeleteDraft(item: DraftIndexItem) {
+  if (props.loading || isPublishingDraft(item)) return
+  if (isPublishedDraft(item)) {
+    pendingDeleteConfirmation.value = { mode: 'single', item }
+    return
+  }
+  emit('deleteDraft', item)
+}
+
 function deleteSelectedDrafts() {
-  if (!selectedDrafts.value.length) return
-  emit('deleteDrafts', selectedDrafts.value)
+  if (props.loading || !deletableSelectedDrafts.value.length) return
+  const targets = deletableSelectedDrafts.value
+  if (targets.some(isPublishedDraft)) {
+    pendingDeleteConfirmation.value = {
+      mode: 'batch',
+      items: targets,
+      skippedPublishingCount: blockedPublishingSelectedCount.value,
+    }
+    return
+  }
+  emit('deleteDrafts', targets)
+}
+
+function confirmPendingDelete() {
+  const pending = pendingDeleteConfirmation.value
+  pendingDeleteConfirmation.value = null
+  if (!pending) return
+  if (pending.mode === 'single') emit('deleteDraft', pending.item)
+  else emit('deleteDrafts', pending.items)
 }
 
 watch(() => props.drafts.map(draftIdOf), (draftIds) => {
@@ -211,7 +249,15 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
           </div>
           <div class="flex flex-wrap items-center gap-2">
             <button class="btn btn-primary px-3 py-1.5 text-xs" data-testid="drafts-ai-prepare" :disabled="props.loading || !selectedCount" @click="chatStore.prepareDrafts(selectedDraftIds)">AI 准备所选草稿（{{ selectedCount }}）</button>
-            <button class="btn btn-outline px-3 py-1.5 text-xs text-rose-600 hover:border-rose-300 hover:bg-rose-50 dark:text-rose-200 dark:hover:border-rose-500/50 dark:hover:bg-rose-500/10" :disabled="props.loading || !selectedCount" @click="deleteSelectedDrafts">批量删除选中</button>
+            <button
+              class="btn btn-outline px-3 py-1.5 text-xs text-rose-600 hover:border-rose-300 hover:bg-rose-50 dark:text-rose-200 dark:hover:border-rose-500/50 dark:hover:bg-rose-500/10"
+              data-testid="drafts-batch-delete"
+              :disabled="props.loading || !deletableSelectedDrafts.length"
+              :title="selectedCount && !deletableSelectedDrafts.length ? '所选草稿均在发布中，暂不支持删除' : '批量删除选中草稿'"
+              @click="deleteSelectedDrafts"
+            >
+              批量删除选中
+            </button>
           </div>
         </div>
       </div>
@@ -285,7 +331,15 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
                 <div class="flex flex-nowrap gap-1">
                   <button class="btn btn-primary shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading || !draftIdOf(row)" @click="emit('edit', row)">{{ props.openingDraftId === row.draftId ? '打开中…' : '编辑' }}</button>
                   <button data-testid="duplicate-draft-button" class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs" :disabled="props.loading || !draftIdOf(row)" title="创建一份独立草稿副本" @click="emit('duplicateDraft', row)">复制草稿</button>
-                  <button class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs text-rose-600 hover:border-rose-300 hover:bg-rose-50 dark:text-rose-200 dark:hover:border-rose-500/50 dark:hover:bg-rose-500/10" :disabled="props.loading" @click="emit('deleteDraft', row)">删除</button>
+                  <button
+                    class="btn btn-outline shrink-0 whitespace-nowrap px-1.5 py-1 text-xs text-rose-600 hover:border-rose-300 hover:bg-rose-50 dark:text-rose-200 dark:hover:border-rose-500/50 dark:hover:bg-rose-500/10"
+                    data-testid="delete-draft-button"
+                    :disabled="props.loading || isPublishingDraft(row)"
+                    :title="isPublishingDraft(row) ? '发布中的草稿暂不支持删除' : '删除草稿'"
+                    @click="requestDeleteDraft(row)"
+                  >
+                    删除
+                  </button>
                 </div>
               </td>
             </tr>
@@ -296,6 +350,40 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
         </table>
       </div>
     </div>
+
+    <WorkspaceDialog
+      v-if="pendingDeleteConfirmation"
+      :open="true"
+      title="确认删除已发布草稿"
+      width="30rem"
+      :close-disabled="props.loading"
+      @close="pendingDeleteConfirmation = null"
+    >
+      <template #close>取消</template>
+      <template #header-actions>
+        <button
+          type="button"
+          data-testid="confirm-delete-published-draft"
+          class="btn !min-h-9 !rounded-xl bg-rose-600 !px-3.5 !py-1.5 text-sm text-white hover:bg-rose-700 dark:bg-rose-500 dark:hover:bg-rose-400"
+          :disabled="props.loading"
+          @click="confirmPendingDelete"
+        >
+          确认删除
+        </button>
+      </template>
+      <div class="space-y-2.5 text-sm text-accent-700 dark:text-accent-200">
+        <p v-if="pendingDeleteConfirmation.mode === 'single'">
+          确认删除已发布草稿「<strong>{{ draftListTitle(pendingDeleteConfirmation.item) || pendingDeleteConfirmation.item.draftId }}</strong>」吗？
+        </p>
+        <p v-else>
+          确认删除已选中的 <strong>{{ pendingDeleteConfirmation.items.length }}</strong> 份草稿（其中包含已发布草稿）吗？
+          <span v-if="pendingDeleteConfirmation.skippedPublishingCount">（已自动跳过 {{ pendingDeleteConfirmation.skippedPublishingCount }} 份发布中的草稿）</span>
+        </p>
+        <p class="rounded-lg border border-amber-200/80 bg-amber-50/70 p-2.5 text-xs text-amber-900 dark:border-amber-500/25 dark:bg-amber-500/10 dark:text-amber-200">
+          删除草稿不会下架或修改平台已发布的线上商品，仅清理本地草稿记录；采集箱仍会保留历史已发布平台标记。
+        </p>
+      </div>
+    </WorkspaceDialog>
   </section>
 </template>
 

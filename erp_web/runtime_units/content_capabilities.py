@@ -122,7 +122,7 @@ def _copy_language(
 
 @ai_tool(
     name=COPY_GENERATE_TOOL,
-    description="为商品/草稿生成目标市场本地化文案并保存到草稿。",
+    description="为单个商品/草稿生成目标市场本地化文案（标题、描述、卖点；title/description/text）并保存到草稿。",
     permission="content.write",
     side_effect="write",
     approval_required=False,
@@ -188,7 +188,7 @@ def copy_generate(
 
 @ai_tool(
     name=COPY_GENERATE_BATCH_TOOL,
-    description="批量为多个商品生成目标市场本地化文案。",
+    description="批量为多个商品/草稿生成目标市场本地化文案（标题、描述、卖点；batch copy/title/description/text）。",
     permission="content.write",
     side_effect="write",
     approval_required=False,

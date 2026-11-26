@@ -87,6 +87,10 @@ function isPlatformPublished(item: ProductIndexItem, platform: Marketplace) {
   return (item.publishedPlatforms || []).includes(platform)
 }
 
+function itemDisplayPlatforms(item: ProductIndexItem): Marketplace[] {
+  return Array.from(new Set([...(item.platforms || []), ...(item.publishedPlatforms || [])]))
+}
+
 const sourcePlatforms = computed(() => {
   const set = new Set<string>()
   for (const item of props.items) {
@@ -597,7 +601,7 @@ function confirmDeleteAction() {
                         <PhCopy v-else :size="11" aria-hidden="true" />
                       </button>
                       <span
-                        v-for="platform in item.platforms || []"
+                        v-for="platform in itemDisplayPlatforms(item)"
                         :key="platform"
                         class="rounded px-1.5 py-0.5 text-[10px] font-medium"
                         :class="isPlatformPublished(item, platform)

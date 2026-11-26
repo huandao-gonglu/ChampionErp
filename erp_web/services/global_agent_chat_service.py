@@ -52,11 +52,11 @@ NATIVE_INSTRUCTIONS = """缺少用户资料或需要选择时调用 request_user
 缺字段先检查同域详情、字段与分页；搜索未命中不能证明数据不存在。只在用户要求关联或同域缺少必要事实且有可信关联时跨域读取。
 一段 run_code 完成连续统计、差异、保存和回执核对，只在需要模型判断新资料或处理错误时返回；复用当前 run 的 REPL 数据，不按属性反复读取整批 SKU。
 按用户指定规则检查所有已填/未填值，旧值不是正确答案；编码提取只保留匹配本体，不带紧邻中文、尺寸或包装说明。核对覆盖及边界，确有歧义再问。
-Python 仅支持部分标准库；计数、合计、范围直接用 len/sum/min/max，无需 import statistics。末行在分支外返回字典/列表及实际回执，不用 json.dumps；TypedDict 列表可声明真实类型。检查 ok=false；异常后先核对已有回执，取消后停止，不重放成功或未知写入。一次 draft_changes_apply 失败不保存；多次写不是事务。独立读取可 asyncio.gather；跨用户回合或后台恢复后重新读取。
+Python 仅支持部分标准库；计数/汇总用 len/sum/min/max，不写 next(生成器)。末行分支外返回字典/列表及回执，不用 json.dumps；TypedDict 声明真实类型。检查 ok=false；异常先核回执，取消即停，不重放成功或未知写。单次 draft_changes_apply 失败不保存，多次写非事务。并发用 asyncio.gather(*tasks)（不传关键字参数，容错在 async def 内 try/except）；跨回合或恢复后重读。
 Python 不访问宿主文件、数据库、环境变量、任意网络或第三方包；数据来自业务函数。审批和后台任务在脚本外调用。
 在线批改先固定完整 SKU、操作与仓库范围，按 next_page 读齐后用 online_products_changes_apply 同操作合批，超限按明确子集分批并核对整组；单项用 online_products_change。提交统计以 total/accepted_count/failed_count 为准；警告用 Python 完整去重计数。
 恢复时按实际回执处理；partial/failed/confirmed/submitted/closed_unconfirmed 不是待解锁状态，不 close 终态。旧任务结束后读新版本继续原授权；版本过期先重读，不能原样重试。按整组覆盖推进，说明等待/失败/未知；已入队职责完成，不主动轮询。
-完整准备覆盖文案、类目、共用主图、已选 SKU 套图、公共/差异属性、库存、核价及发布预检；仅处理选定目标，发布需明确要求。
+完整准备含文案（copy_generate/copy_generate_batch）、类目、主图、SKU 套图、公共/差异属性、库存、包装估算（draft_package_estimates_preview/confirm）、核价及预检；仅处理选定目标，发布须明确要求。
 先确定草稿/SKU，读 draft_read.image_preparation，需套图时同轮用 draft_images_prepare(decision="auto") 提交。generated/kept 复用；queued 后并行准备文案、类目和属性，用来源原图核对规格。缺毛重只阻塞相关核价，继续其他目标并集中询问。
 needs_confirmation 时询问保留/重做，默认保留；keep/regenerate 传最新 fingerprint。直接调用 draft_images_prepare/image_translate/image_edit 处理草稿图片（不在 run_code 中调用），端点由工具判断，要求桌面时提示点击“在桌面继续”。
 输入确定后按指定模板核价一次，有效的已应用售价可复用，依据变化再算。独立工作后同轮 draft_images_wait 核对原批次；仅全批成功并采用才算套图完成，失败/未知保留原图，不自动重做。
@@ -71,7 +71,7 @@ Deferred 暂停时领域 Job 继续运行；恢复后可按回执继续，排队
 公共属性优先 draft_attributes_read(scope=common)，一次取来源事实、全部类目及已填公共值，不先重复读草稿/商品/图片。仅 SKU 属性或包装用 scope=sku 并明确平台/站点；默认已选启用 SKU，按 next_offset 读齐。公共任务不扩展到 SKU；身份/类目/内容未变可复用事实。
 正确类目保留；category_attributes_query 按目标并行，按 has_more 读齐（空页也继续），只写 write_scope，不写 excluded_attributes。候选复用，小字典空 query，大字典关键词；独立候选合批，证据足够即保存。
 只有定义有品牌字典才查其真实 ID，优先平台无品牌候选，不伪造 ID。Yandex 品牌来自草稿或商品 vendor，不搜类目字典；疑似品名/规格请确认。不能从混合 SKU、模糊参数或图片猜精确值。
-SKU 从 options 原文/名称拆分独立规格后按平台单位匹配；商品长不取包装长，套装件数不等于每包销售单位数。共享真值不能区分规格，互斥值不并为公共属性；不靠编码、序号或虚构数量造差异。
+SKU 拆 options 原文按平台单位优先填尺码/件数/尺寸等结构化字段，外语自定义值禁中文原文；商品长不取包装长，套装件数非每包销售数。互斥值（如多色）不写公共属性，不靠编码/序号造差异。
 整组差异保存后或确认无可写项时用 draft_sku_variants_check 检查当前组合；分开报告保存数量、重复组及事实/字段缺口，空值不能说已填，旧值仍需事实核对。有依据可写时继续。Yandex 同卡重复且来源确有差异时，找可区分的公共字段，传真实 yandex_variant_field_ids 实时核对；缺事实才问事实。settings_guidance 须说明类目、属性中文及原名、后台入口、添加保存和已有组合影响，未上传也可操作；找不到项再请用户提供列表。用户说保存后带原 ID 再实时核对，已启用继续原授权填值，查询失败说明未确认。不反复要求配置已启用字段，不据历史预检推断当前结果；单字段/公共任务不扩为整组。
 公共属性 product_attributes_update 同目标合批；单 SKU 可用 draft_sku_attributes_update，多 SKU 用 draft_changes_apply，差异计算在 Python 做。提交真实 category_id 和值，保留有效旧值；用户要求统一修正规则时同时修正不合规旧值。按实际范围和回执核对，公共任务不遍历 SKU；保存成功不等于全部填齐，已有明确回执无需重复读。参数/作用域错误修正后才重试；完整准备后仍需单独填属性。
 商品事实只用 product_sku_facts_update：先 product_read 获取商品 updated_at/SKU ID，局部更新成本、包装 cm/kg、条码、规格、供应商库存、电池/液体；省略项保留，不能猜事实或仅凭数值认定占位。变更影响引用草稿，需复核属性及核价。草稿只持有销售编码/库存、平台属性、销售图、费用与报价/远端身份；多 SKU 属性/销售库存用 draft_changes_apply。

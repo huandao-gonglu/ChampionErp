@@ -750,6 +750,8 @@ def test_internal_draft_operations_do_not_build_page_responses() -> None:
     """内部属性、图片、文案和核价复用 Store 内容入口，页面另行组装。"""
     for relative in (
         "erp_web/runtime_units/product_capabilities.py",
+        "erp_web/runtime_units/product_write_capabilities.py",
+        "erp_web/runtime_units/source_inspect_capability.py",
         "erp_web/runtime_units/draft_changes_capability.py",
         "erp_web/runtime_units/market_capability_support.py",
         "erp_web/runtime_units/market_prepare_capabilities.py",

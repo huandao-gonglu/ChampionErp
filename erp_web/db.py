@@ -1380,7 +1380,7 @@ class ErpDatabase:
                 platform,
                 {"product_id": product_id, "sku_items": product_sku_items},
             )
-            # 跨平台默认共用同一 master_sku；同平台若已有其他草稿占用该编码则自动避让，防止同店撞 SKU。
+            # 跨平台默认共用同一 master_sku；同平台若已有其他草稿或历史发布记录占用该编码则自动避让，防止同店撞 SKU。
             other_rows = conn.execute(
                 "SELECT draft_json FROM platform_drafts WHERE product_id = ? AND platform = ? AND draft_id != ?",
                 (product_id, platform, draft_id),
@@ -1391,6 +1391,37 @@ class ErpDatabase:
                 for item in _list(_load_current_draft_json(row["draft_json"]).get("sku_items"))
                 if isinstance(item, dict) and str(item.get("sku") or "").strip()
             }
+            history_job_rows = conn.execute(
+                "SELECT draft_id, payload_json FROM publish_jobs WHERE product_id = ?",
+                (product_id,),
+            ).fetchall()
+            for jrow in history_job_rows:
+                payload = json_loads(jrow["payload_json"], {})
+                if not isinstance(payload, dict):
+                    continue
+                plat_state = _dict(_dict(payload.get("platforms")).get(platform))
+                if not plat_state:
+                    continue
+                job_draft_id = str(plat_state.get("draft_id") or jrow["draft_id"] or "").strip()
+                if job_draft_id == draft_id:
+                    continue
+                plat_status = str(plat_state.get("status") or "").strip().lower()
+                if plat_status not in _PUBLISH_SUCCESS_STATUSES and plat_status != "partial":
+                    continue
+                result_obj = _dict(plat_state.get("result"))
+                for sku_row in _list(result_obj.get("sku_results")):
+                    if not isinstance(sku_row, dict):
+                        continue
+                    for field in ("sku", "offer_id"):
+                        code = str(sku_row.get(field) or "").strip()
+                        if code:
+                            taken_skus.add(code)
+                job_draft_obj = _dict(_dict(_dict(payload.get("product")).get("drafts")).get(platform))
+                for sku_row in _list(job_draft_obj.get("sku_items")):
+                    if isinstance(sku_row, dict):
+                        code = str(sku_row.get("sku") or "").strip()
+                        if code:
+                            taken_skus.add(code)
             if taken_skus:
                 for item in _list(draft.get("sku_items")):
                     if not isinstance(item, dict):
@@ -1479,6 +1510,43 @@ class ErpDatabase:
             )
             items.append(item)
         return items
+
+    def draft_publish_states(self, draft_ids: list[str]) -> dict[str, str]:
+        """批量查询指定草稿当前的真实发布态（unpublished / publishing / publish_failed / published）。"""
+        unique_ids = list(dict.fromkeys(_slug(str(item or "").strip()) for item in draft_ids if str(item or "").strip()))
+        if not unique_ids:
+            return {}
+        with self._connect() as conn:
+            jobs_by_draft = self._load_draft_publish_jobs_map(conn, unique_ids)
+            rows = conn.execute(
+                """
+                SELECT d.draft_id, d.platform, d.site, d.status,
+                       coalesce(nullif(json_extract(d.draft_json, '$.publish_status'), ''),
+                                json_extract(d.draft_json, '$.publishStatus'), '') AS publish_status,
+                       (SELECT json_group_array(json_object(
+                           'platform', json_extract(t.value, '$.platform'),
+                           'site', coalesce(json_extract(t.value, '$.site'), json_extract(t.value, '$.site_id')),
+                           'status', json_extract(t.value, '$.status'),
+                           'publish_status', coalesce(nullif(json_extract(t.value, '$.publish_status'), ''), json_extract(t.value, '$.publishStatus'))
+                        )) FROM json_each(d.draft_json, CASE WHEN json_type(d.draft_json, '$.target_sites') = 'array'
+                                 THEN '$.target_sites' ELSE '$.targetSites' END) t WHERE t.type = 'object') AS markets
+                FROM platform_drafts d
+                WHERE d.draft_id IN (SELECT value FROM json_each(?))
+                """,
+                (json_dumps(unique_ids),),
+            ).fetchall()
+        states: dict[str, str] = {}
+        for row in rows:
+            targets = json_loads(row["markets"], []) or [{"platform": row["platform"], "site": row["site"]}]
+            publish_state, _, _ = _resolve_draft_publish_state(
+                draft_status=row["status"],
+                draft_publish_status=row["publish_status"],
+                primary_platform=row["platform"],
+                targets=targets,
+                job_entries=jobs_by_draft.get(row["draft_id"], []),
+            )
+            states[str(row["draft_id"])] = publish_state
+        return states
 
     def _load_draft_publish_jobs_map(
         self,
@@ -1624,6 +1692,39 @@ class ErpDatabase:
                         info["publishing_count"] += 1
                     elif publish_state == "publish_failed":
                         info["failed_count"] += 1
+                # 同步查历史成功发布任务：即使已发布草稿被删，采集箱仍记住已发布平台，避免退回“未推草稿”导致重复铺货。
+                published_job_rows = conn.execute(
+                    """
+                    SELECT j.product_id,
+                           lower(coalesce(nullif(p.key, ''), j.platform, '')) AS job_platform,
+                           lower(coalesce(json_extract(p.value, '$.status'), '')) AS platform_status,
+                           lower(coalesce(j.status, '')) AS job_status
+                    FROM publish_jobs j
+                    LEFT JOIN json_each(j.payload_json, '$.platforms') p
+                      ON json_type(j.payload_json, '$.platforms') = 'object' AND p.type = 'object'
+                    WHERE j.product_id IN (SELECT value FROM json_each(?))
+                    """,
+                    (json_dumps(product_ids),),
+                ).fetchall() if product_ids else []
+                for jrow in published_job_rows:
+                    pid = str(jrow["product_id"] or "")
+                    plat = str(jrow["job_platform"] or "").strip().lower()
+                    status_val = _normalize_platform_job_status(jrow["platform_status"], jrow["job_status"])
+                    if not pid or not plat or status_val not in _PUBLISH_SUCCESS_STATUSES:
+                        continue
+                    info = product_summary.setdefault(
+                        pid,
+                        {
+                            "draft_count": 0,
+                            "platforms": [],
+                            "published_platforms": [],
+                            "published_count": 0,
+                            "publishing_count": 0,
+                            "failed_count": 0,
+                        },
+                    )
+                    if plat not in info["published_platforms"]:
+                        info["published_platforms"].append(plat)
                 result_rows: list[dict[str, Any]] = []
                 for row in rows:
                     summary = product_summary.get(row["product_id"]) or {
@@ -1634,10 +1735,13 @@ class ErpDatabase:
                         "publishing_count": 0,
                         "failed_count": 0,
                     }
+                    has_published = summary["published_count"] > 0 or bool(summary["published_platforms"])
+                    if has_published and summary["published_count"] == 0:
+                        summary["published_count"] = len(summary["published_platforms"])
                     library_stage = (
-                        "unclaimed"
-                        if summary["draft_count"] == 0
-                        else ("published" if summary["published_count"] > 0 else "claimed")
+                        "published"
+                        if has_published
+                        else ("unclaimed" if summary["draft_count"] == 0 else "claimed")
                     )
                     result_rows.append(
                         {

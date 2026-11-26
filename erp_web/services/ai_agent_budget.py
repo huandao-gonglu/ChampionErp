@@ -19,15 +19,25 @@ def agent_budget_instructions(ctx: RunContext[AiAgentDependencies]) -> str:
         seconds = ctx.deps.execution_context.remaining_seconds()
         if seconds < 120:
             return (
-                f"本轮剩余 {seconds:.0f} 秒，请围绕当前用户问题给出已有依据支持的答案，"
+                "本轮剩余时间不足 2 分钟，请围绕当前用户问题给出已有依据支持的答案，"
                 "不要再开始耗时业务工具。执行任务须说明实际完成范围、失败和未完成项；"
                 "查询或解释不附加无关的写入汇报。"
             )
+    if remaining == 0:
+        return (
+            f"本轮工具调用额度已耗尽（上限 {limit} 次），所有业务工具现已关闭，"
+            "请仅基于已有信息提交最终输出。"
+        )
+    low_threshold = min(15, max(5, limit // 5)) if limit > 5 else 0
+    if low_threshold and remaining <= low_threshold:
+        return (
+            f"本轮工具调用额度临近上限（总上限 {limit} 次，剩余不足 {low_threshold + 1} 次）；"
+            "同一响应及 run_code 内每次业务函数调用分别计数。"
+            "请避免重复读取，尽快完成必要操作并提交最终输出。"
+        )
     return (
-        f"当前工具调用额度：已执行 {ctx.usage.tool_calls} 次，剩余 {remaining} 次；"
-        "同一响应中的每次工具调用分别计数；run_code 及其中每次业务函数调用也分别计数。"
-        "额度是上限，不是目标；已有足够信息就提交最终输出。"
-        + ("所有业务工具现已关闭，只能提交最终输出。" if remaining == 0 else "")
+        f"本轮工具调用上限 {limit} 次（同一响应及 run_code 内每次业务函数分别计数）。"
+        "额度是上限非目标；已有足够信息即提交最终输出。"
     )
 
 

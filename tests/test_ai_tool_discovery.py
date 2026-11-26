@@ -26,6 +26,47 @@ def test_matching_prefers_exact_names_and_supports_chinese():
     assert match_tool_queries(None, ["unknown_tool"], corpus) == []
 
 
+def test_chinese_compound_query_discovers_copy_tools():
+    toolset = build_global_chat_toolset(get_context())
+    corpus = [
+        ToolDefinition(name=binding.definition.name, description=binding.definition.description)
+        for binding in toolset.bindings.values()
+    ]
+    ranked = match_tool_queries(
+        None,
+        ["category attributes query 属性定义", "草稿文案生成 描述 description", "draft text"],
+        corpus,
+    )
+    assert {"copy_generate", "copy_generate_batch"} <= set(ranked[:10])
+    ranked_guess = match_tool_queries(None, ["draft_text_generate"], corpus)
+    assert {"copy_generate", "copy_generate_batch"} <= set(ranked_guess[:10])
+
+
+def test_agent_budget_instructions_stay_static_across_normal_turns():
+    from types import SimpleNamespace
+    from erp_web.services.ai_agent_budget import agent_budget_instructions
+
+    def fake_ctx(tool_calls: int, *, limit: int = 240, remaining_seconds: float = 600.0):
+        return SimpleNamespace(
+            usage=SimpleNamespace(tool_calls=tool_calls),
+            deps=SimpleNamespace(
+                tool_runtime=SimpleNamespace(max_tool_calls=limit, run_support=object()),
+                execution_context=SimpleNamespace(remaining_seconds=lambda: remaining_seconds),
+            ),
+        )
+
+    normal_0 = agent_budget_instructions(fake_ctx(0))
+    normal_1 = agent_budget_instructions(fake_ctx(1))
+    normal_50 = agent_budget_instructions(fake_ctx(50))
+    assert normal_0 == normal_1 == normal_50
+    low = agent_budget_instructions(fake_ctx(230))
+    assert low != normal_0 and "临近上限" in low
+    exhausted = agent_budget_instructions(fake_ctx(240))
+    assert "已耗尽" in exhausted and "已关闭" in exhausted
+    ending = agent_budget_instructions(fake_ctx(10, remaining_seconds=90))
+    assert "不足 2 分钟" in ending
+
+
 def test_matching_deprioritizes_already_discovered_tools_and_ranks_name_hits():
     class FakeCtx:
         discovered_tool_names = frozenset({"draft_attributes_read"})

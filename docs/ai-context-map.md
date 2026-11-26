@@ -30,7 +30,7 @@
 `schemas/draft_changes.py` 定义成组局部修改契约；`runtime_units/draft_changes_capability.py`
 提供 `draft_changes_apply`：同一草稿和平台/站点的公共/SKU 属性及库存可混合，平台校验在商品锁外，
 锁内重读版本、范围和状态，全部通过后只调用一次 `save_draft_content`。
-`category_attribute_updates.AttributeUpdateValidation` 在一次提交内复用类目定义及已核验候选；
+`category_attribute_updates.AttributeUpdateValidation` 在一次提交内复用类目定义及已核验候选，并拒绝外语平台（Yandex/Ozon/MercadoLibre）无字典 ID 的中文自定义值（`ATTRIBUTE_LANGUAGE_INVALID`），`draft_sku_variants_check` 同步标记未本地化中文变体值；
 `product_attribute_patch.py` 由单项和成组工具共用纯属性合并规则，不包含脚本执行或模型循环。
 SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整批；原生 REPL 可保留读取结果，
 跨脚本使用保存回执中的实际值与新版本。相关修改完成后统一核价、预检，窄任务不扩展。
@@ -46,7 +46,7 @@ SKU 编排按本轮属性集合合并，避免按颜色、规格分别重读整�
 采集箱使用 `products.index(view=list)`，只读商品行和主图。直接进入采集链接队列、采集箱、草稿箱、在线商品、订单、任务或调研页时只初始化配置，各页独立加载数据；需要当前商品的工作区才读取完整状态。
 工作台商品进度按商品和平台批量读取当前草稿摘要。在线商品页使用 `/api/online-products?view=list`，分组及仓库状态来自本地快照，编辑内容及逐项同步回执通过所选刊登或任务的详情读取。
 编辑器通过 `/api/load-draft` 的 `editor_only` 读取所选草稿和商品上下文，省去两份全库索引及商品的其他草稿。
-图片任务检查携带已加载版本，版本一致时只返回批次状态。属性、图片、文案、核价及 SKU 包装/勾选操作使用内容入口。
+图片任务检查携带已加载版本，版本一致时只返回批次状态。属性、图片、文案、核价、`draft_read`/`draft_save`/`inspect_source_facts` 及 SKU 包装/勾选操作使用内容入口，不构建全库页面索引。`ai_agent_budget.agent_budget_instructions` 仅在临近/耗尽额度或剩余不足 2 分钟时切换提示，常规轮次保持静态以避免击穿模型前缀缓存；`ai_tool_discovery.match_tool_queries` 对连续中文词补充双字子词匹配。
 
 ## 共用业务数据目录
 

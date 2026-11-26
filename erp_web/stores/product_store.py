@@ -1006,10 +1006,15 @@ class ProductStore:
                 "draftsIndex": self.load_drafts_index(scope="all"),
             }
 
+        publish_states = self._db.draft_publish_states(normalized_ids)
         deleted_ids: list[str] = []
         missing_ids: list[str] = []
+        blocked_ids: list[str] = []
         affected_product_ids: list[str] = []
         for normalized_id in normalized_ids:
+            if publish_states.get(normalized_id) == "publishing":
+                blocked_ids.append(normalized_id)
+                continue
             draft = self._db.load_draft_model(normalized_id)
             product_id = str(draft.get("product_id") or "")
             deleted = self._db.delete_draft_model(normalized_id)
@@ -1026,10 +1031,15 @@ class ProductStore:
             else self.load_product()
         )
         deleted_count = len(deleted_ids)
-        message = (
-            "草稿已删除。" if deleted_count == 1 else f"已删除 {deleted_count} 个草稿。"
-        )
-        if not deleted_count:
+        if deleted_count and blocked_ids:
+            message = f"已删除 {deleted_count} 个草稿；已跳过 {len(blocked_ids)} 个发布中的草稿（请等待任务完成后再删除）。"
+        elif deleted_count:
+            message = (
+                "草稿已删除。" if deleted_count == 1 else f"已删除 {deleted_count} 个草稿。"
+            )
+        elif blocked_ids:
+            message = "发布中的草稿暂不支持删除，请等待发布任务完成后再操作。"
+        else:
             message = "草稿不存在或已被删除。"
 
         return {
@@ -1039,13 +1049,14 @@ class ProductStore:
             "deletedDraftIds": deleted_ids,
             "deletedIds": deleted_ids,
             "missingIds": missing_ids,
+            "blockedIds": blocked_ids,
             "affectedProductIds": affected_product_ids,
             "product": product,
             "productsIndex": self.load_products_index(),
             "draftsIndex": self.load_drafts_index(scope="all"),
             "imagePool": current_image_pool(product),
             "message": message,
-            "error": "" if deleted_count else "草稿不存在或已被删除。",
+            "error": "" if deleted_count else message,
         }
 
     def find_indexed_product(

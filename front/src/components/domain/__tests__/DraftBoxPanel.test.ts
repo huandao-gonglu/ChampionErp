@@ -219,4 +219,33 @@ describe('DraftBoxPanel', () => {
       }),
     ])
   })
+
+  it('发布中草稿禁止删除，删除已发布草稿需弹窗二次确认', async () => {
+    const publishingRow = { ...draft('pub-ing', 'publishing', '发布中商品'), publishState: 'publishing' as const }
+    const publishedRow = { ...draft('pub-done', 'published', '已发布商品'), publishState: 'published' as const }
+    const wrapper = mount(DraftBoxPanel, {
+      props: {
+        drafts: [publishingRow, publishedRow],
+        platformOptions: [],
+        storeConfig: {},
+        loading: false,
+      },
+      global: { stubs: { Teleport: true } },
+    })
+
+    await wrapper.get('[data-testid="draft-tab-publishing"]').trigger('click')
+    const publishingDeleteBtn = wrapper.get('[data-testid="delete-draft-button"]')
+    expect(publishingDeleteBtn.attributes('disabled')).toBeDefined()
+    await publishingDeleteBtn.trigger('click')
+    expect(wrapper.emitted('deleteDraft')).toBeUndefined()
+
+    await wrapper.get('[data-testid="draft-tab-published"]').trigger('click')
+    await wrapper.get('[data-testid="delete-draft-button"]').trigger('click')
+    expect(wrapper.emitted('deleteDraft')).toBeUndefined()
+    expect(wrapper.text()).toContain('确认删除已发布草稿')
+    expect(wrapper.text()).toContain('不会下架或修改平台已发布的线上商品')
+
+    await wrapper.get('[data-testid="confirm-delete-published-draft"]').trigger('click')
+    expect(wrapper.emitted('deleteDraft')).toEqual([[publishedRow]])
+  })
 })

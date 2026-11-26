@@ -775,8 +775,39 @@ def draft_sku_variants_check(
         )
         for fact, row in selected
     ]
+    from erp_web.runtime_units.category_attribute_updates import (
+        FOREIGN_MARKET_PLATFORMS,
+        unverified_cjk_attribute_text,
+    )
+    from erp_web.schemas.publish_capabilities import PublishValidationIssue
+
     grouping = grouping_contract(context)
     issues = validate_grouping(context, grouping, members)
+    if str(platform or "").strip().lower() in FOREIGN_MARKET_PLATFORMS:
+        non_localized_skus: list[str] = []
+        non_localized_fields: list[str] = []
+        for (_, row), member in zip(selected, members):
+            stored_map = (row.get("attributes_by_target") or {}).get(key, {})
+            for field_id in grouping["variation_ids"]:
+                if unverified_cjk_attribute_text(stored_map.get(field_id)):
+                    if member.identity.sku_id not in non_localized_skus:
+                        non_localized_skus.append(member.identity.sku_id)
+                    if field_id not in non_localized_fields:
+                        non_localized_fields.append(field_id)
+        if non_localized_skus:
+            issues = [
+                *issues,
+                PublishValidationIssue(
+                    code="SKU_VARIATION_VALUE_NOT_LOCALIZED",
+                    message=(
+                        f"有 {len(non_localized_skus)} 个 SKU 在外语平台 {platform} 的变体属性（{'、'.join(non_localized_fields)}）中"
+                        "包含未翻译的中文原文；请先拆解到结构化字段或翻译为目标市场语言后再检查。"
+                    ),
+                    severity="error",
+                    next_action="修正 SKU 差异属性为目标市场语言或对应结构化字段，不要直接填入中文规格原文。",
+                    affected_sku_ids=non_localized_skus,
+                ),
+            ]
     guidance = ""
     if candidates and grouping["attribute_id"] and grouping["name"] and (
         not grouping["variation_ids"] or any(issue.code in {

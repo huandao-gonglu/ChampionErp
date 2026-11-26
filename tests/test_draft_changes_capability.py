@@ -41,16 +41,16 @@ def test_mixed_changes_save_once_and_preserve_unrelated_fields(subject, monkeypa
     monkeypatch.setattr(app.products, "save_draft_content", save)
     monkeypatch.setattr(validation, "fetch_category_record", definitions)
     changes = [
-        {"sku_id": "s0", "attributes": {"color": "甲"}, "stock": 0},
-        {"attributes": {"7199": "材料"}},
-        {"sku_id": "s1", "attributes": {"color": "乙"}, "stock": 13},
+        {"sku_id": "s0", "attributes": {"color": "Black"}, "stock": 0},
+        {"attributes": {"7199": "Steel"}},
+        {"sku_id": "s1", "attributes": {"color": "White"}, "stock": 13},
     ]
     result = run(app, request(app, draft_id, changes))
     assert result.changed_count == 3 and result.previous_updated_at == before["updated_at"]
     assert result.updated_at != before["updated_at"]
     assert save.call_count == definitions.call_count == 1
     saved = app.products.draft_record(draft_id)
-    for index, (color, stock) in enumerate((("甲", "0"), ("乙", "13"))):
+    for index, (color, stock) in enumerate((("Black", "0"), ("White", "13"))):
         row = saved["sku_items"][index]
         assert row["attributes_by_target"]["ozon:global"] == {"color": color}
         assert row["attributes_by_target"]["yandex:global"] == {"old": "保留"}
@@ -58,7 +58,7 @@ def test_mixed_changes_save_once_and_preserve_unrelated_fields(subject, monkeypa
         assert row["pricing"] == before["sku_items"][index]["pricing"]
         assert "package_dimensions" not in row["overrides"]
     assert result.changes[0].stock == "0"
-    assert saved["attributes"]["7199"] == "材料"
+    assert saved["attributes"]["7199"] == "Steel"
     assert saved["title"] == before["title"]
     assert app.db.load_product_model(before["product_id"])["sku_items"] == product["sku_items"]
     repeated = run(app, request(app, draft_id, changes))
@@ -67,22 +67,23 @@ def test_mixed_changes_save_once_and_preserve_unrelated_fields(subject, monkeypa
 
 
 @pytest.mark.parametrize("invalid,code", [
-    ({"sku_id": "s1", "attributes": {"readonly": "错"}}, "ATTRIBUTE_OUTSIDE_SCOPE"),
+    ({"sku_id": "s1", "attributes": {"readonly": "bad"}}, "ATTRIBUTE_OUTSIDE_SCOPE"),
     ({"sku_id": "foreign", "stock": 9}, "SKU_OUTSIDE_DRAFT"),
-    ({"attributes": {"85": enum("invented", "假值")}}, "ATTRIBUTE_CANDIDATE_UNVERIFIED"),
+    ({"attributes": {"85": enum("invented", "Fake")}}, "ATTRIBUTE_CANDIDATE_UNVERIFIED"),
+    ({"sku_id": "s1", "attributes": {"color": "黑色复合丁腈【20只】 / S"}}, "ATTRIBUTE_LANGUAGE_INVALID"),
 ])
 def test_one_invalid_change_prevents_entire_commit(subject, invalid, code):
     app, draft_id, _ = subject
     before = app.products.draft_record(draft_id)
     with pytest.raises(BusinessCapabilityError) as error:
-        run(app, request(app, draft_id, [{"sku_id": "s0", "attributes": {"color": "正确"}}, invalid]))
+        run(app, request(app, draft_id, [{"sku_id": "s0", "attributes": {"color": "Black"}}, invalid]))
     assert error.value.code == code
     assert app.products.draft_record(draft_id) == before
 
 
 def test_stale_version_and_write_during_validation_never_overwrite(subject, monkeypatch):
     app, draft_id, record = subject
-    req = request(app, draft_id, [{"sku_id": "s0", "attributes": {"color": "目标"}}])
+    req = request(app, draft_id, [{"sku_id": "s0", "attributes": {"color": "Black"}}])
     def concurrent(*args, **kwargs):
         draft = app.products.draft_record(draft_id)
         draft["title"] = "并发编辑的新标题"
@@ -102,7 +103,7 @@ def test_stale_version_and_write_during_validation_never_overwrite(subject, monk
 
 def test_permission_and_selected_draft_boundaries(subject):
     app, draft_id, _ = subject
-    req = request(app, draft_id, [{"sku_id": "s0", "attributes": {"color": "目标"}}])
+    req = request(app, draft_id, [{"sku_id": "s0", "attributes": {"color": "Black"}}])
     with pytest.raises(BusinessCapabilityError) as error:
         apply_draft_changes(req, product_store=app.products, execution=execution(draft_id))
     assert error.value.code == "TOOL_PERMISSION_DENIED"
@@ -143,7 +144,7 @@ def test_cancel_after_network_validation_never_commits(subject, monkeypatch):
         return deepcopy(record)
     monkeypatch.setattr(validation, "fetch_category_record", fetch)
     with pytest.raises(RuntimeError, match="用户取消"):
-        run(app, request(app, draft_id, [{"sku_id": "s0", "attributes": {"color": "新"}}]), cancellation_check=check)
+        run(app, request(app, draft_id, [{"sku_id": "s0", "attributes": {"color": "New"}}]), cancellation_check=check)
     assert app.products.draft_record(draft_id) == before
 
 
@@ -206,7 +207,7 @@ def test_198_skus_share_platform_validation_and_one_persistence(subject, monkeyp
 
 def test_group_can_clear_attributes_without_losing_other_targets(subject):
     app, draft_id, _ = subject
-    run(app, request(app, draft_id, [{"sku_id": "s0", "attributes": {"color": "黑"}}, {"attributes": {"7199": "材料"}}]))
+    run(app, request(app, draft_id, [{"sku_id": "s0", "attributes": {"color": "Black"}}, {"attributes": {"7199": "Steel"}}]))
     result = run(app, request(app, draft_id, [{"sku_id": "s0", "attributes": {"color": None}}, {"attributes": {"7199": None}}]))
     assert result.changed_count == 2
     assert result.changes[0].attributes == {} and result.changes[0].changed_keys == ["color"]
@@ -225,12 +226,12 @@ def test_74_skus_multiple_attributes_read_once_save_once_and_verify_receipts(
     })
     product = app.products.load_product_from_index("product-native-0")
     product["sku_items"] = [
-        {"id": f"s{i}", "active": True, "options": {"颜色": "黑色" if i % 2 else "白色", "规格": f"套装{i // 2}"}}
+        {"id": f"s{i}", "active": True, "options": {"颜色": "Black" if i % 2 else "White", "规格": f"Set-{i // 2}"}}
         for i in range(74)
     ]
     product["drafts"]["ozon"]["sku_items"] = [
         {"sku_id": f"s{i}", "selected": True, "stock": "5", "attributes_by_target": {
-            "ozon:global": {"other": "保留", "color": row["options"]["颜色"] if i % 2 == 0 or i % 5 == 0 else "待修正",
+            "ozon:global": {"other": "保留", "color": row["options"]["颜色"] if i % 2 == 0 or i % 5 == 0 else "OldColor",
                             **({"version": row["options"]["规格"]} if i % 5 == 0 else {})},
             "yandex:global": {"old": "保留"},
         }} for i, row in enumerate(product["sku_items"])
@@ -287,7 +288,7 @@ for row in draft_data["skus"]:
     saved = app.products.draft_record(draft_id)
     for i, row in enumerate(saved["sku_items"]):
         assert row["attributes_by_target"]["ozon:global"] == {
-            "other": "保留", "color": "黑色" if i % 2 else "白色", "version": f"套装{i // 2}",
+            "other": "保留", "color": "Black" if i % 2 else "White", "version": f"Set-{i // 2}",
         }
         assert row["attributes_by_target"]["yandex:global"] == {"old": "保留"}
         assert row["stock"] == "5"

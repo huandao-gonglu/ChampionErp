@@ -54,15 +54,17 @@ def inspect_source_facts(
             "需要提供 draft_id。",
         )
 
-    # 草稿详情已包含关联商品，统一通过存储公开接口读取和检查不存在错误。
-    detail, error, _status = scope.products.load_draft_detail_from_index(draft_id)
+    # 复用内容入口读取草稿与关联商品，不构建全库页面索引。
+    detail, error, _status = scope.products.load_draft_content(
+        draft_id,
+        include_product_drafts=False,
+    )
     if error is not None:
         raise BusinessCapabilityError(
             str(error.get("error_code") or "DRAFT_NOT_FOUND"),
             str(error.get("error") or f"草稿 {draft_id} 不存在。"),
         )
-    product_context = detail.get("productContext")
-    product = product_context.get("raw") if isinstance(product_context, dict) else None
+    product = detail.get("product")
     if not detail.get("draft") or not isinstance(product, dict) or not product:
         raise BusinessCapabilityError(
             "DRAFT_CONTEXT_INVALID",

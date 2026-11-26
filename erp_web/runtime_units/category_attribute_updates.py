@@ -1,5 +1,6 @@
 """属性写入前的确定性校验；商品事实判断由主对话完成。"""
 
+import re
 from typing import Any, Callable
 
 from erp_web.runtime_units.category_store import fetch_category_record, fetch_category_attribute_values
@@ -12,6 +13,35 @@ from erp_web.schemas.category import (
 from erp_web.runtime_units.category_attribute_access import attribute_write_scope
 from erp_web.services.capability_errors import BusinessCapabilityError
 from erp_web.schemas.category_constraints import category_attribute_constraint_error
+
+FOREIGN_MARKET_PLATFORMS = frozenset({"yandex", "ozon", "mercadolibre"})
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
+
+
+def unverified_cjk_attribute_text(value: Any) -> str:
+    """返回自定义文本/无字典 ID 枚举值中的首个中文片段；带官方字典 ID 的候选交给字典核验。"""
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        values = value.get("values")
+        if isinstance(values, list):
+            for item in values:
+                hit = unverified_cjk_attribute_text(item)
+                if hit:
+                    return hit
+            return ""
+        if value.get("dictionary_value_id"):
+            return ""
+        text = str(value.get("value") or "").strip()
+        return text if _CJK_RE.search(text) else ""
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            hit = unverified_cjk_attribute_text(item)
+            if hit:
+                return hit
+        return ""
+    text = str(value).strip()
+    return text if _CJK_RE.search(text) else ""
 
 
 class AttributeUpdateValidation:
@@ -51,6 +81,14 @@ class AttributeUpdateValidation:
                 raise BusinessCapabilityError("ATTRIBUTE_TEXT_FORMAT_INVALID", f"属性 {attr_id}：{format_error}")
             if not category_attribute_value_is_valid(definition, value):
                 raise BusinessCapabilityError("ATTRIBUTE_VALUE_INVALID", f"属性 {attr_id} 不符合平台值类型、数量或单位要求，请查询定义后修正。")
+            if str(platform or "").strip().lower() in FOREIGN_MARKET_PLATFORMS:
+                cjk_text = unverified_cjk_attribute_text(value)
+                if cjk_text:
+                    snippet = cjk_text if len(cjk_text) <= 40 else cjk_text[:37] + "…"
+                    raise BusinessCapabilityError(
+                        "ATTRIBUTE_LANGUAGE_INVALID",
+                        f"属性 {attr_id}（{definition.get('name') or attr_id}）不能在 {platform} 外语平台直接写入中文“{snippet}”；请优先拆解到对应结构化规格字段或翻译为目标市场语言后再提交。",
+                    )
             if isinstance(value, dict) and isinstance(value.get("values"), list):
                 if not all(isinstance(item, dict) for item in value["values"]):
                     raise BusinessCapabilityError("ATTRIBUTE_VALUE_INVALID", f"属性 {attr_id} 的 values 包含无效项。")
@@ -99,4 +137,9 @@ def _verify_candidate(platform, site, category_id, attr_id, item, timeout):
     raise BusinessCapabilityError("ATTRIBUTE_CANDIDATE_UNVERIFIED", f"无法确认属性 {attr_id} 的枚举 ID 与值，请重新查询平台候选；本次未写入。")
 
 
-__all__ = ["AttributeUpdateValidation", "validate_attribute_updates"]
+__all__ = [
+    "AttributeUpdateValidation",
+    "FOREIGN_MARKET_PLATFORMS",
+    "unverified_cjk_attribute_text",
+    "validate_attribute_updates",
+]

@@ -5,6 +5,7 @@ import re
 from copy import deepcopy
 from typing import Any
 
+from erp_shared.source_parser import _weight_text_to_kg
 from erp_web.product_model import parse_dimensions_text
 
 
@@ -116,6 +117,30 @@ def collect_skus(raw: Any) -> list[dict[str, str]]:
     return skus
 
 
+def _parse_1688_api_weight_kg(raw: Any, attrs: dict[str, str]) -> str:
+    """将 1688 API 重量归一化为千克；文本属性必须带明确单位，避免把克误当作千克。"""
+    structured = first_text(find_first_key(raw, {"weight", "grossWeight", "netWeight"}))
+    if structured:
+        converted = _weight_text_to_kg(structured)
+        if converted:
+            return converted
+        unit_hint = first_text(
+            find_first_key(raw, {"weightUnit", "grossWeightUnit", "netWeightUnit"})
+        ).lower()
+        cleaned = structured.replace(",", ".").strip()
+        if re.fullmatch(r"\d+(?:\.\d+)?", cleaned):
+            number = float(cleaned)
+            if number > 0:
+                if unit_hint in {"g", "gram", "grams", "克"}:
+                    return f"{number / 1000:g}"
+                return f"{number:g}"
+    for key in ("重量", "毛重", "净重", "单品重量"):
+        converted = _weight_text_to_kg(attrs.get(key))
+        if converted:
+            return converted
+    return ""
+
+
 def parse_1688_api_product(raw: dict[str, Any], source_url: str, offer_id: str) -> dict[str, Any]:
     title = first_text(
         find_first_key(raw, {"subject", "title", "name", "productName", "offerTitle"}),
@@ -135,7 +160,7 @@ def parse_1688_api_product(raw: dict[str, Any], source_url: str, offer_id: str) 
         ),
         default_unit="mm",
     )
-    weight = first_text(find_first_key(raw, {"weight", "grossWeight", "netWeight"}), attrs.get("重量"))
+    weight_kg = _parse_1688_api_weight_kg(raw, attrs)
     material = first_text(find_first_key(raw, {"material", "材质"}), attrs.get("材质"))
     brand = first_text(find_first_key(raw, {"brand", "brandName"}), attrs.get("brand"), attrs.get("brandName"), attrs.get("品牌"))
     model = first_text(find_first_key(raw, {"model", "货号"}), attrs.get("model"), attrs.get("型号"), attrs.get("货号"))
@@ -147,7 +172,7 @@ def parse_1688_api_product(raw: dict[str, Any], source_url: str, offer_id: str) 
         "currency": "CNY" if price else "",
         "images": images,
         "dimensions": dimensions,
-        "weight_kg": re.sub(r"[^0-9.,]", "", weight),
+        "weight_kg": weight_kg,
         "material": material,
         "skus": skus,
         "attributes": attrs,

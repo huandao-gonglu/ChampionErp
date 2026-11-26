@@ -52,12 +52,16 @@ class ProductDraftWriteStore(Protocol):
         file_path: str = "",
     ) -> dict[str, Any]: ...
 
-    def load_draft_detail_from_index(
+    def load_draft_content(
         self,
         draft_id: str,
+        *,
+        include_product_drafts: bool = True,
     ) -> tuple[dict[str, Any], dict[str, Any] | None, int]: ...
 
-    def save_draft_detail(
+    def draft_product_context(self, product: dict[str, Any]) -> dict[str, Any]: ...
+
+    def save_draft_content(
         self,
         draft_payload: dict[str, Any],
     ) -> tuple[dict[str, Any], dict[str, Any] | None, int]: ...
@@ -413,7 +417,10 @@ def _draft_delete_states(
 ) -> dict[str, str]:
     states: dict[str, str] = {}
     for draft_id in ids:
-        result, error, _status = scope.products.load_draft_detail_from_index(draft_id)
+        result, error, _status = scope.products.load_draft_content(
+            draft_id,
+            include_product_drafts=False,
+        )
         draft = (
             result.get("draft") if error is None and isinstance(result, dict) else {}
         )
@@ -539,8 +546,9 @@ def draft_read(
     request: DraftReadRequest,
     scope: Annotated[ProductWriteCapabilityScope, Injected()],
 ) -> DraftReadResult:
-    result, error, _status = scope.products.load_draft_detail_from_index(
-        request.draft_id
+    result, error, _status = scope.products.load_draft_content(
+        request.draft_id,
+        include_product_drafts=False,
     )
     _raise_store_error(
         error,
@@ -549,10 +557,10 @@ def draft_read(
     )
     from erp_web.product_model.image_preparation import image_preparation_status
     draft = result.get("draft") or {}
-    product = scope.products.load_product_from_index(str(draft.get("product_id") or ""), "")
+    product = result.get("product") or {}
     return DraftReadResult(
         draft=_ai_draft_read_view(draft).model_copy(update={"image_preparation": image_preparation_status(product, draft)}),
-        product_context=_ai_draft_product_context(result.get("productContext")),
+        product_context=_ai_draft_product_context(scope.products.draft_product_context(product)),
     )
 
 
@@ -581,7 +589,7 @@ def draft_save(
             "OZON_CATEGORY_PAIR_RESOLVE_FAILED",
             str(exc) or "Ozon 类目对解析失败。",
         ) from exc
-    result, error, status = scope.products.save_draft_detail(resolved)
+    result, error, status = scope.products.save_draft_content(resolved)
     _raise_store_error(
         error,
         default_code="DRAFT_NOT_FOUND" if status == 404 else "DRAFT_SAVE_FAILED",

@@ -672,6 +672,66 @@ class ErpDbTests(unittest.TestCase):
             published_by_id = {row["draft_id"]: row for row in db.list_draft_records(scope="published")}
             self.assertEqual(published_by_id[draft_id]["title"], "提交后修改")
 
+            # 6. 发布中的草稿受删除保护，ProductStore.delete_draft_from_index 必须拦截
+            from erp_web.stores.product_store import ProductStore
+
+            store = ProductStore(db)
+            publishing_draft_id = db.upsert_draft_model(product_id, "ozon", {"title": "正在发布的草稿"})
+            db.create_publish_job({
+                "job_id": "running-ozon-job",
+                "idempotency_key": "test:running-ozon-job",
+                "status": "running",
+                "draft_id": publishing_draft_id,
+                "product": {"product_id": product_id},
+                "platforms": {"ozon": {"status": "running", "draft_id": publishing_draft_id}},
+            })
+            blocked = store.delete_draft_from_index(publishing_draft_id)
+            self.assertFalse(blocked["ok"])
+            self.assertEqual(blocked["blockedIds"], [publishing_draft_id])
+            self.assertTrue(bool(db.load_draft_model(publishing_draft_id)))
+
+            # 7. 删除所有已发布草稿后，采集箱仍记住历史已发布平台；重推同平台时 SKU 自动避让历史已发布 SKU
+            sku_history_job = {
+                "job_id": "sku-history-job",
+                "idempotency_key": "test:sku-history-job",
+                "status": "completed",
+                "draft_id": draft_id,
+                "product": {
+                    "product_id": product_id,
+                    "drafts": {
+                        "mercadolibre": {
+                            "sku_items": [{"sku_id": "sku-1", "sku": "USED-SKU-001"}]
+                        }
+                    },
+                },
+                "platforms": {
+                    "mercadolibre": {
+                        "status": "success",
+                        "draft_id": draft_id,
+                        "result": {"sku_results": [{"sku": "USED-SKU-001", "status": "published"}]},
+                    }
+                },
+            }
+            db.create_publish_job(sku_history_job)
+            for did in (draft_id, yandex_draft_id, sibling_id):
+                db.delete_draft_model(did)
+            library_after_delete = {row["product_id"]: row for row in db.list_product_records(list_only=True)}
+            self.assertEqual(library_after_delete[product_id]["library_stage"], "published")
+            self.assertIn("mercadolibre", library_after_delete[product_id]["published_platforms"])
+            self.assertIn("yandex", library_after_delete[product_id]["published_platforms"])
+
+            product_with_sku = db.load_product_model(product_id)
+            product_with_sku["sku_items"] = [{"id": "sku-1", "master_sku": "USED-SKU-001", "active": True}]
+            db.upsert_product_model(product_with_sku)
+            recreated_id = db.upsert_draft_model(
+                product_id,
+                "mercadolibre",
+                {"title": "删除后重建草稿", "sku_items": [{"sku_id": "sku-1", "selected": True}]},
+            )
+            recreated = db.load_draft_model(recreated_id)
+            self.assertNotEqual(recreated["sku_items"][0]["sku"], "USED-SKU-001")
+            self.assertTrue(recreated["sku_items"][0]["sku"].startswith("SKU-"))
+
     def test_iter_draft_records_reads_beyond_bounded_index_and_filters_afterward(
         self,
     ) -> None:

@@ -144,3 +144,19 @@ def test_guidance_uses_the_selected_category_and_requires_a_real_collision(varia
     app.products.save_draft_content(draft)
     result = check()
     assert result['status'] == 'distinct' and not result['settings_guidance']
+
+
+def test_flags_non_localized_chinese_sku_variant_values_on_yandex(variants):
+    app, draft_id, call, set_fields, _ = variants
+    set_fields(dimensions=False)
+    draft = app.products.draft_record(draft_id)
+    for index, row in enumerate(draft['sku_items']):
+        row['selected'] = index < 2
+        row['attributes_by_target']['yandex:global'] = {
+            '14805583': {'values': [{'value': f'高级灰款式{index}'}]},
+        }
+    app.products.save_draft_content(draft)
+    result = call('draft_sku_variants_check')
+    assert result['status'] == 'issues'
+    issue = next(item for item in result['issues'] if item['code'] == 'SKU_VARIATION_VALUE_NOT_LOCALIZED')
+    assert issue['affected_sku_ids'] == ['s0', 's1']

@@ -306,6 +306,28 @@ def test_draft_read_omits_unbounded_raw_product_context() -> None:
     assert len(serialized) < 262_144
 
 
+def test_draft_read_and_save_do_not_scan_full_indexes(monkeypatch: pytest.MonkeyPatch) -> None:
+    context = get_context()
+    saved_product = _seed_product("product-draft-no-full-index")
+    draft_id = str(saved_product["drafts"]["mercadolibre"]["draft_id"])
+    scope = _write_scope()
+
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("AI draft_read/draft_save 不应扫描全库页面索引")
+
+    monkeypatch.setattr(context.products, "load_products_index", forbidden)
+    monkeypatch.setattr(context.products, "load_drafts_index", forbidden)
+
+    read = draft_read(DraftReadRequest(draft_id=draft_id), scope=scope)
+    assert dict(read.draft)["draft_id"] == draft_id
+    updated = draft_save(
+        DraftSaveRequest(draft={"draft_id": draft_id, "title": "Updated without index scan"}),
+        scope=scope,
+        execution=_execution(),
+    )
+    assert updated.changed is True
+
+
 def _receipt_bytes(result: Any) -> int:
     return len(
         json.dumps(

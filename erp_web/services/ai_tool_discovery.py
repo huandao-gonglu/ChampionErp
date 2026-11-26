@@ -12,6 +12,12 @@ def _ascii_tokens(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9]+", text.lower()))
 
 
+def _cjk_bigrams(term: str) -> set[str]:
+    if len(term) <= 2:
+        return set()
+    return {term[index : index + 2] for index in range(len(term) - 1)}
+
+
 def match_tool_queries(
     ctx: RunContext[Any], queries: Sequence[str], tools: Sequence[ToolDefinition],
 ) -> list[str]:
@@ -46,7 +52,11 @@ def match_tool_queries(
             for term in terms:
                 if not term.isascii():
                     if term in desc_text:
-                        score += 3
+                        score += 4
+                    else:
+                        bigram_hits = sum(1 for bigram in _cjk_bigrams(term) if bigram in desc_text)
+                        if bigram_hits:
+                            score += min(bigram_hits * 2, 6)
                 elif term in name_words:
                     score += 4
                 elif term in desc_words:
