@@ -21,4 +21,10 @@ describe('思考文本的展示投影', () => {
     expect(visibleAssistantText('<thi', true)).toBe('')
     expect(visibleAssistantText('<thi')).toBe('<thi')
   })
+
+  it('正文尾部残留 DeepSeek DSML 闭合标记时按未执行工具文本折叠', () => {
+    const leaked = 'Now: collect SKU dims.\n</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>'
+    expect(splitAssistantText(leaked)).toEqual([{ kind: 'tool-markup', text: leaked }])
+    expect(visibleAssistantText(leaked)).toBe('')
+  })
 })
