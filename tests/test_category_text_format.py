@@ -80,3 +80,38 @@ def test_ai_attribute_write_rejects_format_before_persisting_and_allows_clear(mo
     assert exc.value.code == "ATTRIBUTE_TEXT_FORMAT_INVALID"
     validator.validate({"57046341": "Назначение: для игр"}, sku_scope=False)
     validator.validate({"57046341": None}, sku_scope=False)
+
+
+def test_unit_attribute_summary_exposes_object_format_hint():
+    length_attr = _yandex_parameter_definition({
+        "parameter_id": "23674610",
+        "name": "Длина",
+        "parameter_type": "NUMERIC",
+        "required": False,
+        "default_unit": "см",
+        "default_unit_id": "1",
+        "unit_options": ["см", "мм"],
+        "units": [
+            {"id": 1, "name": "см"},
+            {"id": 2, "name": "мм"},
+        ],
+    })
+    plain_attr = _yandex_parameter_definition({
+        "parameter_id": "7351754",
+        "name": "Модель",
+        "parameter_type": "TEXT",
+        "required": False,
+    })
+    definition = definition_from_legacy_attributes(
+        platform="yandex",
+        site="global",
+        category_id="76508560",
+        required=[],
+        optional=[length_attr, plain_attr],
+    )
+    unit_summary = public_attribute_summary(definition.optional[0], platform="yandex").model_dump()
+    plain_summary = public_attribute_summary(definition.optional[1], platform="yandex").model_dump()
+
+    assert '{"value": "数值", "unit": "см"}' in unit_summary["format_hint"]
+    assert "不要传纯数字" in unit_summary["format_hint"]
+    assert plain_summary["format_hint"] == ""

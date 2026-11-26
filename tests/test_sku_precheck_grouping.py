@@ -199,3 +199,119 @@ def test_compacted_failure_reads_legacy_details_as_identities():
     assert result["errors"][0]["affected_sku_ids"] == ["first", "second"]
     assert result["errors"][0]["related_issues"] == [related]
     assert raw == original
+
+
+def test_multi_sku_validation_reuses_definition_projections_and_isolates_sku_contexts(monkeypatch):
+    from erp_web.runtime_units import publish_context as publish_context_mod
+    from erp_web.runtime_units.publish_yandex import yandex_attribute_checks
+    from erp_web.runtime_units.sku_publish_projection import grouping_contract, sku_context
+    from tests.yandex_logistics_support import PLAN
+
+    product = product_fixture()
+    draft = product["drafts"].pop("ozon")
+    product["drafts"]["yandex"] = draft
+    draft["target_sites"][0]["platform"] = "yandex"
+    fact_template, row_template = deepcopy(product["sku_items"][0]), deepcopy(draft["sku_items"][0])
+    quote = row_template["pricing"]["targets"].pop("ozon:global")
+    quote["calculation_basis"]["shipping_evidence"] = {"fulfillment_plan": deepcopy(PLAN)}
+    row_template["pricing"]["targets"]["yandex:global"] = quote
+    product["source"]["image_pool"] = [
+        {"id": f"img-{idx}", "url": f"https://cdn.example.com/{idx}.jpg", "origin": "source", "selected": True}
+        for idx in range(20)
+    ]
+    draft["images"] = [{"asset_id": "img-0", "role": "main", "order": 0}]
+    product["sku_items"], draft["sku_items"] = [], []
+    for index in range(40):
+        product["sku_items"].append({
+            **deepcopy(fact_template),
+            "id": f"fact-{index}",
+            "name": f"规格-{index}",
+            "image_asset_id": f"img-{index % 20}",
+        })
+        draft["sku_items"].append({
+            **deepcopy(row_template),
+            "sku_id": f"fact-{index}",
+            "sku": f"YDX-{index}",
+            "selected": True,
+            "attributes_by_target": {"yandex:global": {"10096": f"Color-{index}"}},
+        })
+    draft["grouping"]["mode"] = "combined"
+    optional_attrs = tuple(
+        CategoryAttributeDefinition(id=f"opt_{idx}", name=f"可选属性 {idx}")
+        for idx in range(30)
+    )
+    definition = CategoryDefinition(
+        platform="yandex",
+        category_id="999001",
+        required=(
+            CategoryAttributeDefinition(id="10096", name="颜色", required=True, variation_role="variant"),
+        ),
+        optional=(
+            CategoryAttributeDefinition(id="200", name="Объединить на одной карточке"),
+            *optional_attrs,
+        ),
+    )
+    context = PreparedPublishContext(
+        product=product,
+        draft=draft,
+        target=draft["target_sites"][0],
+        platform="yandex",
+        category_definition=definition,
+    )
+    original_product = deepcopy(product)
+
+    record_calls = 0
+    real_to_legacy = publish_context_mod.definition_to_legacy_record
+
+    def counted_to_legacy(defn):
+        nonlocal record_calls
+        record_calls += 1
+        return real_to_legacy(defn)
+
+    monkeypatch.setattr(publish_context_mod, "definition_to_legacy_record", counted_to_legacy)
+
+    leaf = ItemBoundary()
+    leaf.platform = "yandex"
+    seen_records = []
+
+    def leaf_validate(projected, _config):
+        rec = projected.category_record
+        seen_records.append(rec)
+        checks = yandex_attribute_checks(projected.product, projected.draft, rec)
+        assert checks["missing"] == []
+        return {"ok": True, "errors": [], "warnings": []}
+
+    monkeypatch.setattr(leaf, "validate_draft", leaf_validate)
+
+    result = sku_publish_adapter.SkuGroupPublishingAdapter(leaf).validate_draft(context, {})
+    assert result["ok"] is True
+    # 40 个 SKU 共享同一次类目定义投影，definition_to_legacy_record 仅构建一次。
+    assert record_calls == 1
+    assert len(seen_records) == 40
+    assert all(rec is seen_records[0] for rec in seen_records)
+    # 校验全过程不得污染原始商品与草稿对象。
+    assert product == original_product
+
+    # 替换 category_definition 后缓存按新定义重算，不返回旧定义投影。
+    other_definition = CategoryDefinition(
+        platform="yandex",
+        category_id="999002",
+        required=(CategoryAttributeDefinition(id="10096", name="新颜色", required=True),),
+        optional=(),
+    )
+    rebound = replace(context, category_definition=other_definition)
+    assert rebound.category_record["category_id"] == "999002"
+    assert record_calls == 2
+
+    # 独立 SKU 投影之间互不串改属性或主图顺序。
+    grouping = grouping_contract(context)
+    proj_a = sku_context(context, product["sku_items"][1], draft["sku_items"][1], grouping)
+    proj_b = sku_context(context, product["sku_items"][2], draft["sku_items"][2], grouping)
+    assert proj_a.draft["attributes"]["10096"] == "Color-1"
+    assert proj_b.draft["attributes"]["10096"] == "Color-2"
+    assert proj_a.draft["images"][0]["asset_id"] == "img-1"
+    assert proj_b.draft["images"][0]["asset_id"] == "img-2"
+    proj_a.draft["attributes"]["10096"] = "Mutated"
+    proj_a.draft["images"].append({"asset_id": "img-extra", "role": "detail", "order": 99})
+    assert proj_b.draft["attributes"]["10096"] == "Color-2"
+    assert context.draft["images"] == [{"asset_id": "img-0", "role": "main", "order": 0}]

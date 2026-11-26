@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import queue
+import time
 from datetime import datetime, timezone
 from dataclasses import dataclass, replace
 from typing import Any, Sequence
@@ -45,6 +46,8 @@ from erp_web.stores.ai_chat_turn_claim_store import AiChatTurnAlreadyAcceptedErr
 
 VERCEL_SDK_VERSION = 7
 MAX_DELIVERY_QUEUE_CHUNKS = 1024
+SSE_KEEPALIVE_INTERVAL_SECONDS = 15.0
+SSE_KEEPALIVE_CHUNK = b": keepalive\n\n"
 
 
 class _ErpVercelAIEventStream(VercelAIEventStream):
@@ -162,14 +165,26 @@ class VercelAiChatRun:
 
         future = get_detached_chat_runner().submit(self._produce_and_finalize(deliver))
         connected = True
+        last_sent = time.monotonic()
         while not future.done() or not chunks.empty():
             try:
                 chunk = await asyncio.to_thread(chunks.get, True, 0.1)
             except queue.Empty:
+                if (
+                    connected
+                    and not future.done()
+                    and time.monotonic() - last_sent >= SSE_KEEPALIVE_INTERVAL_SECONDS
+                ):
+                    try:
+                        write_chunk(SSE_KEEPALIVE_CHUNK)
+                        last_sent = time.monotonic()
+                    except OSError:
+                        connected = False
                 continue
             if connected:
                 try:
                     write_chunk(chunk.encode("utf-8"))
+                    last_sent = time.monotonic()
                 except OSError:
                     connected = False
         if overflow and connected:
@@ -182,7 +197,13 @@ class VercelAiChatRun:
                 stream.after_stream(),
             ):
                 async for chunk in stream.encode_stream(events):
-                    write_chunk(chunk.encode("utf-8"))
+                    try:
+                        write_chunk(chunk.encode("utf-8"))
+                    except OSError:
+                        connected = False
+                        break
+                if not connected:
+                    break
 
     async def _produce_and_finalize(self, deliver) -> None:
         await self._run_and_finalize(deliver)

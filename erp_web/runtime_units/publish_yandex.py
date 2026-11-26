@@ -217,15 +217,26 @@ def yandex_invalid_unit_attributes(product: dict[str, Any], category_record: dic
 
 
 def yandex_attribute_checks(
-    product: dict[str, Any], draft: dict[str, Any], category_record: dict[str, Any] | None,
+    product: dict[str, Any],
+    draft: dict[str, Any],
+    category_record: dict[str, Any] | None,
+    *,
+    definitions_map: dict[str, dict[str, Any]] | None = None,
+    required_definitions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """在同一规范化视图上检查类目属性；不整理报价、图片或其它平台草稿。"""
-    definitions = _record_schema_definitions(category_record)
+    definitions = (
+        definitions_map
+        if definitions_map is not None
+        else _record_schema_definitions(category_record)
+    )
     attributes = draft.get("attributes") or {}
     invalid_dictionary, invalid_units, invalid_text = [], [], {}
-    for attr_id, definition in definitions.items():
-        raw = attributes.get(attr_id)
-        if category_attribute_value_mode(definition) == "strict_enum" and attr_id in attributes:
+    for attr_id, raw in attributes.items():
+        definition = definitions.get(attr_id)
+        if definition is None:
+            continue
+        if category_attribute_value_mode(definition) == "strict_enum":
             values = raw.get("values") if isinstance(raw, dict) else None
             if not isinstance(values, list) or not values or any(
                 not isinstance(value, dict)
@@ -239,13 +250,18 @@ def yandex_attribute_checks(
             invalid_units.append(attr_id)
         if error := category_attribute_text_format_error(definition, raw):
             invalid_text[attr_id] = error
-        if attr_id in attributes and attr_id not in invalid_dictionary and attr_id not in invalid_units and attr_id not in invalid_text:
+        if attr_id not in invalid_dictionary and attr_id not in invalid_units and attr_id not in invalid_text:
             try:
                 # 复用真实编译规则，把数值范围等错误提前到上传之前。
                 _compile_parameter_values({"attributes": {attr_id: raw}}, {attr_id: definition})
             except ValueError as exc:
                 invalid_text[attr_id] = str(exc)
-    missing = unresolved_required_attributes_in_draft(product, draft, "yandex", list(definitions.values()))
+    required_list = (
+        required_definitions
+        if required_definitions is not None
+        else [item for item in definitions.values() if item.get("required")]
+    )
+    missing = unresolved_required_attributes_in_draft(product, draft, "yandex", required_list)
     return {
         "dictionary": sorted(invalid_dictionary), "units": sorted(invalid_units),
         "text": invalid_text, "missing": [f"attributes.{item['id']}" for item in missing],

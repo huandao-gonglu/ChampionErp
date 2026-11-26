@@ -20,8 +20,8 @@ from typing import Any
 from erp_web.schemas.category_brand import is_brand_attribute_id
 from erp_web.schemas.category_constraints import attribute_value_limits
 from erp_web.schemas.category import (
+    category_attribute_format_hint,
     category_attribute_text_format,
-    category_attribute_text_format_hint,
 )
 from erp_web.schemas.category_grouping import is_listing_grouping_attribute
 from erp_web.schemas.category_definition import (
@@ -482,7 +482,15 @@ def public_attribute_summary(
         allow_custom_values=definition.allow_custom_values,
         read_only=definition.read_only,
         text_format=category_attribute_text_format({"constraints": definition.constraints}),
-        format_hint=category_attribute_text_format_hint({"constraints": definition.constraints}),
+        format_hint=category_attribute_format_hint(
+            {
+                "constraints": definition.constraints,
+                "value_type": definition.value_type,
+                "value_mode": definition.value_mode,
+                "default_unit": definition.default_unit,
+                "unit_options": [unit.name for unit in definition.unit_options],
+            }
+        ),
         is_dictionary=definition.is_dictionary,
         is_collection=definition.is_collection,
         max_value_count=definition.max_value_count,

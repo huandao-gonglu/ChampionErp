@@ -135,31 +135,36 @@ def sku_listing_attributes(context: PreparedPublishContext, row: dict[str, Any],
 
 def sku_context(context: PreparedPublishContext, fact: dict[str, Any], row: dict[str, Any], grouping: dict[str, Any]) -> PreparedPublishContext:
     # 先缩小输入再复制，避免每个 SKU 都携带整组报价、其它平台草稿及上次预检。
-    # 来源规格只服务采集；发布使用已经合并覆盖值的 fact，并保留完整图片池。
+    # 来源规格只服务采集；source（含完整图片池）在校验/编译阶段只读，避免逐 SKU 深拷贝整池。
     transient_fields = {"sku_items", "target_sites", "last_precheck", "category_precheck", "pricing", "validation_errors", "last_publish_task"}
     single_draft = {key: value for key, value in context.draft.items() if key not in transient_fields}
-    single_draft["sku_items"] = [row]
+    if isinstance(single_draft.get("images"), list):
+        single_draft["images"] = list(single_draft["images"])
+    single_draft["sku_items"] = [dict(row)]
     single_draft["target_sites"] = [
         {key: value for key, value in target.items() if key not in transient_fields}
         for target in context.draft.get("target_sites", [])
     ]
-    product = deepcopy({
+    source_view = {
+        key: value
+        for key, value in record(context.product.get("source")).items()
+        if key not in {"skus", "variants"}
+    }
+    product = {
         **context.product,
-        "source": {key: value for key, value in record(context.product.get("source")).items() if key not in {"skus", "variants"}},
-        "sku_items": [fact],
+        "source": source_view,
+        "sku_items": [dict(fact)],
         "drafts": {context.platform: single_draft},
-    })
-    draft = product["drafts"][context.platform]
+    }
+    draft = single_draft
     key = target_key(context)
-    pricing = deepcopy(record(row.get("pricing")))
+    pricing = dict(record(row.get("pricing")))
     quote = record(record(pricing.get("targets")).get(key))
-    definition = context.category_definition
-    definitions = [attr.model_dump() for attr in (*definition.required, *definition.optional)] if definition else []
+    definitions = context.attribute_definitions_dicts
     attrs = sku_listing_attributes(context, row, definitions)
-    reviews = deepcopy(context.draft.get("validation_errors") or [])
-    if definition:
-        variants = {attr.id: attr.model_dump() for attr in (*definition.required, *definition.optional)
-                    if attr.variation_role == "variant"}
+    reviews = list(context.draft.get("validation_errors") or [])
+    if context.category_definition:
+        variants = context.variant_attribute_dicts
         def still_needs_review(item):
             field = text(item.get("field")) if isinstance(item, dict) and item.get("code") == "NEED_REVIEW_ATTRIBUTES" else text(item) if isinstance(item, str) else ""
             attr_id = field.removeprefix("attributes.")
@@ -171,7 +176,7 @@ def sku_context(context: PreparedPublishContext, fact: dict[str, Any], row: dict
                   "attributes": attrs, "validation_errors": reviews})
     # 普通字段修改不能携带整组远端身份；每次投影只关联这一 SKU。
     for target in draft.get("target_sites", []):
-        target.update({"attributes": deepcopy(attrs), "validation_errors": deepcopy(reviews)})
+        target.update({"attributes": dict(attrs), "validation_errors": list(reviews)})
         target["listing_currency"] = quote.get("listing_currency", "")
         target["currency_fingerprint"] = quote.get("currency_fingerprint", "")
         if context.platform == "mercadolibre":

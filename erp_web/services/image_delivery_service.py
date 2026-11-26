@@ -41,6 +41,11 @@ class ImageInspectionCache:
     """仅在一次发布校验中复用同一资产的检查；下次校验必须重新读取。"""
     profile: dict | None = field(default=None, repr=False)
     results: dict[tuple[str, str], tuple[dict, ImageDeliveryProblem | None]] = field(default_factory=dict)
+    watermark: dict | None = field(default=None, repr=False)
+    watermark_fp: str | None = field(default=None, repr=False)
+    normalized_pool_source: list | None = field(default=None, repr=False)
+    normalized_pool: list[dict] | None = field(default=None, repr=False)
+    pool_ids: set[str] | None = field(default=None, repr=False)
 
 
 class ImageHttpsProvider(Protocol):
@@ -113,8 +118,11 @@ class ImageDeliveryService:
                     and not any(item.get(field) for field in ("path", "storage_key", "delivery_provider", "hosting_profile_id", "delivery_fingerprint")))
 
     def _inspect_image(self, item: dict, stage: str, cache: ImageInspectionCache) -> None:
-        watermark = watermark_settings(self.config_loader())
-        fingerprint_watermark = watermark_fingerprint(watermark)
+        if cache.watermark is None:
+            cache.watermark = watermark_settings(self.config_loader())
+            cache.watermark_fp = watermark_fingerprint(cache.watermark)
+        watermark = cache.watermark
+        fingerprint_watermark = cache.watermark_fp or ""
         if self._external(item) and not has_watermark_content(watermark):
             validate_public_url(item["url"])
             return
@@ -162,7 +170,21 @@ class ImageDeliveryService:
     def inspect_product(self, product: dict, platform: str, *, stage: str = "final", cache: ImageInspectionCache | None = None) -> list[ImageDeliveryProblem]:
         """源校验允许待上传素材；最终校验要求交付与当前目标一致，全程无网络。"""
         cache = cache if cache is not None else ImageInspectionCache()
-        pool = normalize_image_pool(product.get("source", {}).get("image_pool", []))
+        raw_pool = product.get("source", {}).get("image_pool", [])
+        if (
+            isinstance(raw_pool, list)
+            and cache.normalized_pool is not None
+            and cache.normalized_pool_source is raw_pool
+        ):
+            pool = cache.normalized_pool
+            pool_ids = cache.pool_ids if cache.pool_ids is not None else {item["id"] for item in pool}
+        else:
+            pool = normalize_image_pool(raw_pool)
+            pool_ids = {item["id"] for item in pool}
+            if isinstance(raw_pool, list):
+                cache.normalized_pool_source = raw_pool
+                cache.normalized_pool = pool
+                cache.pool_ids = pool_ids
         ids = self._target_asset_ids(product, pool, platform)
         problems = []
         for item in pool:
@@ -170,7 +192,7 @@ class ImageDeliveryService:
                 continue
             key = (stage, item["id"])
             cached = cache.results.get(key)
-            if cached is not None and cached[0] == item:
+            if cached is not None and (cached[0] is item or cached[0] == item):
                 problem = cached[1]
             else:
                 problem = None
@@ -178,10 +200,10 @@ class ImageDeliveryService:
                     self._inspect_image(item, stage, cache)
                 except (ImageHostingError, OSError) as exc:
                     problem = ImageDeliveryProblem(item["id"], getattr(exc, "code", "IMAGE_SOURCE_MISSING"), str(exc), getattr(exc, "next_action", "重新导入图片"))
-                cache.results[key] = (deepcopy(item), problem)
+                cache.results[key] = (item if pool is cache.normalized_pool else deepcopy(item), problem)
             if problem is not None:
                 problems.append(problem)
-        for asset_id in sorted(ids - {item["id"] for item in pool}):
+        for asset_id in sorted(ids - pool_ids):
             problems.append(ImageDeliveryProblem(asset_id, "IMAGE_SOURCE_MISSING", "草稿引用的图片不在图片池中", "从图片池重新选择图片"))
         return problems
 

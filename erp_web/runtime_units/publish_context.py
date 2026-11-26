@@ -48,6 +48,10 @@ class PreparedPublishContext:
     )
 
     validation_session: PublishValidationSession | None = field(default=None, repr=False, compare=False)
+    #: 当次评估按 CategoryDefinition 身份缓存派生视图，避免多 SKU 重复投影。
+    _definition_cache: dict[str, tuple[CategoryDefinition, Any]] = field(
+        default_factory=dict, repr=False, compare=False,
+    )
 
     @property
     def category_id(self) -> str:
@@ -74,6 +78,7 @@ class PreparedPublishContext:
             definition_error=self.definition_error,
             category_currency_cache=self.category_currency_cache,
             validation_session=self.validation_session,
+            _definition_cache=self._definition_cache,
         )
 
     @property
@@ -83,7 +88,47 @@ class PreparedPublishContext:
         definition = self.category_definition
         if definition is None:
             return None
-        return definition_to_legacy_record(definition)
+        cached = self._definition_cache.get("category_record")
+        if cached is not None and cached[0] is definition:
+            return cached[1]
+        record = definition_to_legacy_record(definition)
+        self._definition_cache["category_record"] = (definition, record)
+        return record
+
+    @property
+    def attribute_definitions_dicts(self) -> list[dict[str, Any]]:
+        """缓存当次类目定义的属性字典列表，避免多 SKU 投影逐条 model_dump。"""
+
+        definition = self.category_definition
+        if definition is None:
+            return []
+        cached = self._definition_cache.get("attribute_definitions_dicts")
+        if cached is not None and cached[0] is definition:
+            return cached[1]
+        dumped = [
+            attr.model_dump()
+            for attr in (*definition.required, *definition.optional)
+        ]
+        self._definition_cache["attribute_definitions_dicts"] = (definition, dumped)
+        return dumped
+
+    @property
+    def variant_attribute_dicts(self) -> dict[str, dict[str, Any]]:
+        """缓存当次类目定义的变体属性字典索引，供逐 SKU 过滤旧缺失提示复用。"""
+
+        definition = self.category_definition
+        if definition is None:
+            return {}
+        cached = self._definition_cache.get("variant_attribute_dicts")
+        if cached is not None and cached[0] is definition:
+            return cached[1]
+        variants = {
+            attr["id"]: attr
+            for attr in self.attribute_definitions_dicts
+            if attr.get("variation_role") == "variant"
+        }
+        self._definition_cache["variant_attribute_dicts"] = (definition, variants)
+        return variants
 
 
 def prepare_publish_context(

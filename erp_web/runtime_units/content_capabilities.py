@@ -210,7 +210,10 @@ def copy_generate(
 
 @ai_tool(
     name=COPY_GENERATE_BATCH_TOOL,
-    description="批量为多个商品/草稿生成目标市场本地化文案（标题、描述、卖点；batch copy/title/description/text）。",
+    description=(
+        "批量为多个商品或草稿生成目标市场本地化文案（标题、描述、卖点；batch copy/title/description/text）。"
+        "按草稿批量生成请传 draft_ids，按商品批量生成请传 product_ids，切勿把 draft_id 填入 product_ids。"
+    ),
     permission="content.write",
     side_effect="write",
     approval_required=False,
@@ -227,9 +230,10 @@ def copy_generate_batch(
     del execution
     result = batch_generate_copy_for_products(
         list(request.product_ids),
-        request.platform or "mercadolibre",
+        request.platform or ("" if request.draft_ids else "mercadolibre"),
         request.language,
         request.mode or "rewrite",
+        draft_ids=list(request.draft_ids) if request.draft_ids else None,
         include_products=False,
         include_index=False,
     )

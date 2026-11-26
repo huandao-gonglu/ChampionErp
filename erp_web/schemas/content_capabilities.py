@@ -44,12 +44,27 @@ class CopyGenerateResult(BaseModel):
 class CopyGenerateBatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    product_ids: Annotated[tuple[str, ...], Field(min_length=1)]
-    platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = (
-        "mercadolibre"
+    product_ids: tuple[str, ...] = Field(
+        default=(),
+        description="商品 ID 列表（不可传 draft_id）；与 draft_ids 二选一。",
     )
+    draft_ids: tuple[str, ...] = Field(
+        default=(),
+        description="草稿 ID 列表（不可传 product_id）；与 product_ids 二选一，未指定 platform 时自动采用各草稿所属平台。",
+    )
+    platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     language: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     mode: Annotated[TrimmedText, StringConstraints(max_length=40)] = "rewrite"
+
+    @model_validator(mode="after")
+    def require_targets(self) -> "CopyGenerateBatchRequest":
+        has_products = any(str(item or "").strip() for item in self.product_ids)
+        has_drafts = any(str(item or "").strip() for item in self.draft_ids)
+        if has_products and has_drafts:
+            raise ValueError("product_ids 与 draft_ids 请二选一，不要同时传入")
+        if not has_products and not has_drafts:
+            raise ValueError("product_ids 与 draft_ids 至少填写一个非空列表")
+        return self
 
 
 class CopyGenerateBatchResult(BaseModel):

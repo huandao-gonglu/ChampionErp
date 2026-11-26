@@ -18,6 +18,11 @@ import { handoffModelOperation, type DesktopChatState } from '@/utils/desktopHan
 export const AI_CHAT_TURN_ALREADY_ACCEPTED = 'AI_CHAT_TURN_ALREADY_ACCEPTED'
 export const AI_CHAT_SELECTION_KEY = 'ai-chat-selected-conversation'
 export interface AiChatError extends Error { code?: string; status?: number }
+function isStreamDisconnectError(cause: unknown): boolean {
+  if (!(cause instanceof TypeError)) return false
+  const chatError = cause as AiChatError
+  return !chatError.status && !chatError.code
+}
 export function createChatConversationId(): string {
   return GLOBAL_CHAT_CONVERSATION_PREFIX + crypto.randomUUID().replace(/-/g, '')
 }
@@ -269,10 +274,19 @@ export const useAiChatStore = defineStore('aiChat', () => {
     throw failure
   }
   function createChat(conversationId: string, initial: UIMessage[]): Chat<UIMessage> {
+    let streamOpened = false
+    let lastError: unknown
+    async function transportFetch(url: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+      streamOpened = false
+      lastError = undefined
+      const response = await chatFetch(url, init)
+      streamOpened = true
+      return response
+    }
     const instance = new Chat<UIMessage>({
       id: conversationId, messages: initial,
       transport: new DefaultChatTransport({
-        api: AI_CHAT_RUNS_PATH, credentials: 'same-origin', fetch: chatFetch,
+        api: AI_CHAT_RUNS_PATH, credentials: 'same-origin', fetch: transportFetch,
         prepareSendMessagesRequest: async ({ id, messages: all, trigger, body }) => {
           const latest = all.at(-1)
           if (latest?.role === 'user' && activeConversationId.value === id) latestMessageId.value = latest.id
@@ -299,17 +313,31 @@ export const useAiChatStore = defineStore('aiChat', () => {
           },
         }
       },
-      onFinish: () => {
+      onFinish: ({ isDisconnect }) => {
+        const streamError = lastError
+        const opened = streamOpened
+        streamOpened = false
+        lastError = undefined
+        const code = (streamError as AiChatError | undefined)?.code
+        const accepted = code === 'AI_CHAT_INPUT_ACCEPTED' || code === AI_CHAT_TURN_ALREADY_ACCEPTED
+        const disconnected = opened && (isDisconnect || isStreamDisconnectError(streamError))
+        if (accepted || disconnected) {
+          // 流已建立后断连（如 network error / Load failed）只表示浏览器没收完输出，
+          // 后台运行独立继续；立即清除流错误并回落至单次服务端重同步，避免对话框上方闪现或残留报错。
+          instance.clearError()
+          if (disconnected && activeConversationId.value === conversationId && !stopping.value) {
+            runActive.value = true
+          }
+        }
         if (activeConversationId.value === conversationId) codeProgress.value = {}
         if (!stopping.value) void nextTick().then(() => resyncFromServer(conversationId))
       },
       onError: (cause) => {
+        lastError = cause
         const code = (cause as AiChatError).code
-        if (code === 'AI_CHAT_INPUT_ACCEPTED' || code === AI_CHAT_TURN_ALREADY_ACCEPTED) {
-          void nextTick().then(() => { instance.clearError(); void resyncFromServer(conversationId) })
-        } else {
-          connectEvents(conversationId)
-        }
+        if (code === 'AI_CHAT_INPUT_ACCEPTED' || code === AI_CHAT_TURN_ALREADY_ACCEPTED) return
+        if (streamOpened && isStreamDisconnectError(cause)) return
+        if (stopping.value) connectEvents(conversationId)
       },
     })
     return instance

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import replace
 import re
 from io import BytesIO
 from pathlib import Path
@@ -30,6 +29,8 @@ from .ai_model_factory import (
     AiModelFactoryError,
     PydanticModelBinding,
     create_pydantic_probe_binding,
+    omit_unsupported_reasoning_temperature,
+    profile_reasoning_active,
 )
 
 
@@ -167,15 +168,7 @@ def _is_http_400(exc: Exception) -> bool:
 
 
 def _profile_reasoning_active(binding: PydanticModelBinding) -> bool:
-    profile = getattr(binding.model, "profile", None) or {}
-    if profile.get("thinking_always_enabled", False):
-        return True
-    if not profile.get("supports_thinking", False):
-        return False
-    thinking = binding.model_settings.get("thinking")
-    if thinking is not None:
-        return thinking is not False
-    return bool(profile.get("openai_reasoning_enabled_by_default", False))
+    return profile_reasoning_active(binding)
 
 
 def _drop_unsupported_probe_temperature(
@@ -183,16 +176,7 @@ def _drop_unsupported_probe_temperature(
 ) -> PydanticModelBinding:
     """OpenAI 推理模型在思考开启时拒绝 temperature 参数；探测不强行附带默认 temperature=0。"""
 
-    if (
-        binding.provider_family == "openai"
-        and "temperature" in binding.model_settings
-        and _profile_reasoning_active(binding)
-    ):
-        filtered_settings = {
-            k: v for k, v in binding.model_settings.items() if k != "temperature"
-        }
-        return replace(binding, model_settings=filtered_settings)
-    return binding
+    return omit_unsupported_reasoning_temperature(binding)
 
 
 def _profile_attempts_forced_tool_choice(binding: PydanticModelBinding) -> bool:

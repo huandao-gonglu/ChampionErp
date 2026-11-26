@@ -321,7 +321,7 @@ def validate_mercadolibre_draft(
     product = normalize_product_fields(product)
     draft = _draft_for_selected_target(product, "mercadolibre")
     store = config.get("mercadolibre", {}) if isinstance(config.get("mercadolibre"), dict) else {}
-    if category_definition is not None:
+    if category_record is None and category_definition is not None:
         category_record = definition_to_legacy_record(category_definition)
     summary = _required_attribute_summary(product, "mercadolibre", category_record)
     errors: list[dict[str, Any]] = []
@@ -732,7 +732,14 @@ def validate_prepared_yandex_draft(
     conflict = yandex_offer_identity_conflict(draft)
     if conflict:
         errors.append(precheck_item("OFFER_IDENTITY_CHANGED", "sku", conflict, "error", "确认要创建新的远端商品，或恢复原 SKU 后再发布"))
-    attribute_checks = yandex_attribute_checks(product, draft, category_record)
+    definitions_map, required_definitions = session.yandex_schema_definitions(category_record)
+    attribute_checks = yandex_attribute_checks(
+        product,
+        draft,
+        category_record,
+        definitions_map=definitions_map,
+        required_definitions=required_definitions,
+    )
     invalid_dictionary_ids = set(attribute_checks["dictionary"])
     for attr_id in sorted(invalid_dictionary_ids):
         errors.append(

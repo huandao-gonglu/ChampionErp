@@ -348,6 +348,36 @@ def category_attribute_text_format_hint(definition: dict[str, Any]) -> str:
     return ""
 
 
+def category_attribute_format_hint(definition: dict[str, Any]) -> str:
+    """面向 AI 与表单的简明值格式提示，覆盖特殊文本格式与带单位属性。"""
+
+    text_hint = category_attribute_text_format_hint(definition)
+    if text_hint:
+        return text_hint
+    if not category_attribute_uses_unit(definition):
+        return ""
+    unit_options = [
+        unit_name
+        for item in (definition.get("unit_options") or [])
+        if (unit_name := _category_attribute_unit_name(item))
+    ]
+    default_unit = str(
+        definition.get("default_unit") or definition.get("unit") or ""
+    ).strip()
+    sample_unit = default_unit or (unit_options[0] if unit_options else "单位")
+    if category_attribute_value_mode(definition) == "strict_enum":
+        return (
+            '请传对象 {"values": [{"dictionary_value_id": "...", "value": "..."}], '
+            f'"unit": "{sample_unit}"}}'
+        )
+    if category_attribute_uses_numeric_unit(definition):
+        return (
+            f'带单位数值属性，请传对象 {{"value": "数值", "unit": "{sample_unit}"}}，'
+            "不要传纯数字或把单位拼进字符串"
+        )
+    return f'带单位属性，请传对象 {{"value": "值", "unit": "{sample_unit}"}}'
+
+
 def category_attribute_text_format_error(definition: dict[str, Any], value: Any) -> str:
     """校验平台特定文本格式，不推测或自动改写业务内容；空值由必填规则处理。"""
     if category_attribute_text_format(definition) != "name_value_lines":
@@ -774,6 +804,7 @@ __all__ = [
     "category_attribute_schema",
     "category_attribute_text_format",
     "category_attribute_text_format_error",
+    "category_attribute_format_hint",
     "category_attribute_text_format_hint",
     "category_attribute_unit_is_valid",
     "category_attribute_uses_numeric_unit",

@@ -151,11 +151,48 @@ describe('普通聊天选择恢复', () => {
     resolve(new Response('data: {"type":"finish","finishReason":"stop"}\n\ndata: [DONE]\n\n', {
       headers: { 'x-vercel-ai-ui-message-stream': 'v1' },
     }))
-    await vi.waitFor(() => expect(store.isBusy).toBe(false))
+    await vi.waitFor(() => expect(store.historyVersion).toBe(2))
+    store.disconnectEvents()
+    next.disconnectEvents()
+  })
+
+  it.each([
+    new TypeError('network error'),
+    new TypeError('Load failed'),
+  ])('输出流中途断开（%s）时不向对话框展示断流错误，且只触发单次重同步', async (streamError) => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"type":"start"}\n\n'))
+        controller.error(streamError)
+      },
+    })
+    vi.mocked(fetch).mockResolvedValue(new Response(body, { headers: { 'x-vercel-ai-ui-message-stream': 'v1' } }))
+    const store = useAiChatStore()
+    const id = store.startConversation()
+    let resolveDetail!: (value: AiWorkUiMessagesResponse) => void
+    mocks.fetchUiMessages.mockImplementation(() => new Promise(done => { resolveDetail = done }))
+    store.input = '开始处理'
+    store.sendMessage()
+    await vi.waitFor(() => expect(mocks.fetchUiMessages).toHaveBeenCalledTimes(1))
+    // 断流后到服务端快照返回之前，绝不能在对话框上方闪现 network error，且保持运行态。
+    expect(store.error).toBeUndefined()
+    expect(store.status).toBe('ready')
+    expect(store.isRunning).toBe(true)
+    expect(FakeEventSource.urls.filter(url => url === `/events/${id}`)).toHaveLength(1)
+    resolveDetail({
+      ...detail(id), history_version: 3, run_active: false,
+      messages: [...detail(id).messages, { id: 'reply', role: 'assistant', parts: [{ type: 'text', text: '后台已继续完成' }] }],
+    })
+    await vi.waitFor(() => expect(store.historyVersion).toBe(3))
+    expect(mocks.fetchUiMessages).toHaveBeenCalledTimes(1)
+    expect(store.messages.at(-1)?.id).toBe('reply')
+    expect(store.error).toBeUndefined()
+    expect(store.isRunning).toBe(false)
+    expect(store.status).toBe('ready')
     store.disconnectEvents()
   })
 
-  it('输出流中途断开后，后台继续完成的历史会清除过时的 network error', async () => {
+  it('流中途断开且重同步暂时失败时不残留 network error，服务端返回真实 run_error 时再展示', async () => {
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new TextEncoder().encode('data: {"type":"start"}\n\n'))
@@ -165,16 +202,62 @@ describe('普通聊天选择恢复', () => {
     vi.mocked(fetch).mockResolvedValue(new Response(body, { headers: { 'x-vercel-ai-ui-message-stream': 'v1' } }))
     const store = useAiChatStore()
     const id = store.startConversation()
-    mocks.fetchUiMessages.mockResolvedValue({
-      ...detail(id), history_version: 3, run_active: false,
-      messages: [...detail(id).messages, { id: 'reply', role: 'assistant', parts: [{ type: 'text', text: '后台已继续完成' }] }],
-    })
+    mocks.fetchUiMessages
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValue({
+        ...detail(id),
+        history_version: 2,
+        run_active: false,
+        run_status: 'failed',
+        run_error: { code: 'AI_PROVIDER_PAYMENT_REQUIRED', message: '模型余额不足' },
+      })
     store.input = '开始处理'
     store.sendMessage()
-    await vi.waitFor(() => expect(store.historyVersion).toBe(3))
-    expect(store.messages.at(-1)?.id).toBe('reply')
+    await vi.waitFor(() => expect(mocks.fetchUiMessages).toHaveBeenCalledTimes(1))
     expect(store.error).toBeUndefined()
-    expect(store.status).toBe('ready')
+    await vi.waitFor(() => expect(store.error?.message).toBe('模型余额不足'), { timeout: 2500 })
+    expect(store.error?.code).toBe('AI_PROVIDER_PAYMENT_REQUIRED')
+    store.disconnectEvents()
+  })
+
+  it('SSE 心跳注释帧（: keepalive）会被透明忽略，不影响正常流式回复', async () => {
+    const encoder = new TextEncoder()
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(': keepalive\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"start","messageId":"assistant-ka"}\n\n'))
+        controller.enqueue(encoder.encode(': keepalive\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"text-start","id":"t1"}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"text-delta","id":"t1","delta":"保持连接成功"}\n\n'))
+        controller.enqueue(encoder.encode(': keepalive\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"text-end","id":"t1"}\n\n'))
+        controller.enqueue(encoder.encode('data: {"type":"finish","finishReason":"stop"}\n\n'))
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        controller.close()
+      },
+    })
+    vi.mocked(fetch).mockResolvedValue(new Response(body, { headers: { 'x-vercel-ai-ui-message-stream': 'v1' } }))
+    const store = useAiChatStore()
+    const id = store.startConversation()
+    mocks.fetchUiMessages.mockResolvedValue({
+      ...detail(id), history_version: 2, run_active: false,
+      messages: [...detail(id).messages, { id: 'assistant-ka', role: 'assistant', parts: [{ type: 'text', text: '保持连接成功' }] }],
+    })
+    store.input = '长任务'
+    store.sendMessage()
+    await vi.waitFor(() => expect(store.historyVersion).toBe(2))
+    expect(store.error).toBeUndefined()
+    expect(store.messages.at(-1)?.parts[0]).toMatchObject({ type: 'text', text: '保持连接成功' })
+    store.disconnectEvents()
+  })
+
+  it('请求尚未建立响应时的网络失败仍向用户展示错误', async () => {
+    vi.mocked(fetch).mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    mocks.fetchUiMessages.mockRejectedValue(new TypeError('Failed to fetch'))
+    const store = useAiChatStore()
+    store.input = '离线发送'
+    store.sendMessage()
+    await vi.waitFor(() => expect(store.error?.message).toBe('Failed to fetch'))
     store.disconnectEvents()
   })
 

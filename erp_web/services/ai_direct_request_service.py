@@ -33,7 +33,11 @@ from . import ai_generation_settings, ai_model_config, image_service
 from .ai_agent_instrumentation import AiAgentInstrumentation
 from erp_shared.ai_parsing import parse_json_text
 from .ai_model_errors import map_pydantic_model_error
-from .ai_model_factory import PydanticModelBinding, create_pydantic_model_binding
+from .ai_model_factory import (
+    PydanticModelBinding,
+    create_pydantic_model_binding,
+    omit_unsupported_reasoning_temperature,
+)
 from .ai_conversation_scope import current_ai_conversation
 from .ai_run_cancellation import check_cancellation
 from .ai_structured_output import (
@@ -430,6 +434,7 @@ def _chat_response(
         timeout_seconds=timeout_seconds,
         required_capabilities=required_capabilities,
     )
+    binding = omit_unsupported_reasoning_temperature(binding)
     native_tools, model_settings = _web_search_parameters(
         binding,
         binding.model_settings,

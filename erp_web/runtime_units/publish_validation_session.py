@@ -17,6 +17,36 @@ class PublishValidationSession:
     _yandex_ancestors_by_token: dict[str, dict[str, tuple[str, ...]]] = field(
         default_factory=dict, repr=False, compare=False,
     )
+    _yandex_schema_cache: tuple[dict[str, Any] | None, dict[str, dict[str, Any]], list[dict[str, Any]]] | None = field(
+        default=None, repr=False, compare=False,
+    )
+
+    def yandex_schema_definitions(
+        self,
+        category_record: dict[str, Any] | None,
+    ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+        """在单次发布校验中复用 Yandex 属性索引与必填属性子集。"""
+        cached = self._yandex_schema_cache
+        if cached is not None and cached[0] is category_record:
+            return cached[1], cached[2]
+        attributes = (
+            category_record.get("attributes")
+            if isinstance(category_record, dict)
+            and isinstance(category_record.get("attributes"), dict)
+            else {}
+        )
+        definitions: dict[str, dict[str, Any]] = {}
+        for group in ("required", "optional"):
+            rows = attributes.get(group) if isinstance(attributes.get(group), list) else []
+            for raw in rows:
+                if not isinstance(raw, dict):
+                    continue
+                attr_id = str(raw.get("id") or "").strip()
+                if attr_id:
+                    definitions[attr_id] = raw
+        required_defs = [item for item in definitions.values() if item.get("required")]
+        self._yandex_schema_cache = (category_record, definitions, required_defs)
+        return definitions, required_defs
 
     @cached_property
     def store_config(self) -> dict[str, Any]:

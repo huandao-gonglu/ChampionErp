@@ -732,3 +732,81 @@ def test_pydantic_api_error_keeps_provider_message_and_only_redacts_secret() -> 
     assert isinstance(mapped, AIModelRequestError)
     assert "Provider connection failed" in str(mapped)
     assert "very-secret-provider-key" not in str(mapped)
+
+
+def test_chat_structured_omits_unsupported_temperature_for_reasoning_models_without_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import warnings
+    from pydantic import BaseModel
+
+    class SimpleIdentity(BaseModel):
+        label: str
+
+    captured_bindings: list[PydanticModelBinding] = []
+
+    def fake_request(**kwargs):
+        binding = kwargs["binding"]
+        parameters = kwargs["parameters"]
+        captured_bindings.append(binding)
+        # 触发真实 Pydantic AI OpenAI prepare_request 校验，确认不发射 temperature 告警。
+        binding.model.prepare_request(binding.model_settings, parameters)
+        return ModelResponse(parts=[TextPart('{"label": "flute"}')])
+
+    monkeypatch.setattr(ai_direct_request_service, "_request", fake_request)
+
+    reasoning_model = {
+        "id": "model-gpt6",
+        "name": "GPT-6.2 Sol",
+        "connection_type": "api",
+        "provider_id": "openai",
+        "api_style": "openai_compatible",
+        "base_url": "https://api.openai.com/v1",
+        "api_key": "sk-test-key",
+        "model": "gpt-6.2-sol",
+        "capabilities": ["chat", "json"],
+    }
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        parsed = ai_direct_request_service.chat_structured(
+            app_dir=tmp_path,
+            use_case_id="category.product_match",
+            model=reasoning_model,
+            required_capabilities=("chat", "json"),
+            messages=[{"role": "user", "content": "identify"}],
+            generation_settings=None,
+            temperature=0.1,
+            max_tokens=None,
+            timeout_seconds=15,
+            stream=False,
+            output_type=SimpleIdentity,
+        )
+
+    assert parsed.label == "flute"
+    assert "temperature" not in captured_bindings[0].model_settings
+    assert not [
+        w for w in caught if "Sampling parameters" in str(w.message)
+    ]
+
+    standard_model = {
+        **reasoning_model,
+        "id": "model-gpt4o",
+        "name": "GPT-4o",
+        "model": "gpt-4o",
+    }
+    parsed_standard = ai_direct_request_service.chat_structured(
+        app_dir=tmp_path,
+        use_case_id="category.product_match",
+        model=standard_model,
+        required_capabilities=("chat", "json"),
+        messages=[{"role": "user", "content": "identify"}],
+        generation_settings=None,
+        temperature=0.1,
+        max_tokens=None,
+        timeout_seconds=15,
+        stream=False,
+        output_type=SimpleIdentity,
+    )
+    assert parsed_standard.label == "flute"
+    assert captured_bindings[1].model_settings["temperature"] == 0.1

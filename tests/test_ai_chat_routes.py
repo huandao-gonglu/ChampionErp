@@ -1900,3 +1900,93 @@ def test_queue_buttons_operate_on_running_http_conversation(chat_server, monkeyp
     finally:
         release.set()
         thread.join(5)
+
+
+def test_sse_stream_emits_keepalive_during_idle_wait_and_completes(
+    chat_service: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """长耗时步骤静默等待期间定期发送 SSE 心跳注释帧，完成后仍输出完整正文并持久化。"""
+    from erp_web.services import vercel_ai_ui_service
+
+    monkeypatch.setattr(vercel_ai_ui_service, "SSE_KEEPALIVE_INTERVAL_SECONDS", 0.05)
+    keepalive_seen = threading.Event()
+
+    async def slow_model(_messages, _info):
+        deadline = time.monotonic() + 5.0
+        while not keepalive_seen.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        yield "长耗时任务已完成。"
+
+    chat_service["model"]["model"] = FunctionModel(stream_function=slow_model)
+    conversation = "conversation_global_chat_" + "d" * 32
+    run = chat_service["service"].prepare_run(
+        json.dumps(_submit_body(conversation, "keepalive-1", "处理批量草稿")).encode(),
+    )
+    written: list[bytes] = []
+
+    def capture(chunk: bytes) -> None:
+        written.append(chunk)
+        if chunk == vercel_ai_ui_service.SSE_KEEPALIVE_CHUNK:
+            keepalive_seen.set()
+
+    asyncio.run(run.stream(capture))
+
+    assert keepalive_seen.is_set()
+    assert vercel_ai_ui_service.SSE_KEEPALIVE_CHUNK in written
+    joined = b"".join(written).decode("utf-8")
+    assert "长耗时任务已完成。" in joined
+    claim = get_context().chat_turn_claims.find_for_conversation(conversation)
+    assert claim is not None and claim.status == "completed"
+    history = get_context().pydantic_messages.get(conversation)
+    assert history is not None
+    assert any(
+        isinstance(part, TextPart) and "长耗时任务已完成。" in part.content
+        for message in history.model_messages()
+        for part in message.parts
+    )
+
+
+def test_sse_keepalive_disconnect_still_completes_server_side_run(
+    chat_service: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """静默等待期间写心跳发现客户端已断连，只停止 SSE 写入，后台 run 仍正常完成。"""
+    from erp_web.services import vercel_ai_ui_service
+
+    monkeypatch.setattr(vercel_ai_ui_service, "SSE_KEEPALIVE_INTERVAL_SECONDS", 0.05)
+    release = threading.Event()
+    keepalive_failed = threading.Event()
+
+    async def slow_model(_messages, _info):
+        deadline = time.monotonic() + 5.0
+        while not release.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        yield "断连后后台继续完成。"
+
+    chat_service["model"]["model"] = FunctionModel(stream_function=slow_model)
+    conversation = "conversation_global_chat_" + "e" * 32
+    run = chat_service["service"].prepare_run(
+        json.dumps(_submit_body(conversation, "keepalive-dc", "静默断连")).encode(),
+    )
+
+    def disconnect_on_keepalive(chunk: bytes) -> None:
+        if chunk == vercel_ai_ui_service.SSE_KEEPALIVE_CHUNK:
+            keepalive_failed.set()
+            release.set()
+            raise BrokenPipeError("client disconnected while idle")
+
+    asyncio.run(run.stream(disconnect_on_keepalive))
+
+    assert keepalive_failed.is_set()
+    context = get_context()
+    assert context.chat_runs.is_active(conversation) is False
+    claim = context.chat_turn_claims.find_for_conversation(conversation)
+    assert claim is not None and claim.status == "completed"
+    history = context.pydantic_messages.get(conversation)
+    assert history is not None
+    assert any(
+        isinstance(part, TextPart) and "断连后后台继续完成。" in part.content
+        for message in history.model_messages()
+        for part in message.parts
+    )

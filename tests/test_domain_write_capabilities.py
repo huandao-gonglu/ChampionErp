@@ -841,6 +841,128 @@ def test_copy_generate_batch_is_compact_concurrent_and_skips_index(
     assert "product" in http_payload["items"][0]
 
 
+def test_copy_generate_batch_strict_lookup_and_draft_ids_support(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pydantic import ValidationError
+
+    context = get_context()
+    product_a = _seed_product("product-copy-strict-a", with_draft=False)
+    product_a["drafts"] = {
+        "yandex": {
+            "platform": "yandex",
+            "site": "global",
+            "language": "Russian",
+            "title": "Original A",
+            "description": "Original desc A",
+        }
+    }
+    product_a = context.products.save_product(product_a)
+    product_b = _seed_product("product-copy-strict-b", with_draft=False)
+    product_b["drafts"] = {
+        "yandex": {
+            "platform": "yandex",
+            "site": "global",
+            "language": "Russian",
+            "title": "Original B",
+            "description": "Original desc B",
+        }
+    }
+    product_b = context.products.save_product(product_b)
+    draft_a = str(product_a["drafts"]["yandex"]["draft_id"])
+    draft_b = str(product_b["drafts"]["yandex"]["draft_id"])
+    before_a_title = str(product_a["drafts"]["yandex"].get("title") or "")
+    before_b_title = str(product_b["drafts"]["yandex"].get("title") or "")
+
+    calls: list[tuple[str, str, str]] = []
+
+    def tracking_bundle(
+        product: dict[str, Any],
+        source_platform: str,
+        target_platform: str,
+        language: str,
+        mode: str,
+        app_cfg: dict[str, Any],
+    ) -> dict[str, Any]:
+        del source_platform, mode, app_cfg
+        pid = str(product.get("product_id") or "")
+        calls.append((pid, target_platform, language))
+        return {
+            "ok": True,
+            "target_market": target_platform,
+            "source_platform": target_platform,
+            "language": language,
+            "mode": "rewrite",
+            "copy": {
+                "title": f"Generated for {pid}",
+                "description": f"Description for {pid}",
+                "search_keywords": [pid],
+            },
+        }
+
+    monkeypatch.setattr(
+        "erp_web.runtime_units.copy_generation.generate_ai_copy_bundle",
+        tracking_bundle,
+    )
+    scope = _content_scope()
+
+    # 1) 误把 draft_id 填入 product_ids 时必须严格报错，绝不能静默回落到默认商品。
+    wrong_id_result = copy_generate_batch(
+        CopyGenerateBatchRequest(
+            product_ids=(draft_a,),
+            platform="yandex",
+        ),
+        scope=scope,
+        execution=_execution(),
+    )
+    assert wrong_id_result.success_count == 0
+    assert wrong_id_result.failed_count == 1
+    assert wrong_id_result.items[0]["ok"] is False
+    assert "draft_ids" in str(wrong_id_result.items[0]["error"])
+    assert calls == []
+    assert context.products.find_draft_from_index(draft_a)["drafts"]["yandex"].get("title", "") == before_a_title
+    assert context.products.find_draft_from_index(draft_b)["drafts"]["yandex"].get("title", "") == before_b_title
+
+    # 2) 使用 draft_ids 批量生成（省略 platform 时自动按草稿所属平台解析），各自写回对应草稿。
+    draft_batch_result = copy_generate_batch(
+        CopyGenerateBatchRequest(draft_ids=(draft_a, draft_b)),
+        scope=scope,
+        execution=_execution(),
+    )
+    assert draft_batch_result.success_count == 2
+    assert draft_batch_result.failed_count == 0
+    assert [item["draft_id"] for item in draft_batch_result.items] == [draft_a, draft_b]
+    assert [item["product_id"] for item in draft_batch_result.items] == [
+        "product-copy-strict-a",
+        "product-copy-strict-b",
+    ]
+    assert all(item["platform"] == "yandex" for item in draft_batch_result.items)
+    assert context.products.find_draft_from_index(draft_a)["drafts"]["yandex"]["title"] == "Generated for product-copy-strict-a"
+    assert context.products.find_draft_from_index(draft_b)["drafts"]["yandex"]["title"] == "Generated for product-copy-strict-b"
+
+    # 3) 不存在的 draft_id 与跨平台不匹配的 draft_id 均严格失败，不污染任何草稿。
+    calls.clear()
+    mismatch_result = copy_generate_batch(
+        CopyGenerateBatchRequest(
+            draft_ids=("draft-does-not-exist", draft_a),
+            platform="ozon",
+        ),
+        scope=scope,
+        execution=_execution(),
+    )
+    assert mismatch_result.success_count == 0
+    assert mismatch_result.failed_count == 2
+    assert "草稿不存在" in str(mismatch_result.items[0]["error"])
+    assert "不匹配" in str(mismatch_result.items[1]["error"])
+    assert calls == []
+
+    # 4) 请求校验拒绝空目标与同时传 product_ids + draft_ids。
+    with pytest.raises(ValidationError):
+        CopyGenerateBatchRequest()
+    with pytest.raises(ValidationError):
+        CopyGenerateBatchRequest(product_ids=("product-copy-strict-a",), draft_ids=(draft_a,))
+
+
 def test_category_match_and_text_translate_preserve_fatal_model_error_details(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

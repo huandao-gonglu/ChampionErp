@@ -112,31 +112,64 @@ def save_copy_result(
     )
 
 
-_BATCH_COPY_MAX_WORKERS = 5
+_BATCH_COPY_MAX_WORKERS = 8
+
+
+def _resolve_item_language(
+    requested_language: str,
+    product: dict[str, Any],
+    platform: str,
+) -> str:
+    if requested_language:
+        return requested_language
+    drafts = product.get("drafts") if isinstance(product.get("drafts"), dict) else {}
+    draft = drafts.get(platform) if isinstance(drafts.get(platform), dict) else {}
+    draft_language = str(draft.get("language") or "").strip()
+    return (
+        draft_language
+        or str(default_marketplace_site(platform).get("language") or "").strip()
+        or "English"
+    )
 
 
 def batch_generate_copy_for_products(
-    product_ids: list[str],
+    product_ids: list[str] | tuple[str, ...] = (),
     platform: str = "mercadolibre",
     language: str = "",
     mode: str = "rewrite",
     *,
+    draft_ids: list[str] | tuple[str, ...] | None = None,
     include_products: bool = True,
     include_index: bool = True,
     max_workers: int = _BATCH_COPY_MAX_WORKERS,
 ) -> dict[str, Any]:
-    target_platform = str(platform or "mercadolibre").strip().lower() or "mercadolibre"
-    if target_platform not in PLATFORMS:
-        return {"ok": False, "success_count": 0, "failed_count": 0, "items": [], "error": "不支持的平台"}
-    language = str(language or default_marketplace_site(target_platform).get("language") or "English").strip()
+    normalized_product_ids = [str(item or "").strip() for item in (product_ids or ()) if str(item or "").strip()]
+    normalized_draft_ids = [str(item or "").strip() for item in (draft_ids or ()) if str(item or "").strip()]
+    if normalized_product_ids and normalized_draft_ids:
+        return {
+            "ok": False,
+            "success_count": 0,
+            "failed_count": 0,
+            "items": [],
+            "error": "product_ids 与 draft_ids 不能同时传入",
+        }
+    by_draft = bool(normalized_draft_ids)
+    requested_platform = str(platform or "").strip().lower()
+    if requested_platform:
+        if requested_platform not in PLATFORMS:
+            return {"ok": False, "success_count": 0, "failed_count": 0, "items": [], "error": "不支持的平台"}
+        default_platform = requested_platform
+    else:
+        default_platform = "" if by_draft else "mercadolibre"
+    requested_language = str(language or "").strip()
     app_cfg = get_context().config.load_app_config()
-    normalized_ids = [str(item or "").strip() for item in product_ids if str(item or "").strip()]
+    target_ids = normalized_draft_ids if by_draft else normalized_product_ids
 
-    def _generate_one(product_id: str) -> dict[str, Any]:
+    def _generate_one(target_id: str) -> dict[str, Any]:
         row: dict[str, Any] = {
-            "product_id": product_id,
-            "draft_id": "",
-            "platform": target_platform,
+            "product_id": "" if by_draft else target_id,
+            "draft_id": target_id if by_draft else "",
+            "platform": default_platform,
             "ok": False,
             "status": "failed",
             "title": "",
@@ -145,14 +178,40 @@ def batch_generate_copy_for_products(
             "error": "",
         }
         try:
-            product = get_context().products.load_product_from_index(
-                product_id,
-                "",
+            products_store = get_context().products
+            if by_draft:
+                product = products_store.find_draft_from_index(target_id)
+                loaded_draft_id = str(product.get("current_draft_id") or "").strip()
+                if not product or loaded_draft_id != target_id:
+                    raise RuntimeError("草稿不存在")
+                row["product_id"] = str(product.get("product_id") or "").strip()
+                row["draft_id"] = loaded_draft_id
+                draft_platform = str(product.get("current_draft_platform") or "").strip().lower()
+                if requested_platform and draft_platform and draft_platform != requested_platform:
+                    raise RuntimeError(
+                        f"草稿属于 {draft_platform} 平台，与请求的 {requested_platform} 不匹配"
+                    )
+                item_platform = requested_platform or draft_platform or "mercadolibre"
+                if item_platform not in PLATFORMS:
+                    raise RuntimeError(f"不支持的平台：{item_platform}")
+                row["platform"] = item_platform
+            else:
+                product = products_store.find_indexed_product(target_id, "")
+                if not product or str(product.get("product_id") or "").strip() != target_id:
+                    raise RuntimeError(
+                        "商品不存在；请确认传入的是 product_id（按草稿批量生成请传 draft_ids）"
+                    )
+                item_platform = default_platform
+            item_language = _resolve_item_language(requested_language, product, item_platform)
+            source_platform = str((product.get("source") or {}).get("source_platform") or item_platform)
+            result = generate_ai_copy_bundle(
+                product,
+                source_platform,
+                item_platform,
+                item_language,
+                mode,
+                app_cfg,
             )
-            if not product:
-                raise RuntimeError("商品不存在")
-            source_platform = str((product.get("source") or {}).get("source_platform") or target_platform)
-            result = generate_ai_copy_bundle(product, source_platform, target_platform, language, mode, app_cfg)
             if not result.get("ok"):
                 if result.get("error_code"):
                     row["error_code"] = str(result.get("error_code") or "")
@@ -161,16 +220,17 @@ def batch_generate_copy_for_products(
                 raise RuntimeError(str(result.get("error") or "本地化文案生成失败"))
             copy_payload = {
                 **(result.get("copy") or {}),
-                "language": result.get("language", language),
+                "language": result.get("language", item_language),
                 "source_platform": result.get("source_platform", source_platform),
                 "mode": result.get("mode", mode),
             }
-            saved = save_copy_result(product, result.get("target_market") or target_platform, copy_payload)
-            draft = ((saved.get("drafts") or {}).get(target_platform) or {}) if isinstance(saved.get("drafts"), dict) else {}
+            saved = save_copy_result(product, result.get("target_market") or item_platform, copy_payload)
+            draft = ((saved.get("drafts") or {}).get(item_platform) or {}) if isinstance(saved.get("drafts"), dict) else {}
             row.update(
                 {
                     "ok": True,
-                    "draft_id": str(draft.get("draft_id") or ""),
+                    "product_id": str(saved.get("product_id") or row["product_id"]),
+                    "draft_id": str(saved.get("current_draft_id") or draft.get("draft_id") or row["draft_id"]),
                     "status": draft.get("status") or "copy_ready",
                     "title": draft.get("title") or "",
                     "description_length": len(str(draft.get("description") or "")),
@@ -183,21 +243,29 @@ def batch_generate_copy_for_products(
             row["error"] = str(exc)
         return row
 
-    worker_count = min(max(1, int(max_workers or 1)), len(normalized_ids))
-    # 互不重叠的商品并发生成文案（复制 ContextVar 保持当前账号空间隔离），保留原始顺序。
-    if worker_count > 1 and len(set(normalized_ids)) == len(normalized_ids):
+    worker_count = min(max(1, int(max_workers or 1)), len(target_ids))
+    # 互不重叠的目标并发生成文案（复制 ContextVar 保持当前账号空间隔离），保留原始顺序。
+    if worker_count > 1 and len(set(target_ids)) == len(target_ids):
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = [executor.submit(copy_context().run, _generate_one, pid) for pid in normalized_ids]
+            futures = [executor.submit(copy_context().run, _generate_one, tid) for tid in target_ids]
             items = [future.result() for future in futures]
     else:
-        items = [_generate_one(pid) for pid in normalized_ids]
+        items = [_generate_one(tid) for tid in target_ids]
 
     success_count = sum(1 for item in items if item.get("ok"))
     failed_count = len(items) - success_count
+    resolved_platform = default_platform or (
+        str(items[0].get("platform") or "") if items else ""
+    )
+    resolved_language = requested_language or (
+        str(default_marketplace_site(resolved_platform).get("language") or "").strip()
+        if resolved_platform in PLATFORMS
+        else ""
+    ) or "English"
     payload: dict[str, Any] = {
         "ok": True,
-        "platform": target_platform,
-        "language": language,
+        "platform": resolved_platform,
+        "language": resolved_language,
         "total": len(items),
         "success_count": success_count,
         "failed_count": failed_count,

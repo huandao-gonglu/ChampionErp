@@ -1094,7 +1094,7 @@ class ProductStore:
             )
         return product, None, 200
 
-    def load_draft_from_index(self, draft_id: str) -> dict[str, Any]:
+    def find_draft_from_index(self, draft_id: str) -> dict[str, Any]:
         draft_id = str(draft_id or "").strip()
         if draft_id:
             loaded = self._db.load_product_for_draft(draft_id)
@@ -1105,7 +1105,10 @@ class ProductStore:
                 product["current_draft_id"] = current_draft_id
                 product["current_draft_platform"] = current_draft_platform
                 return product
-        return self.load_product()
+        return {}
+
+    def load_draft_from_index(self, draft_id: str) -> dict[str, Any]:
+        return self.find_draft_from_index(draft_id) or self.load_product()
 
     # -- draft detail --------------------------------------------------------------
 
@@ -2101,7 +2104,11 @@ class ProductStore:
         product_for_status["drafts"] = merged_drafts
         draft["status"] = self.draft_workflow_status(product_for_status, target_key)
         saved_draft_id = self._db.upsert_draft_model(product_id, target_key, draft)
-        saved = self.load_product_from_index(product_id, "")
+        saved = (
+            self.find_draft_from_index(saved_draft_id)
+            if draft_id
+            else {}
+        ) or self.load_product_from_index(product_id, "")
         saved["current_draft_id"] = saved_draft_id
         saved["current_draft_platform"] = target_key
         return saved

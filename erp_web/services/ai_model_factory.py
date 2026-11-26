@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -448,10 +448,53 @@ def create_pydantic_model_binding_for_use_case(
     )
 
 
+def profile_reasoning_active(binding: PydanticModelBinding) -> bool:
+    """判断当前 binding 在原生协议下是否会启用推理/思考。"""
+
+    profile = getattr(binding.model, "profile", None) or {}
+    if profile.get("thinking_always_enabled", False):
+        return True
+    if not profile.get("supports_thinking", False):
+        return False
+    thinking = binding.model_settings.get("thinking")
+    if thinking is not None:
+        return thinking is not False
+    return bool(profile.get("openai_reasoning_enabled_by_default", False))
+
+
+def omit_unsupported_reasoning_temperature(
+    binding: PydanticModelBinding,
+) -> PydanticModelBinding:
+    """在推理启用且协议不支持 temperature 时移除温度参数，避免 SDK 忽略并告警。"""
+
+    if "temperature" not in binding.model_settings:
+        return binding
+    profile = getattr(binding.model, "profile", None) or {}
+    supports_reasoning = bool(profile.get("openai_supports_reasoning", False))
+    openai_reasoning = supports_reasoning or (
+        binding.provider_family == ai_generation_settings.PROVIDER_FAMILY_OPENAI
+        and profile_reasoning_active(binding)
+    )
+    if not openai_reasoning:
+        return binding
+    if (
+        supports_reasoning
+        and profile.get("openai_supports_reasoning_effort_none", False)
+        and not profile_reasoning_active(binding)
+    ):
+        return binding
+    filtered_settings = {
+        k: v for k, v in binding.model_settings.items() if k != "temperature"
+    }
+    return replace(binding, model_settings=filtered_settings)
+
+
 __all__ = [
     "AiModelFactoryError",
     "PydanticModelBinding",
     "create_pydantic_model_binding",
     "create_pydantic_model_binding_for_use_case",
     "create_pydantic_probe_binding",
+    "omit_unsupported_reasoning_temperature",
+    "profile_reasoning_active",
 ]
