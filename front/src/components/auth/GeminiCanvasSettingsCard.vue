@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, ref } from 'vue'
 import { routerKey } from 'vue-router'
-import { loginCanvasAccount, logoutCanvasAccount, toggleCanvasAccount } from '@/api/workflow/settings'
+import { fetchAiConfig, loginCanvasAccount, logoutCanvasAccount, toggleCanvasAccount } from '@/api/workflow/settings'
 import type { BackendCanvasAccountStatus, BackendCanvasAccountSummary, UnknownRecord } from '@/types/workflow'
 
 const props = defineProps<{
@@ -84,20 +84,61 @@ function requireDesktopOrRun(action: () => Promise<void>) {
   void action()
 }
 
+async function reconcileCanvasStatusFromServer(): Promise<BackendCanvasAccountStatus | null> {
+  try {
+    const config = await fetchAiConfig()
+    const raw = config.raw?.canvas_status
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+    const record = raw as Record<string, unknown>
+    const status: BackendCanvasAccountStatus = {
+      scope: typeof record.scope === 'string' ? record.scope : 'web_offline',
+      desktop_online: record.desktop_online === true,
+      accounts: Array.isArray(record.accounts) ? record.accounts as BackendCanvasAccountSummary[] : [],
+    }
+    emit('accountsUpdated', status)
+    return status
+  } catch {
+    return null
+  }
+}
+
 function handleAddAccount() {
   requireDesktopOrRun(async () => {
+    const previousSignedInProfiles = new Set(
+      accounts.value
+        .filter(item => item.status === 'signed_in')
+        .map(item => String(item.profile || item.id || '')),
+    )
     pendingAction.value = 'add'
     feedback.value = { type: 'info', text: '正在打开 Google 登录窗口，请在弹出的内置浏览器中完成登录…' }
     try {
       const result = await loginCanvasAccount({ model: props.model, forceLogin: true })
-      emit('accountsUpdated', result.canvasStatus)
+      if (result.canvasStatus) emit('accountsUpdated', result.canvasStatus)
       if (!result.ok) {
+        if (result.gatewayError) {
+          const refreshed = await reconcileCanvasStatusFromServer()
+          const newlySignedIn = refreshed?.accounts.find(
+            item => item.status === 'signed_in' && !previousSignedInProfiles.has(String(item.profile || item.id || '')),
+          )
+          if (newlySignedIn) {
+            feedback.value = { type: 'success', text: `已登录：${accountTitle(newlySignedIn)}` }
+            return
+          }
+        }
         feedback.value = { type: 'error', text: result.error || '添加 Google 账号失败。' }
         return
       }
       const label = result.account ? accountTitle(result.account) : 'Google 账号'
       feedback.value = { type: 'success', text: `已登录：${label}` }
     } catch (error) {
+      const refreshed = await reconcileCanvasStatusFromServer()
+      const newlySignedIn = refreshed?.accounts.find(
+        item => item.status === 'signed_in' && !previousSignedInProfiles.has(String(item.profile || item.id || '')),
+      )
+      if (newlySignedIn) {
+        feedback.value = { type: 'success', text: `已登录：${accountTitle(newlySignedIn)}` }
+        return
+      }
       feedback.value = { type: 'error', text: error instanceof Error ? error.message : '添加 Google 账号失败。' }
     } finally {
       pendingAction.value = ''
@@ -113,8 +154,9 @@ function handleCheckAccount(account: BackendCanvasAccountSummary) {
     feedback.value = { type: 'info', text: `正在检查 ${accountTitle(account)} 的登录与 Canvas 通道状态…` }
     try {
       const result = await loginCanvasAccount({ model: props.model, profile, checkOnly: true })
-      emit('accountsUpdated', result.canvasStatus)
+      if (result.canvasStatus) emit('accountsUpdated', result.canvasStatus)
       if (!result.ok) {
+        if (result.gatewayError) await reconcileCanvasStatusFromServer()
         feedback.value = { type: 'error', text: result.error || '当前账号未登录或登录已过期，请点击「重新登录」。' }
         return
       }
@@ -136,14 +178,32 @@ function handleReloginAccount(account: BackendCanvasAccountSummary) {
     feedback.value = { type: 'info', text: `正在打开 ${accountTitle(account)} 的 Google 登录窗口…` }
     try {
       const result = await loginCanvasAccount({ model: props.model, profile, forceLogin: true })
-      emit('accountsUpdated', result.canvasStatus)
+      if (result.canvasStatus) emit('accountsUpdated', result.canvasStatus)
       if (!result.ok) {
+        if (result.gatewayError) {
+          const refreshed = await reconcileCanvasStatusFromServer()
+          const matched = refreshed?.accounts.find(
+            item => String(item.profile || item.id || '') === profile && item.status === 'signed_in',
+          )
+          if (matched) {
+            feedback.value = { type: 'success', text: `已重新登录：${accountTitle(matched)}` }
+            return
+          }
+        }
         feedback.value = { type: 'error', text: result.error || '重新登录失败。' }
         return
       }
       const label = result.account ? accountTitle(result.account) : accountTitle(account)
       feedback.value = { type: 'success', text: `已重新登录：${label}` }
     } catch (error) {
+      const refreshed = await reconcileCanvasStatusFromServer()
+      const matched = refreshed?.accounts.find(
+        item => String(item.profile || item.id || '') === profile && item.status === 'signed_in',
+      )
+      if (matched) {
+        feedback.value = { type: 'success', text: `已重新登录：${accountTitle(matched)}` }
+        return
+      }
       feedback.value = { type: 'error', text: error instanceof Error ? error.message : '重新登录失败。' }
     } finally {
       pendingAction.value = ''
@@ -159,7 +219,7 @@ function handleLogoutAccount(account: BackendCanvasAccountSummary) {
     feedback.value = null
     try {
       const result = await logoutCanvasAccount(profile)
-      emit('accountsUpdated', result.canvasStatus)
+      if (result.canvasStatus) emit('accountsUpdated', result.canvasStatus)
       feedback.value = { type: 'success', text: `已取消登录并清除本机会话：${accountTitle(account)}` }
     } catch (error) {
       feedback.value = { type: 'error', text: error instanceof Error ? error.message : '取消登录失败。' }
@@ -177,7 +237,7 @@ function handleToggleAccount(account: BackendCanvasAccountSummary, enabled: bool
     feedback.value = null
     try {
       const result = await toggleCanvasAccount(profile, enabled)
-      emit('accountsUpdated', result.canvasStatus)
+      if (result.canvasStatus) emit('accountsUpdated', result.canvasStatus)
     } catch (error) {
       feedback.value = { type: 'error', text: error instanceof Error ? error.message : '更新账号状态失败。' }
     } finally {

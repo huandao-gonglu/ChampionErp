@@ -418,3 +418,62 @@ def test_multi_account_rotation_and_rate_limit_failover(tmp_path, monkeypatch, m
     canvas._cooldown_until.clear()
     checked_both = canvas.check_canvas_connection(tmp_path, model)
     assert checked_both["ready_accounts"] == 2
+
+
+def test_http_keepalive_json_streams_whitespace_and_preserves_contextvars():
+    import contextvars
+    import time
+    from erp_web.http_handler import Handler
+
+    marker = contextvars.ContextVar("canvas_login_marker", default="unset")
+    written = BytesIO()
+    sent: list[tuple[int, list[tuple[str, str]]]] = []
+
+    class FakeHandler(Handler):
+        def __init__(self):
+            self.path = "/api/ai-config/canvas/account-login"
+            self.wfile = written
+            self._current_headers: list[tuple[str, str]] = []
+            self._status = 0
+
+        def send_response(self, code, message=None):
+            self._status = code
+
+        def send_header(self, keyword, value):
+            self._current_headers.append((keyword, value))
+
+        def end_headers(self):
+            sent.append((self._status, list(self._current_headers)))
+
+    # 1. Slow path: emits leading whitespace heartbeats while preserving contextvars, then valid JSON.
+    token = marker.set("desktop-conn-1")
+    try:
+        handler = FakeHandler()
+
+        def slow_login():
+            time.sleep(0.06)
+            return {"ok": True, "conn": marker.get()}, 200
+
+        handler.send_json_with_keepalive(slow_login, keepalive_interval=0.02)
+    finally:
+        marker.reset(token)
+
+    raw = written.getvalue()
+    assert raw.startswith(b" \n")
+    assert json.loads(raw.decode("utf-8")) == {"ok": True, "conn": "desktop-conn-1"}
+    assert sent[0][0] == 200
+    assert ("Content-Type", "application/json; charset=utf-8") in sent[0][1]
+    assert not any(k.lower() == "content-length" for k, _ in sent[0][1])
+
+    # 2. Fast path: preserves original non-200 status code and Content-Length without heartbeats.
+    fast_written = BytesIO()
+    sent.clear()
+    fast_handler = FakeHandler()
+    fast_handler.wfile = fast_written
+    fast_handler.send_json_with_keepalive(
+        lambda: ({"ok": False, "error": "桌面端离线"}, 409),
+        keepalive_interval=5.0,
+    )
+    assert sent[0][0] == 409
+    assert any(k.lower() == "content-length" for k, _ in sent[0][1])
+    assert json.loads(fast_written.getvalue().decode("utf-8")) == {"ok": False, "error": "桌面端离线"}

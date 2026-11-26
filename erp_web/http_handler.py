@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import re
+import threading
 import time
 import urllib.parse
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
@@ -135,6 +138,15 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def send_json(self, data: Any, status: int = 200) -> None:
+        self._log_json_response(data, status)
+        raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _log_json_response(self, data: Any, status: int) -> None:
         path = urllib.parse.urlsplit(getattr(self, "path", "")).path or "/"
         diagnostics = _response_diagnostics(data)
         if status >= 400:
@@ -163,12 +175,69 @@ class Handler(BaseHTTPRequestHandler):
                 status,
                 diagnostics["ok"],
             )
-        raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
+
+    def send_json_with_keepalive(
+        self,
+        compute: Callable[[], tuple[Any, int]],
+        *,
+        keepalive_interval: float = 15.0,
+    ) -> None:
+        """为耗时交互请求（如人工浏览器登录）发送 JSON 前导空白心跳，防止网关空闲超时（如 Cloudflare 524）。
+
+        若 compute 在首个 keepalive_interval 内完成，直接走普通 send_json 保留原始状态码和 Content-Length；
+        若超过首个间隔仍在进行，则先发送 HTTP 200 JSON 响应头，定期写入合法 JSON 空白，完成后写入最终载荷。
+        """
+
+        done = threading.Event()
+        outcome: dict[str, Any] = {}
+        ctx = contextvars.copy_context()
+
+        def worker() -> None:
+            try:
+                outcome["result"] = ctx.run(compute)
+            except BaseException as exc:
+                outcome["error"] = exc
+            finally:
+                done.set()
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+
+        interval = max(0.01, float(keepalive_interval))
+        if done.wait(timeout=interval):
+            if "error" in outcome:
+                raise outcome["error"]
+            payload, status = outcome["result"]
+            self.send_json(payload, status)
+            return
+
+        self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
-        self.wfile.write(raw)
+        client_alive = True
+        while not done.is_set():
+            try:
+                self.wfile.write(b" \n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                client_alive = False
+                break
+            done.wait(timeout=interval)
+
+        if not client_alive:
+            return
+        if "error" in outcome:
+            payload = {"ok": False, "error": str(outcome["error"])}
+            status = 500
+        else:
+            payload, status = outcome["result"]
+        self._log_json_response(payload, status)
+        raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        try:
+            self.wfile.write(raw)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
 
     def send_ndjson(self, items: list[dict[str, Any]], status: int = 200) -> None:
         raw = "".join(

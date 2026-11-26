@@ -142,9 +142,14 @@ export interface CanvasAccountActionResult {
   ok: boolean
   account?: BackendCanvasAccountSummary
   accounts: BackendCanvasAccountSummary[]
-  canvasStatus: BackendCanvasAccountStatus
+  canvasStatus?: BackendCanvasAccountStatus
   loginRequired?: boolean
+  gatewayError?: boolean
   error?: string
+}
+
+function isPlainRecord(value: unknown): value is UnknownRecord {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
 
 function normalizeCanvasStatus(raw: unknown): BackendCanvasAccountStatus {
@@ -174,15 +179,32 @@ export async function loginCanvasAccount(options: {
     },
     { timeout: 600_000, validateStatus: () => true },
   )
-  const data = asRecord(response.data)
-  const canvasStatus = normalizeCanvasStatus(data.canvas_status)
-  const accounts = Array.isArray(data.accounts) ? data.accounts as BackendCanvasAccountSummary[] : canvasStatus.accounts
+  if (!isPlainRecord(response.data)) {
+    const status = Number(response.status || 0)
+    const error = status === 524
+      ? '等待登录响应超时（HTTP 524），若已在弹出窗口完成登录，请稍候或刷新查看账号状态。'
+      : `请求异常（HTTP ${status || '未知'}），若已在弹出窗口完成登录，请刷新查看账号状态。`
+    return {
+      ok: false,
+      accounts: [],
+      gatewayError: true,
+      error,
+    }
+  }
+  const data = response.data
+  const hasCanvasStatus = isPlainRecord(data.canvas_status)
+  const normalizedStatus = hasCanvasStatus ? normalizeCanvasStatus(data.canvas_status) : undefined
+  const accounts = Array.isArray(data.accounts)
+    ? data.accounts as BackendCanvasAccountSummary[]
+    : (normalizedStatus?.accounts || [])
+  const canvasStatus = normalizedStatus ? { ...normalizedStatus, accounts } : undefined
   return {
     ok: data.ok === true,
-    account: data.account && typeof data.account === 'object' ? data.account as BackendCanvasAccountSummary : undefined,
+    account: isPlainRecord(data.account) ? data.account as BackendCanvasAccountSummary : undefined,
     accounts,
-    canvasStatus: { ...canvasStatus, accounts },
+    canvasStatus,
     loginRequired: data.login_required === true,
+    gatewayError: Number(response.status || 0) >= 500,
     error: getString(data, ['error']),
   }
 }

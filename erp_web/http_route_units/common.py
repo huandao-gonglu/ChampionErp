@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Protocol
 
 
@@ -12,6 +13,14 @@ class JsonRequestHandler(Protocol):
     wfile: Any
 
     def send_json(self, data: Any, status: int = 200) -> None:
+        ...
+
+    def send_json_with_keepalive(
+        self,
+        compute: Callable[[], tuple[Any, int]],
+        *,
+        keepalive_interval: float = 15.0,
+    ) -> None:
         ...
 
     def send_ndjson(self, items: list[dict[str, Any]], status: int = 200) -> None:

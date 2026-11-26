@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { apiClient } from '@/api/client'
-import { testAiModel } from '@/api/workflow/settings'
+import { loginCanvasAccount, testAiModel } from '@/api/workflow/settings'
 
 vi.mock('@/api/client', () => ({
   API_REQUEST_TIMEOUT_MS: 30_000,
@@ -44,6 +44,18 @@ describe('workflow settings API', () => {
     expect(apiClient.post).toHaveBeenCalledWith('/api/test-ai-model', { model }, {
       aiConversationId: 'canvas-login', timeout: 600_000,
     })
+  })
+
+  it('Canvas 登录遇到 Cloudflare 524 HTML 时不伪造空账号状态并标记网关超时', async () => {
+    vi.mocked(apiClient.post).mockResolvedValueOnce({
+      data: '<!DOCTYPE html><title>524 A Timeout Occurred</title>',
+      status: 524,
+    })
+    const result = await loginCanvasAccount({ model: { id: 'gemini_canvas_fixed', connection_type: 'browser' }, forceLogin: true })
+    expect(result.ok).toBe(false)
+    expect(result.gatewayError).toBe(true)
+    expect(result.canvasStatus).toBeUndefined()
+    expect(result.error).toContain('HTTP 524')
   })
 })
 

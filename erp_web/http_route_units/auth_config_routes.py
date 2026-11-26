@@ -49,12 +49,12 @@ def handle_ai_config_save(handler: JsonRequestHandler) -> None:
 
 
 def handle_canvas_account_login(handler: JsonRequestHandler) -> None:
-    _send(
-        handler,
-        auth_config_facade.canvas_account_login_payload(
-            validate_request_payload(handler.read_body(), endpoint=handler.path)
-        ),
-    )
+    body = validate_request_payload(handler.read_body(), endpoint=handler.path)
+    keepalive = getattr(handler, "send_json_with_keepalive", None)
+    if callable(keepalive):
+        keepalive(lambda: auth_config_facade.canvas_account_login_payload(body))
+        return
+    _send(handler, auth_config_facade.canvas_account_login_payload(body))
 
 
 def handle_canvas_account_logout(handler: JsonRequestHandler) -> None:
