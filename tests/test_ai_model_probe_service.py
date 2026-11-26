@@ -746,3 +746,42 @@ def test_list_remote_models_supports_anthropic_and_google_providers(monkeypatch)
         {"id": "gemini-2.5-flash", "name": "gemini-2.5-flash"},
         {"id": "gemini-2.5-pro", "name": "gemini-2.5-pro"},
     ]
+
+
+def test_chat_probe_omits_default_temperature_for_openai_gpt6_2_sol(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    captured_settings: list[dict[str, object]] = []
+
+    def fake_request_for_probe(**kwargs):
+        captured_settings.append(dict(kwargs["binding"].model_settings))
+        return ModelResponse(parts=[TextPart("Hello!")])
+
+    monkeypatch.setattr(
+        ai_model_probe_service.ai_direct_request_service,
+        "request_for_probe",
+        fake_request_for_probe,
+    )
+
+    gpt6_model = {
+        **_model(),
+        "provider_id": "openai",
+        "api_style": "openai_responses",
+        "model": "gpt-6.2-sol",
+        "thinking_enabled": True,
+    }
+    gpt6_result = _run(tmp_path, gpt6_model, "chat")
+    assert gpt6_result["results"]["chat"]["status"] == "supported"
+    assert "temperature" not in captured_settings[0]
+    assert captured_settings[0]["thinking"] is True
+
+    gpt4_model = {
+        **_model(),
+        "provider_id": "openai",
+        "api_style": "openai_compatible",
+        "model": "gpt-4o",
+    }
+    gpt4_result = _run(tmp_path, gpt4_model, "chat")
+    assert gpt4_result["results"]["chat"]["status"] == "supported"
+    assert captured_settings[1]["temperature"] == 0.0

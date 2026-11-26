@@ -586,13 +586,13 @@ Canvas 预览准备在配置地址的顶层 Google 页面识别中文共享应�
 - `erp_web/services/ai_generation_settings.py`：模型 Thinking 默认值、功能绑定统一生成配置的
   归一化、能力描述与 Pydantic `ModelSettings`/受控 `extra_body` 映射；功能绑定覆盖模型默认，
   模型默认覆盖高级请求 JSON。OpenAI、Anthropic、Google Gemini 与 DeepSeek 统一走 Pydantic AI 原生 `ModelSettings(thinking=...)`（Anthropic / Google 的 `budget_tokens` 分别映射为原生 `anthropic_thinking` / `google_thinking_config`），oMLX 通过显式 Catalog 项映射 `chat_template_kwargs.enable_thinking`，
-  能力探测和正式请求共享映射；业务层不得直接拼接 `reasoning_effort`、`enable_thinking` 等厂商字段。`pydantic_openai_*_profile_payload` 与 `pydantic_native_model_profile_payload` 将探测到的 `supports_tool_choice_required` / `observed_thinking` 合入原生模型 Profile，并暂保留 Pydantic AI 2.44.0 尚未收录的 `deepseek-flash` 思考档案补齐（上游支持后可移除）。
+  能力探测和正式请求共享映射；业务层不得直接拼接 `reasoning_effort`、`enable_thinking` 等厂商字段。`pydantic_openai_*_profile_payload` 与 `pydantic_native_model_profile_payload` 将探测到的 `supports_tool_choice_required` / `observed_thinking` 合入原生模型 Profile，并暂保留 Pydantic AI 2.44.0 尚未收录的 `deepseek-flash` 与 `gpt-6` 系列（如 `gpt-6.2-sol`）思考档案补齐（升级到原生支持的 SDK 版本后可移除）。
 - `erp_web/services/ai_model_factory.py`：Pydantic AI Model/Provider 的唯一创建入口；正式业务
   使用 `create_pydantic_model_binding` 并校验已启用能力，能力发现使用
   `create_pydantic_probe_binding`，只根据待测操作选择 Chat/Responses/Anthropic/Google/Images Model，不允许用
   尚未产生的 capability 声明阻断探测。两条入口共享私有构造器和同一套 API style、认证、
-  timeout、模型类型与密钥脱敏规则。显式 Thinking 设置若会被原生模型 profile 忽略，
-  Factory 在请求前报配置错误，防止界面选择关闭后仍发送默认请求。
+  timeout、模型类型与密钥脱敏规则。用户显式配置 Thinking 时，若新模型或中转别名不在 SDK 静态名称表中，
+  Factory 为该次请求声明 `supports_thinking=True` 以确保原生 `prepare_request` 实际下发协议参数，由能力探测与上游校验真实支持情况；对原生声明不可关闭 Thinking 的模型仍在配置边界拒绝关闭。
 - Responses 全部使用原生 `OpenAIResponsesModel`。曾按 PinCC/Grok 正文 `<think>` 标签
   重分类并拒绝未闭合输出的适配已删除：真实响应会把业务答复接在未闭合标签之后，
   重分类会丢失答复并将已完成任务误报为失败。不能从普通文本标签推导执行状态。

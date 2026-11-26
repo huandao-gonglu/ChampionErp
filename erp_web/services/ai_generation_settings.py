@@ -429,6 +429,13 @@ def _is_deepseek_flash_model(model_name: str) -> bool:
     return normalized == "deepseek-flash"
 
 
+def _is_openai_gpt6_model(model_name: str) -> bool:
+    normalized = str(model_name or "").strip().lower()
+    if normalized.startswith("openai/"):
+        normalized = normalized.split("/", 1)[1]
+    return normalized == "gpt-6" or normalized.startswith(("gpt-6-", "gpt-6."))
+
+
 def pydantic_openai_chat_profile_payload(
     provider_family: str,
     model_name: str = "",
@@ -452,6 +459,22 @@ def pydantic_openai_chat_profile_payload(
                 "supports_thinking": True,
                 "openai_reasoning_enabled_by_default": True,
                 "openai_supports_forced_tool_choice_with_thinking": False,
+            }
+        )
+    if family == PROVIDER_FAMILY_OPENAI and _is_openai_gpt6_model(model_name):
+        # Pydantic AI 2.44.0 的 openai_model_profile 仅收录了 gpt-6-astra，
+        # 尚未收录 gpt-6.2-sol 等后续 GPT-6 系列思考档案；升级到原生支持的 SDK 版本后可移除。
+        payload.update(
+            {
+                "supports_thinking": True,
+                "thinking_always_enabled": True,
+                "openai_supports_encrypted_reasoning_content": True,
+                "openai_supports_reasoning": True,
+                "openai_reasoning_enabled_by_default": True,
+                "openai_supports_reasoning_effort_none": False,
+                "openai_supports_minimal_reasoning_effort": False,
+                "openai_supports_phase": True,
+                "openai_supports_prompt_cache_breakpoints": True,
             }
         )
     payload.update(
@@ -488,6 +511,24 @@ def pydantic_openai_responses_profile_payload(
                 "openai_supports_reasoning": True,
                 "openai_reasoning_enabled_by_default": True,
                 "openai_supports_forced_tool_choice_with_thinking": False,
+            }
+        )
+    if family == PROVIDER_FAMILY_OPENAI and _is_openai_gpt6_model(model_name):
+        # 与 Chat 一致，补齐 Pydantic AI 2.44.0 尚未收录的 GPT-6 系列思考档案；
+        # 升级到原生支持 gpt-6.2-* 的 SDK 版本后可移除。
+        payload.update(
+            {
+                "supports_thinking": True,
+                "thinking_always_enabled": True,
+                "openai_supports_encrypted_reasoning_content": True,
+                "openai_supports_reasoning": True,
+                "openai_reasoning_enabled_by_default": True,
+                "openai_supports_reasoning_effort_none": False,
+                "openai_responses_supports_reasoning_mode": True,
+                "openai_responses_supports_reasoning_context": True,
+                "openai_supports_minimal_reasoning_effort": False,
+                "openai_supports_phase": True,
+                "openai_supports_prompt_cache_breakpoints": True,
             }
         )
     payload.update(

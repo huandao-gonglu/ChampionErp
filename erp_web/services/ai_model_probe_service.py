@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
 import re
 from io import BytesIO
 from pathlib import Path
@@ -165,18 +166,41 @@ def _is_http_400(exc: Exception) -> bool:
     return isinstance(exc, (AIHTTPError, ModelHTTPError)) and int(exc.status_code) == 400
 
 
+def _profile_reasoning_active(binding: PydanticModelBinding) -> bool:
+    profile = getattr(binding.model, "profile", None) or {}
+    if profile.get("thinking_always_enabled", False):
+        return True
+    if not profile.get("supports_thinking", False):
+        return False
+    thinking = binding.model_settings.get("thinking")
+    if thinking is not None:
+        return thinking is not False
+    return bool(profile.get("openai_reasoning_enabled_by_default", False))
+
+
+def _drop_unsupported_probe_temperature(
+    binding: PydanticModelBinding,
+) -> PydanticModelBinding:
+    """OpenAI 推理模型在思考开启时拒绝 temperature 参数；探测不强行附带默认 temperature=0。"""
+
+    if (
+        binding.provider_family == "openai"
+        and "temperature" in binding.model_settings
+        and _profile_reasoning_active(binding)
+    ):
+        filtered_settings = {
+            k: v for k, v in binding.model_settings.items() if k != "temperature"
+        }
+        return replace(binding, model_settings=filtered_settings)
+    return binding
+
+
 def _profile_attempts_forced_tool_choice(binding: PydanticModelBinding) -> bool:
     profile = getattr(binding.model, "profile", None) or {}
     if not profile.get("openai_supports_tool_choice_required", True):
         return False
     if not profile.get("openai_supports_forced_tool_choice_with_thinking", True):
-        thinking = binding.model_settings.get("thinking")
-        reasoning_on = (
-            thinking is not False
-            if thinking is not None
-            else bool(profile.get("openai_reasoning_enabled_by_default", False))
-        )
-        if reasoning_on:
+        if _profile_reasoning_active(binding):
             return False
     return True
 
@@ -210,6 +234,7 @@ def _probe_capability(
         if "未接入" in str(exc) or "不支持 API 协议" in str(exc):
             raise ai_gateway_probe.CapabilityProbeUnavailable(str(exc)) from None
         raise ai_gateway_probe.CapabilityProbeInconclusive(str(exc)) from None
+    binding = _drop_unsupported_probe_temperature(binding)
     if capability == ai_model_config.CAP_IMAGE_UNDERSTANDING:
         return _probe_image_understanding(context, binding)
     if capability == ai_model_config.CAP_CHAT:

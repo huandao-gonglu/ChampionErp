@@ -710,6 +710,132 @@ def test_custom_openai_gateway_reuses_pydantic_family_profiles_safely() -> None:
     assert WebSearchTool not in grok4.model.profile.get("supported_native_tools", frozenset())
 
 
+def test_factory_supports_openai_gpt6_2_sol_thinking_and_rejects_disable() -> None:
+    request_parameters = _forced_tool_request_parameters()
+    for api_style in ("openai_responses", "openai_compatible"):
+        on_binding = create_pydantic_model_binding(
+            model_config(
+                provider="OpenAI",
+                provider_id="openai",
+                api_style=api_style,
+                model="gpt-6.2-sol",
+                thinking_enabled=True,
+            )
+        )
+        assert on_binding.model.profile["supports_thinking"] is True
+        assert on_binding.model.profile["thinking_always_enabled"] is True
+        assert on_binding.model_settings["thinking"] is True
+
+        probe_binding = create_pydantic_probe_binding(
+            model_config(
+                provider="OpenAI",
+                provider_id="openai",
+                api_style=api_style,
+                model="gpt-6.2-sol",
+                thinking_enabled=True,
+                capabilities=[],
+            ),
+            probe_capability="chat",
+        )
+        assert probe_binding.model.profile["supports_thinking"] is True
+
+        minimal_binding = create_pydantic_model_binding(
+            model_config(
+                provider="OpenAI",
+                provider_id="openai",
+                api_style=api_style,
+                model="gpt-6.2-sol",
+            ),
+            generation_settings={"reasoning": {"mode": "enabled", "effort": "minimal"}},
+        )
+        prepared_settings, prepared_params = minimal_binding.model.prepare_request(
+            minimal_binding.model_settings, request_parameters
+        )
+        translated = minimal_binding.model._translate_thinking(
+            prepared_settings or {}, prepared_params
+        )
+        if api_style == "openai_responses":
+            assert translated["effort"] == "low"
+        else:
+            assert translated == "low"
+
+        with pytest.raises(AiModelFactoryError, match="不支持关闭 Thinking"):
+            create_pydantic_model_binding(
+                model_config(
+                    provider="OpenAI",
+                    provider_id="openai",
+                    api_style=api_style,
+                    model="gpt-6.2-sol",
+                    thinking_enabled=False,
+                )
+            )
+
+
+def test_factory_passes_explicit_thinking_through_for_unlisted_future_models() -> None:
+    request_parameters = _forced_tool_request_parameters()
+
+    # 未收录在 SDK 静态表的新模型（OpenAI / Anthropic / Google）显式开启或关闭 Thinking 时，
+    # 不在本地被静态表拦截，而是通过原生 prepare_request 实际下发协议参数。
+    gpt7_responses = create_pydantic_model_binding(
+        model_config(
+            provider_id="openai",
+            api_style="openai_responses",
+            model="gpt-7-future",
+            thinking_enabled=True,
+        )
+    )
+    settings, params = gpt7_responses.model.prepare_request(
+        gpt7_responses.model_settings, request_parameters
+    )
+    assert gpt7_responses.model._translate_thinking(settings or {}, params) == {
+        "effort": "medium"
+    }
+
+    gpt7_chat_off = create_pydantic_model_binding(
+        model_config(
+            provider_id="openai",
+            api_style="openai_compatible",
+            model="gpt-7-future",
+            thinking_enabled=False,
+        )
+    )
+    off_settings, off_params = gpt7_chat_off.model.prepare_request(
+        gpt7_chat_off.model_settings, request_parameters
+    )
+    assert gpt7_chat_off.model._translate_thinking(off_settings or {}, off_params) == "none"
+
+    text_request_parameters = ModelRequestParameters()
+    claude5 = create_pydantic_model_binding(
+        model_config(
+            provider_id="anthropic",
+            api_style="anthropic_messages",
+            base_url="https://api.anthropic.com",
+            model="claude-5-future",
+            thinking_enabled=True,
+        )
+    )
+    c_settings, c_params = claude5.model.prepare_request(
+        claude5.model_settings, text_request_parameters
+    )
+    assert claude5.model._translate_thinking(c_settings or {}, c_params)["type"] == "enabled"
+
+    gemini4 = create_pydantic_model_binding(
+        model_config(
+            provider_id="google",
+            api_style="google_gemini",
+            base_url="https://generativelanguage.googleapis.com",
+            model="gemini-4-future",
+            thinking_enabled=True,
+        )
+    )
+    g_settings, g_params = gemini4.model.prepare_request(
+        gemini4.model_settings, text_request_parameters
+    )
+    assert gemini4.model._translate_thinking(g_settings or {}, g_params) == {
+        "include_thoughts": True
+    }
+
+
 def test_image_plan_selects_a_vision_model_and_preserves_an_explicit_binding(tmp_path):
     text = model_config()
     vision = model_config(id="vision", capabilities=["chat", "json", "image_understanding"])

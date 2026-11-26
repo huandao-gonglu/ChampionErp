@@ -7,8 +7,11 @@ from erp_web.runtime_units.category_store import fetch_category_record, fetch_ca
 from erp_web.schemas.category import (
     category_attribute_schema,
     category_attribute_text_format_error,
+    category_attribute_uses_numeric_unit,
+    category_attribute_uses_unit,
     category_attribute_value_is_valid,
     category_attribute_value_mode,
+    normalize_category_attribute_unit,
 )
 from erp_web.runtime_units.category_attribute_access import attribute_write_scope
 from erp_web.services.capability_errors import BusinessCapabilityError
@@ -42,6 +45,57 @@ def unverified_cjk_attribute_text(value: Any) -> str:
         return ""
     text = str(value).strip()
     return text if _CJK_RE.search(text) else ""
+
+
+def _attribute_unit_names(definition: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    for item in definition.get("unit_options") or []:
+        text = (
+            str(item.get("name") or item.get("value") or "").strip()
+            if isinstance(item, dict)
+            else str(item or "").strip()
+        )
+        if text and text not in names:
+            names.append(text)
+    if not names:
+        fallback = str(definition.get("default_unit") or definition.get("unit") or "").strip()
+        if fallback:
+            names.append(fallback)
+    return names
+
+
+def _attribute_value_invalid_message(attr_id: str, definition: dict[str, Any], value: Any) -> str:
+    name = str(definition.get("name") or "").strip()
+    label = f"属性 {name}（{attr_id}）" if name else f"属性 {attr_id}"
+    uses_unit = category_attribute_uses_unit(definition)
+    value_mode = category_attribute_value_mode(definition)
+    unit_names = _attribute_unit_names(definition)
+    sample_unit = unit_names[0] if unit_names else "单位"
+    units_hint = (
+        f"（可选单位：{', '.join(unit_names[:8])}{' 等' if len(unit_names) > 8 else ''}）"
+        if unit_names
+        else ""
+    )
+    if value_mode == "strict_enum":
+        if not isinstance(value, dict) or not isinstance(value.get("values"), list):
+            extra_unit = f' 并附带 "unit": "{sample_unit}"' if uses_unit else ""
+            return (
+                f'{label} 是严格枚举属性，请传 {{"values": [{{"dictionary_value_id": "...", "value": "..."}}]}}'
+                f"{extra_unit}，不要直接传字符串。"
+            )
+        if uses_unit and normalize_category_attribute_unit(definition, value.get("unit")) is None:
+            return f'{label} 缺少或使用了无效单位，请在对象中提供 "unit": "{sample_unit}"{units_hint}。'
+    elif uses_unit:
+        if not isinstance(value, dict) or (
+            "values" not in value and normalize_category_attribute_unit(definition, value.get("unit")) is None
+        ) or ("values" in value and normalize_category_attribute_unit(definition, value.get("unit")) is None):
+            if category_attribute_uses_numeric_unit(definition):
+                return (
+                    f'{label} 是带单位的数值属性，请传对象格式 {{"value": "数值", "unit": "{sample_unit}"}}'
+                    f"{units_hint}，不要传纯数字或把单位拼在字符串里。"
+                )
+            return f'{label} 是带单位属性，请传对象格式 {{"value": "值", "unit": "{sample_unit}"}}{units_hint}。'
+    return f"属性 {attr_id} 不符合平台值类型、数量或单位要求，请查询定义后修正。"
 
 
 class AttributeUpdateValidation:
@@ -80,7 +134,10 @@ class AttributeUpdateValidation:
             if format_error:
                 raise BusinessCapabilityError("ATTRIBUTE_TEXT_FORMAT_INVALID", f"属性 {attr_id}：{format_error}")
             if not category_attribute_value_is_valid(definition, value):
-                raise BusinessCapabilityError("ATTRIBUTE_VALUE_INVALID", f"属性 {attr_id} 不符合平台值类型、数量或单位要求，请查询定义后修正。")
+                raise BusinessCapabilityError(
+                    "ATTRIBUTE_VALUE_INVALID",
+                    _attribute_value_invalid_message(attr_id, definition, value),
+                )
             if str(platform or "").strip().lower() in FOREIGN_MARKET_PLATFORMS:
                 cjk_text = unverified_cjk_attribute_text(value)
                 if cjk_text:

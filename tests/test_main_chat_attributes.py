@@ -114,6 +114,28 @@ def test_invalid_field_or_candidate_never_partially_writes(subject, updates, cod
     assert app.products.draft_record(draft_id) == before
 
 
+def test_unit_and_enum_attribute_errors_include_expected_object_shape():
+    unit_def = {
+        "id": "34440050",
+        "name": "Количество насадок",
+        "value_type": "numeric",
+        "unit_options": [{"id": 6145205, "name": "шт"}, {"id": 6145206, "name": "набор"}],
+    }
+    msg_scalar = validation._attribute_value_invalid_message("34440050", unit_def, "14")
+    assert '{"value": "数值", "unit": "шт"}' in msg_scalar
+    assert "шт, набор" in msg_scalar
+
+    enum_def = {
+        "id": "85",
+        "name": "Бренд",
+        "value_mode": "strict_enum",
+        "dictionary_id": 1,
+    }
+    msg_enum = validation._attribute_value_invalid_message("85", enum_def, "Нет бренда")
+    assert '"values"' in msg_enum
+    assert "dictionary_value_id" in msg_enum
+
+
 def test_sku_write_rejects_common_fields_and_foreign_sku(subject):
     app, draft_id, _ = subject
     for sku_id, updates, code in [("s0", {"7199": "Резина"}, "ATTRIBUTE_OUTSIDE_SCOPE"),

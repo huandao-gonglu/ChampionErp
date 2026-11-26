@@ -100,7 +100,7 @@ const PROVIDER_ID_DEEPSEEK = 'deepseek'
 const PROVIDER_ID_ALIBABA = 'alibaba'
 const PROVIDER_ID_OMLX = 'omlx'
 const fallbackProviders = [
-  { id: PROVIDER_ID_OPENAI, label: 'OpenAI（官方 / 兼容协议）', description: '连接 OpenAI 官方，或 DeepSeek、New API、OpenRouter、硅基流动、vLLM 等任意 OpenAI 兼容服务；API 协议可选 Chat Completions 或 Responses。', provider_family: 'openai', default_base_url: 'https://api.openai.com/v1', default_api_style: 'openai_responses', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models', base_url_editable: true },
+  { id: PROVIDER_ID_OPENAI, label: 'OpenAI（官方 / 兼容协议）', description: '连接 OpenAI 官方，或 DeepSeek、New API、OpenRouter、硅基流动、vLLM 等任意 OpenAI 兼容服务；系统会自动匹配最合适的 API 协议。', provider_family: 'openai', default_base_url: 'https://api.openai.com/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models', base_url_editable: true },
   { id: PROVIDER_ID_ANTHROPIC, label: 'Anthropic（Claude）', description: '使用 Pydantic AI 原生 Anthropic 协议连接 Claude 官方或 Anthropic 兼容代理。', provider_family: 'anthropic', default_base_url: 'https://api.anthropic.com', default_api_style: 'anthropic_messages', supported_api_styles: ['anthropic_messages'], model_discovery: 'anthropic_models', base_url_editable: true },
   { id: PROVIDER_ID_GOOGLE, label: 'Google Gemini', description: '使用 Pydantic AI 原生 Google Gemini 协议连接 AI Studio 或自定义代理。', provider_family: 'google', default_base_url: 'https://generativelanguage.googleapis.com', default_api_style: 'google_gemini', supported_api_styles: ['google_gemini'], model_discovery: 'google_models', base_url_editable: true },
   { id: PROVIDER_ID_ALIBABA, label: '阿里云百炼 / Qwen', description: '使用 Pydantic AI 的 AlibabaProvider，支持百炼原生 Thinking 与联网参数。', provider_family: 'alibaba', default_base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models', base_url_editable: true },
@@ -227,9 +227,33 @@ function providerLabel(providerId: string): string {
 }
 
 function providerDefaultApiStyle(providerId: string): string {
-  if (providerId === PROVIDER_ID_OPENAI) return 'openai_responses'
   if (providerId === PROVIDER_ID_ANTHROPIC) return 'anthropic_messages'
   if (providerId === PROVIDER_ID_GOOGLE) return 'google_gemini'
+  return 'openai_compatible'
+}
+
+function isOfficialOpenAiBaseUrl(baseUrl: string): boolean {
+  const text = firstText(baseUrl)
+  if (!text) return false
+  try {
+    return new URL(text).hostname.toLowerCase() === 'api.openai.com'
+  } catch {
+    return false
+  }
+}
+
+function inferredApiStyleForModel(providerId: string, baseUrl: string, modelName: string): string {
+  if (providerId === PROVIDER_ID_ANTHROPIC) return 'anthropic_messages'
+  if (providerId === PROVIDER_ID_GOOGLE) return 'google_gemini'
+  if (providerId === PROVIDER_ID_OPENAI) {
+    const normalizedModel = firstText(modelName).toLowerCase()
+    if (/(?:^|[/-])codex\b|^gpt-5[\w.-]*-pro\b|^o3-pro\b/.test(normalizedModel)) {
+      return 'openai_responses'
+    }
+    if (isOfficialOpenAiBaseUrl(baseUrl) && /^(?:gpt-5|o3|o4)\b/.test(normalizedModel)) {
+      return 'openai_responses'
+    }
+  }
   return 'openai_compatible'
 }
 
@@ -391,7 +415,7 @@ function defaultAiModelRow(index: number): UnknownRecord {
     connection_type: API_CONNECTION_TYPE,
     provider: 'OpenAI',
     provider_id: PROVIDER_ID_OPENAI,
-    api_style: 'openai_responses',
+    api_style: 'openai_compatible',
     base_url: 'https://api.openai.com/v1',
     api_key: '',
     model: '',
@@ -1046,7 +1070,9 @@ function setSelectedModelField(field: string, value: string | boolean) {
   const previousProviderId = normalizeProviderId(selectedAiModel.value.provider_id)
   const previousProviderSpec = providerOptions.value.find((item) => item.id === previousProviderId)
   const previousBaseUrl = firstText(selectedAiModel.value.base_url)
+  const previousModelName = firstText(selectedAiModel.value.model)
   const previousApiStyle = firstText(selectedAiModel.value.api_style, 'openai_compatible')
+  const previousInferredApiStyle = inferredApiStyleForModel(previousProviderId, previousBaseUrl, previousModelName)
   const previousCliTool = String(selectedAiModel.value.cli_tool || 'codex')
   const previousCliDefaultCommand = cliToolDefaultCommand(previousCliTool)
   selectedAiModel.value[field] = nextValue
@@ -1112,6 +1138,7 @@ function setSelectedModelField(field: string, value: string | boolean) {
       selectedAiModel.value.provider = nextProvider.label
       if (
         previousApiStyle === previousProviderSpec?.defaultApiStyle
+        || previousApiStyle === previousInferredApiStyle
         || !nextProvider.supportedApiStyles.includes(firstText(selectedAiModel.value.api_style))
       ) {
         selectedAiModel.value.api_style = nextProvider.defaultApiStyle
@@ -1119,6 +1146,16 @@ function setSelectedModelField(field: string, value: string | boolean) {
       if (!previousBaseUrl || previousBaseUrl === previousProviderSpec?.defaultBaseUrl) {
         selectedAiModel.value.base_url = nextProvider.defaultBaseUrl
       }
+    }
+  }
+  if ((field === 'model' || field === 'base_url') && normalizeConnectionType(selectedAiModel.value.connection_type) === API_CONNECTION_TYPE) {
+    const currentProviderId = normalizeProviderId(selectedAiModel.value.provider_id)
+    if (currentProviderId === PROVIDER_ID_OPENAI && previousApiStyle === previousInferredApiStyle) {
+      selectedAiModel.value.api_style = inferredApiStyleForModel(
+        currentProviderId,
+        firstText(selectedAiModel.value.base_url),
+        firstText(selectedAiModel.value.model),
+      )
     }
   }
   if ((field === 'provider_id' || field === 'connection_type') && !selectedModelThinkingSupported.value) {
@@ -1969,12 +2006,6 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
                     <option v-for="option in providerOptions" :key="option.id" :value="option.id">{{ option.label }}</option>
                   </select>
                 </label>
-                <label v-if="selectedAiModelIsApi" class="block">
-                  <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">API 协议</span>
-                  <select data-testid="ai-api-style" class="input" :value="modelField('api_style', providerDefaultApiStyle(modelField('provider_id')))" :disabled="selectedSystemModel || aiControlsLocked" @change="setSelectedModelField('api_style', eventText($event))">
-                    <option v-for="apiStyle in selectedProviderApiStyleOptions" :key="apiStyle" :value="apiStyle">{{ apiStyleLabel(apiStyle) }}</option>
-                  </select>
-                </label>
                 <label v-else-if="selectedAiModelIsCli" class="block">
                   <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">CLI 工具</span>
                   <select class="input" :value="modelField('cli_tool', 'codex')" :disabled="aiControlsLocked || (desktopShell && !localOperations)" @change="setSelectedModelField('cli_tool', eventText($event))">
@@ -2065,9 +2096,16 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
                   <p v-if="modelField('provider_id') === PROVIDER_ID_OPENAI" class="mt-1 text-xs text-accent-500 dark:text-accent-400">OpenAI / 兼容协议的推理参数取决于模型支持情况；连接阿里云百炼或 oMLX 时请选择对应服务商。</p>
                   <p v-if="modelField('provider_id') === PROVIDER_ID_OMLX && modelField('api_style') === 'openai_responses'" class="mt-1 text-xs text-amber-700 dark:text-amber-300">部分 oMLX 版本的 Responses 流会在关闭思考后仍把正文标为思考；建议使用 Chat Completions。</p>
                 </div>
-                <details class="md:col-span-2 rounded-lg border border-dashed border-accent-200 bg-white px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-900">
+                <details data-testid="ai-model-advanced" class="md:col-span-2 rounded-lg border border-dashed border-accent-200 bg-white px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-900">
                   <summary class="cursor-pointer font-semibold text-accent-700 dark:text-accent-200">高级配置</summary>
                   <div v-if="selectedAiModelIsApi" class="mt-3 grid gap-3 md:grid-cols-2">
+                    <label class="block md:col-span-2">
+                      <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">API 协议（自动匹配，一般无需修改）</span>
+                      <select data-testid="ai-api-style" class="input" :value="modelField('api_style', providerDefaultApiStyle(modelField('provider_id')))" :disabled="selectedSystemModel || aiControlsLocked" @change="setSelectedModelField('api_style', eventText($event))">
+                        <option v-for="apiStyle in selectedProviderApiStyleOptions" :key="apiStyle" :value="apiStyle">{{ apiStyleLabel(apiStyle) }}</option>
+                      </select>
+                      <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">默认自动匹配：DeepSeek、Qwen 等第三方模型与中转站走 Chat Completions；OpenAI 官方 GPT-5 / o3 / Codex 走 Responses。</span>
+                    </label>
                     <label class="block">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Base URL 环境变量</span>
                       <input class="input" :value="modelField('base_url_env')" :disabled="selectedSystemModel || aiControlsLocked" placeholder="可选" @input="setSelectedModelField('base_url_env', eventText($event))" />

@@ -477,7 +477,7 @@ describe('AuthSettingsPanel AI 功能绑定高级设置', () => {
       'text.translate': { path: 'config/prompts/text_translate.json' },
     },
     providers: [
-      { id: 'openai', label: 'OpenAI（官方 / 兼容协议）', provider_family: 'openai', default_base_url: 'https://api.openai.com/v1', default_api_style: 'openai_responses', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models' },
+      { id: 'openai', label: 'OpenAI（官方 / 兼容协议）', provider_family: 'openai', default_base_url: 'https://api.openai.com/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models' },
       { id: 'anthropic', label: 'Anthropic（Claude）', provider_family: 'anthropic', default_base_url: 'https://api.anthropic.com', default_api_style: 'anthropic_messages', supported_api_styles: ['anthropic_messages'], model_discovery: 'anthropic_models' },
       { id: 'google', label: 'Google Gemini', provider_family: 'google', default_base_url: 'https://generativelanguage.googleapis.com', default_api_style: 'google_gemini', supported_api_styles: ['google_gemini'], model_discovery: 'google_models' },
       { id: 'alibaba', label: '阿里云百炼 / Qwen', provider_family: 'alibaba', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models' },
@@ -655,6 +655,34 @@ describe('AuthSettingsPanel AI 功能绑定高级设置', () => {
     ])
     expect((wrapper.get('[data-testid="ai-api-style"]').element as HTMLSelectElement).value).toBe('google_gemini')
     expect(wrapper.get('[data-testid="ai-model-thinking"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('API 协议收进折叠高级配置，OpenAI 兼容默认走 Chat Completions 并按型号自动切 Responses', async () => {
+    const wrapper = mountPanel(qwenConfig)
+    const advanced = wrapper.get<HTMLDetailsElement>('[data-testid="ai-model-advanced"]')
+    expect(advanced.element.open).toBe(false)
+    expect(advanced.find('[data-testid="ai-api-style"]').exists()).toBe(true)
+
+    const addButton = wrapper.findAll('button').find((button) => button.text().includes('添加模型'))
+    expect(addButton).toBeDefined()
+    await addButton!.trigger('click')
+    const apiStyleSelect = () => wrapper.get('[data-testid="ai-api-style"]').element as HTMLSelectElement
+    expect(apiStyleSelect().value).toBe('openai_compatible')
+
+    const modelInput = wrapper.get('input[placeholder*="输入模型 ID"]')
+    await modelInput.setValue('gpt-5')
+    await modelInput.trigger('input')
+    expect(apiStyleSelect().value).toBe('openai_responses')
+
+    const baseUrlInput = wrapper.get('input[placeholder="https://api.example.com/v1"]')
+    await baseUrlInput.setValue('https://v2.pincc.ai/v1')
+    await modelInput.setValue('deepseek-flash')
+    await modelInput.trigger('input')
+    expect(apiStyleSelect().value).toBe('openai_compatible')
+
+    await modelInput.setValue('gpt-5.2-codex')
+    await modelInput.trigger('input')
+    expect(apiStyleSelect().value).toBe('openai_responses')
   })
 
   it('已保存的 DeepSeek 旧配置继续展示并开放 Thinking 勾选框与推理参数', async () => {

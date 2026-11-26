@@ -31,8 +31,9 @@
 | 阿里云百炼 / Qwen | Responses | `extra_body.reasoning.effort`，关闭为 `none`，开启未指定强度时为 `medium` |
 
 oMLX 当前只提供开启 / 关闭控制，不提供推理强度或预算。DeepSeek 尚未接入此统一开关。
-具体模型能否切换思考仍由服务商决定。使用原生 `ModelSettings.thinking` 时，Factory 依据
-原生 Model profile 拒绝无有效映射或无法关闭思考的设置，避免 Pydantic AI 静默忽略该开关。
+具体模型能否切换思考仍由服务商决定。使用原生 `ModelSettings.thinking` 时，若新模型或中转别名尚未收录在 SDK 静态名称表中，
+Factory 在用户显式配置 Thinking 时补齐 `supports_thinking=True`，让原生协议实际下发参数并由探测/上游校验，不再因静态名单拦截新模型；
+对已知不可关闭思考的模型仍在配置边界拒绝关闭。
 
 本地 oMLX 模型应显式选择“oMLX（本地模型）”服务商，保留实际 Base URL，选择模型后再设置开关并重新探测。
 项目不根据 URL 或模型名猜测服务商。

@@ -94,7 +94,7 @@ _PROVIDER_SPECS = (
         ),
         provider_family=PROVIDER_FAMILY_OPENAI,
         default_base_url="https://api.openai.com/v1",
-        default_api_style=API_STYLE_OPENAI_RESPONSES,
+        default_api_style=API_STYLE_OPENAI_COMPATIBLE,
         supported_api_styles=(
             API_STYLE_OPENAI_COMPATIBLE,
             API_STYLE_OPENAI_RESPONSES,

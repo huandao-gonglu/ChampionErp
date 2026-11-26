@@ -234,6 +234,28 @@ def test_anthropic_and_google_map_unified_thinking_and_budget_tokens() -> None:
             )
 
 
+def test_profile_payload_fills_openai_gpt6_series_gap() -> None:
+    for model_name in ("gpt-6.2-sol", "openai/gpt-6.2-sol", "gpt-6.2-astra"):
+        chat_payload = ai_generation_settings.pydantic_openai_chat_profile_payload(
+            "openai", model_name
+        )
+        assert chat_payload["supports_thinking"] is True
+        assert chat_payload["thinking_always_enabled"] is True
+        assert chat_payload["openai_supports_reasoning"] is True
+        assert chat_payload["openai_supports_reasoning_effort_none"] is False
+        assert chat_payload["openai_supports_minimal_reasoning_effort"] is False
+
+        responses_payload = (
+            ai_generation_settings.pydantic_openai_responses_profile_payload(
+                "openai", model_name
+            )
+        )
+        assert responses_payload["supports_thinking"] is True
+        assert responses_payload["thinking_always_enabled"] is True
+        assert responses_payload["openai_responses_supports_reasoning_mode"] is True
+        assert responses_payload["openai_responses_supports_reasoning_context"] is True
+
+
 def test_non_api_generation_settings_are_explicitly_unsupported() -> None:
     capabilities = ai_generation_settings.generation_capabilities(
         {"connection_type": "cli", "provider_id": "openai"}

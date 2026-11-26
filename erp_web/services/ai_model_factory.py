@@ -179,6 +179,7 @@ def _build_pydantic_model_binding(
     if effective_timeout is not None:
         settings_payload["timeout"] = effective_timeout
     model_settings = ModelSettings(**settings_payload)
+    explicit_thinking = "thinking" in model_settings
 
     try:
         provider = ai_provider_catalog.create_pydantic_provider(
@@ -217,6 +218,8 @@ def _build_pydantic_model_binding(
                     model.get("capability_profiles")
                 )
             )
+            if explicit_thinking:
+                native_profile_payload.setdefault("supports_thinking", True)
             native_profile = (
                 ModelProfile(**native_profile_payload)
                 if native_profile_payload
@@ -237,6 +240,8 @@ def _build_pydantic_model_binding(
                     model.get("capability_profiles")
                 )
             )
+            if explicit_thinking:
+                native_profile_payload.setdefault("supports_thinking", True)
             native_profile = (
                 ModelProfile(**native_profile_payload)
                 if native_profile_payload
@@ -264,6 +269,12 @@ def _build_pydantic_model_binding(
                     capability_profiles=model.get("capability_profiles"),
                 )
             )
+            if explicit_thinking:
+                # 新模型或中转别名可能不在 SDK 静态名称表中；用户显式配置 Thinking 时，
+                # 声明 supports_thinking 以确保原生 prepare_request 实际下发协议参数，
+                # 由能力探测与上游 API 校验真实支持情况，而不在本地按静态表拦截。
+                profile_payload.setdefault("supports_thinking", True)
+                profile_payload.setdefault("openai_supports_reasoning", True)
             if (provider_id == ai_provider_catalog.PROVIDER_ID_OPENAI
                     and base_url.rstrip("/") != provider_spec.default_base_url):
                 # 自定义 Responses 网关可能把 additional_tools 的命名空间拼入函数名。
@@ -293,6 +304,8 @@ def _build_pydantic_model_binding(
                     capability_profiles=model.get("capability_profiles"),
                 )
             )
+            if explicit_thinking:
+                profile_payload.setdefault("supports_thinking", True)
             override_profile = OpenAIModelProfile(**profile_payload) if profile_payload else None
             profile = (
                 merge_profile(upstream_profile, override_profile)
@@ -304,15 +317,8 @@ def _build_pydantic_model_binding(
                 provider=provider,
                 profile=profile,
             )
-        if "thinking" in model_settings:
-            # 原生 prepare_request 会忽略不适用的开关；在配置边界明确报错，
-            # 避免页面选择“关闭”后仍按服务商默认执行。
+        if explicit_thinking:
             always_thinking = pydantic_model.profile.get("thinking_always_enabled", False)
-            if not pydantic_model.profile.get("supports_thinking", False) and not always_thinking:
-                raise AiModelFactoryError(
-                    f"服务商 {provider_spec.label} 未为模型 {model_name} 提供可用的 Thinking 参数映射。"
-                    "请确认服务商选择；连接 oMLX 时请选择“oMLX（本地模型）”。"
-                )
             if model_settings["thinking"] is False and always_thinking:
                 raise AiModelFactoryError(f"模型 {model_name} 的原生能力声明不支持关闭 Thinking。")
     except AiModelFactoryError:
