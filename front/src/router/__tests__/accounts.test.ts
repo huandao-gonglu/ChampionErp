@@ -69,4 +69,28 @@ describe('账号路由及传输边界', () => {
     for (const path of ['https://elsewhere.test', '//elsewhere.test', '/\\elsewhere.test', '/login', '/register?x=1']) expect(accountDestination(path)).toBe('/')
     expect(accountDestination('/?tab=drafts')).toBe('/?tab=drafts')
   })
+  it('启动会话检查未就绪时，登录前先同步会话以补齐 CSRF', async () => {
+    const accountsApi = await import('@/api/accounts')
+    const sessionSpy = vi.spyOn(accountsApi, 'fetchAccountSession').mockResolvedValue({
+      ok: true,
+      user: { id: 'old', email: 'old@example.com', display_name: '旧', role: 'user', status: 'enabled', created_at: 0, updated_at: 0 },
+      csrf_token: 'csrf-from-session',
+      initialized: true,
+    })
+    const loginSpy = vi.spyOn(accountsApi, 'loginAccount').mockResolvedValue({
+      ok: true,
+      user: { id: 'new', email: 'new@example.com', display_name: '新', role: 'user', status: 'enabled', created_at: 0, updated_at: 0 },
+      csrf_token: 'csrf-new',
+    })
+    const replaceSpy = vi.fn()
+    vi.stubGlobal('location', { ...window.location, replace: replaceSpy })
+    const store = useAccountStore()
+    store.ready = false
+    await store.login('new@example.com', 'password123456789', '/?tab=drafts')
+    expect(sessionSpy).toHaveBeenCalledTimes(1)
+    expect(loginSpy).toHaveBeenCalledTimes(1)
+    expect(replaceSpy).toHaveBeenCalledWith('/?tab=drafts')
+    sessionSpy.mockRestore()
+    loginSpy.mockRestore()
+  })
 })

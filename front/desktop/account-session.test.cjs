@@ -92,3 +92,37 @@ test('旧请求迟到的 401 不清除新登录会话', async t => {
   assert.equal((await response).status, 401)
   assert.equal(session.cookie, 'champion_session=new')
 })
+
+test('主进程已有会话但渲染页未持 CSRF 时，登录代理补齐会话 CSRF 且禁用 keep-alive 复用', async t => {
+  const received = []
+  const backend = http.createServer((req, res) => {
+    received.push({ url: req.url, headers: req.headers })
+    res.setHeader('Content-Type', 'application/json')
+    if (req.url === '/api/account/login') {
+      if (req.headers.cookie === 'champion_session=old' && req.headers['x-csrf-token'] !== 'old-csrf') {
+        res.statusCode = 403
+        res.end(JSON.stringify({ ok: false, error: '请求校验失败，请刷新页面后重试。', error_code: 'CSRF_INVALID' }))
+        return
+      }
+      res.setHeader('Set-Cookie', 'champion_session=fresh; HttpOnly; Secure; Path=/; SameSite=Lax')
+      res.end(JSON.stringify({ ok: true, user: { id: 'u1', email: 'u1@example.test' }, csrf_token: 'fresh-csrf' }))
+      return
+    }
+    res.end(JSON.stringify({ ok: true }))
+  })
+  const base = await listen(backend)
+  const session = new AccountSession()
+  session.cookie = 'champion_session=old'
+  session.csrf = 'old-csrf'
+  session.email = 'u1@example.test'
+  const proxy = http.createServer((req, res) => proxyBackendRequest(req, res, base, { session }))
+  const local = await listen(proxy)
+  t.after(() => { proxy.closeAllConnections(); proxy.close(); backend.closeAllConnections(); backend.close() })
+  const response = await fetch(local + '/api/account/login', { method: 'POST', body: '{}' })
+  assert.equal(response.status, 200)
+  assert.equal(received[0].headers.cookie, 'champion_session=old')
+  assert.equal(received[0].headers['x-csrf-token'], 'old-csrf')
+  assert.equal(received[0].headers.connection, 'close')
+  assert.equal(session.cookie, 'champion_session=fresh')
+  assert.equal(session.csrf, 'fresh-csrf')
+})

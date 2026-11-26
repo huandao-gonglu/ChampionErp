@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAccountStore } from '@/stores/account'
 import RegistrationCode from '@/components/account/RegistrationCode.vue'
 import { registerAccount } from '@/api/accounts'
 import { APP_LOGO, APP_NAME } from '@/constants/branding'
+import { accountDestination } from '@/utils/accountTransport'
 
 const route = useRoute()
+const router = useRouter()
 const account = useAccountStore()
 const registering = computed(() => route.name === 'AccountRegister')
 const email = ref('')
@@ -22,6 +24,12 @@ const busy = ref(false)
 const error = ref('')
 const registered = ref(false)
 watch(registering, () => { password.value = ''; confirmation.value = ''; error.value = ''; registered.value = false })
+
+watch(() => [registering.value, account.user] as const, ([isRegistering, user]) => {
+  if (!isRegistering && user && !busy.value) {
+    void router.replace(accountDestination(route.query.redirect))
+  }
+})
 
 watch(registering, async (isRegistering, _, onCleanup) => {
   let active = true

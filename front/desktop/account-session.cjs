@@ -23,7 +23,9 @@ function proxyBackendRequest(req, res, baseUrl, { session, client = '', connecti
   target.pathname = requestPath.pathname
   target.search = requestPath.search
   const revision = session.revision
-  const headers = { ...req.headers, host: target.host }
+  const headers = { ...req.headers, host: target.host, connection: 'close' }
+  delete headers['keep-alive']
+  delete headers['proxy-connection']
   const isLogin = req.method === 'POST' && requestPath.pathname === '/api/account/login'
   // 主进程需要解析登录回执；其余响应仍由渲染页面协商压缩。
   if (isLogin) headers['accept-encoding'] = 'identity'
@@ -35,10 +37,13 @@ function proxyBackendRequest(req, res, baseUrl, { session, client = '', connecti
   if (client) headers['x-champion-client'] = client
   delete headers['x-champion-desktop']
   if (session.cookie) headers.cookie = session.cookie
+  // 主进程代附已有会话 Cookie 时，若登录页尚未同步到 CSRF，补齐当前会话的 CSRF 以免登录死锁。
+  if (isLogin && session.cookie && session.csrf && !headers['x-csrf-token']) headers['x-csrf-token'] = session.csrf
   if (!requestPath.pathname.startsWith('/api/account/') && !requestPath.pathname.startsWith('/api/admin/') && connectionId()) headers['x-champion-desktop'] = connectionId()
   if (headers.origin) headers.origin = target.origin
   delete headers['sec-fetch-site']
-  const upstream = (target.protocol === 'https:' ? https : http).request(target, { method: req.method, headers }, response => {
+  // 禁用默认 keepAlive 连接池，避免本地代理或 Cloudflare 网关下复用已关闭的半开 TCP 连接。
+  const upstream = (target.protocol === 'https:' ? https : http).request(target, { method: req.method, headers, agent: false }, response => {
     const forwarded = { ...response.headers }
     delete forwarded['set-cookie']
     const status = response.statusCode || 502

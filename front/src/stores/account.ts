@@ -41,6 +41,9 @@ export const useAccountStore = defineStore('account', () => {
   }
 
   async function login(email: string, password: string, destination: unknown, preferences?: { remember: boolean; auto: boolean }) {
+    if (!ready.value) {
+      try { await refresh() } catch { /* 仍继续提交登录，由登录接口返回明确错误。 */ }
+    }
     const data = await loginAccount({ email, password })
     if (preferences) await window.championDesktop?.rememberLogin?.({ email, password, ...preferences })
     user.value = data.user
