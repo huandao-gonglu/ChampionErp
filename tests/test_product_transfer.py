@@ -311,8 +311,7 @@ def test_import_preserves_distinct_pool_assets_sharing_identical_file_bytes(tmp_
                                 "id": "src_main_same",
                                 "path": rel_main,
                                 "local_path": rel_main,
-                                "url": "https://img.example.com/main.png",
-                                "origin": "1688",
+                                "origin": "manual",
                                 "usage": "main",
                                 "is_main": True,
                                 "selected": True,
@@ -322,8 +321,7 @@ def test_import_preserves_distinct_pool_assets_sharing_identical_file_bytes(tmp_
                                 "id": "src_sku_same",
                                 "path": rel_sku,
                                 "local_path": rel_sku,
-                                "url": "https://img.example.com/sku.png",
-                                "origin": "1688",
+                                "origin": "manual",
                                 "usage": "other",
                                 "is_main": False,
                                 "is_sku": True,
@@ -371,3 +369,76 @@ def test_import_preserves_distinct_pool_assets_sharing_identical_file_bytes(tmp_
     finally:
         source_ctx.close()
         target_ctx.close()
+
+
+def test_export_skips_embedding_source_images_with_remote_url_and_isolates_download_tickets(tmp_path: Path) -> None:
+    """采集箱导出时，1688 已有公开外链的原图直接导出 URL 不塞进 ZIP；下载票据严格按账号空间隔离。"""
+    from erp_web.facades.product_facade import export_products_ticket, resolve_export_download
+
+    source_ctx = _make_context(tmp_path, "user-remote-src")
+    other_ctx = _make_context(tmp_path, "user-remote-other")
+
+    img_dir = source_ctx.paths.app_dir / "data" / "images" / "prod_remote"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    remote_cached = img_dir / "cached_1688.png"
+    manual_only = img_dir / "manual_edit.png"
+    remote_cached.write_bytes(PNG_1X1)
+    manual_only.write_bytes(_make_png((200, 40, 60, 255)))
+    rel_remote = str(remote_cached.relative_to(source_ctx.paths.app_dir))
+    rel_manual = str(manual_only.relative_to(source_ctx.paths.app_dir))
+
+    try:
+        with bind_context(source_ctx):
+            source_ctx.products.save_product(
+                {
+                    "product_id": "prod_remote",
+                    "name": "外链瘦身商品",
+                    "source": {
+                        "title": "外链瘦身商品",
+                        "source_platform": "1688",
+                        "images": [rel_remote, rel_manual],
+                        "image_pool": [
+                            {
+                                "id": "img-1688",
+                                "path": rel_remote,
+                                "local_path": rel_remote,
+                                "url": "https://cbu01.alicdn.com/img/ibank/1688_big.jpg",
+                                "origin": "1688",
+                                "is_main": True,
+                            },
+                            {
+                                "id": "img-manual",
+                                "path": rel_manual,
+                                "local_path": rel_manual,
+                                "origin": "manual",
+                            },
+                        ],
+                    },
+                },
+                preserve_platform_facts=False,
+            )
+            ticket, status = export_products_ticket({"product_ids": ["prod_remote"]})
+            assert status == 200
+            assert ticket["ok"] is True
+            assert ticket["filename"] == "外链瘦身商品.zip"
+            assert ticket["sizeBytes"] > 0
+            assert ticket["downloadUrl"].startswith("/api/exports/download?token=")
+            token = ticket["downloadUrl"].split("token=", 1)[1]
+
+            entry = resolve_export_download(token)
+            assert entry is not None and entry.path.is_file()
+            manifest, asset_blobs = _read_zip(entry.path.read_bytes())
+            # 1688 带外链原图不内嵌，仅内嵌无外链的 manual 本地图
+            assert len(asset_blobs) == 1
+            pool_by_id = {item["id"]: item for item in manifest["products"][0]["source"]["image_pool"]}
+            assert "export_asset_key" not in pool_by_id["img-1688"]
+            assert pool_by_id["img-1688"]["url"] == "https://cbu01.alicdn.com/img/ibank/1688_big.jpg"
+            assert pool_by_id["img-manual"]["export_asset_key"] in asset_blobs
+            assert manifest["products"][0]["source"]["images"][0] == "https://cbu01.alicdn.com/img/ibank/1688_big.jpg"
+
+        # 跨账号无法解析该导出票据
+        with bind_context(other_ctx):
+            assert resolve_export_download(token) is None
+    finally:
+        source_ctx.close()
+        other_ctx.close()

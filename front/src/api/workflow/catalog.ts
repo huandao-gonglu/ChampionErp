@@ -96,10 +96,11 @@ export async function deleteProducts(productIds: string[]): Promise<DeleteProduc
 }
 
 export interface ExportProductsResult {
-  blob: Blob
+  downloadUrl: string
   count: number
   missingIds: string[]
   filename: string
+  sizeBytes: number
   message: string
 }
 
@@ -111,10 +112,11 @@ export interface ImportProductsResult {
 }
 
 export interface ExportDraftsResult {
-  blob: Blob
+  downloadUrl: string
   count: number
   missingIds: string[]
   filename: string
+  sizeBytes: number
   message: string
 }
 
@@ -125,74 +127,30 @@ export interface ImportDraftsResult {
   message: string
 }
 
-function parseFilenameFromDisposition(header: string): string {
-  const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(header)
-  if (utf8Match?.[1]) {
-    try {
-      return decodeURIComponent(utf8Match[1].trim())
-    } catch {
-      return utf8Match[1].trim()
-    }
+function normalizeExportTicket(
+  data: UnknownRecord,
+  fallbackFilename: string,
+  fallbackCount: number,
+  fallbackMessage: string,
+): { downloadUrl: string; count: number; missingIds: string[]; filename: string; sizeBytes: number; message: string } {
+  const downloadUrl = getString(data, ['downloadUrl', 'download_url'])
+  if (!downloadUrl) throw new Error('未返回导出文件下载地址，请重试。')
+  const count = getNumber(data, ['count']) || fallbackCount
+  return {
+    downloadUrl,
+    count,
+    missingIds: Array.isArray(data.missingIds) ? data.missingIds.map((id) => String(id || '')).filter(Boolean) : [],
+    filename: getString(data, ['filename']) || fallbackFilename,
+    sizeBytes: getNumber(data, ['sizeBytes', 'size_bytes']),
+    message: getString(data, ['message']) || fallbackMessage,
   }
-  const plainMatch = /filename="([^"]+)"/i.exec(header)
-  return plainMatch?.[1]?.trim() || ''
-}
-
-async function extractBlobErrorMessage(exc: unknown, fallback: string): Promise<string> {
-  const candidate = exc as { raw?: unknown; response?: { data?: unknown }; message?: string } | null
-  const blob = candidate?.raw instanceof Blob
-    ? candidate.raw
-    : candidate?.response?.data instanceof Blob
-      ? candidate.response.data
-      : null
-  if (blob) {
-    try {
-      const text = await blob.text()
-      const parsed = JSON.parse(text) as Record<string, unknown>
-      const msg = getString(parsed, ['error', 'message'])
-      if (msg) return msg
-    } catch {
-      // 忽略非 JSON 错误体
-    }
-  }
-  return candidate?.message || fallback
 }
 
 export async function exportDrafts(draftIds: string[]): Promise<ExportDraftsResult> {
-  try {
-    const response = await apiClient.post('/api/drafts/export', { draft_ids: draftIds }, { responseType: 'blob' })
-    const headers = (response.headers || {}) as Record<string, string | undefined>
-    const encodedName = headers['x-export-filename'] || ''
-    let filename = ''
-    if (encodedName) {
-      try {
-        filename = decodeURIComponent(encodedName)
-      } catch {
-        filename = encodedName
-      }
-    }
-    if (!filename) {
-      filename = parseFilenameFromDisposition(headers['content-disposition'] || '') || 'drafts.zip'
-    }
-    const rawCount = Number(headers['x-export-count'])
-    const count = Number.isFinite(rawCount) && rawCount > 0 ? rawCount : draftIds.length
-    const missingIds = String(headers['x-export-missing-ids'] || '')
-      .split(',')
-      .map((id) => id.trim())
-      .filter(Boolean)
-    const blob = response.data instanceof Blob
-      ? response.data
-      : new Blob([response.data], { type: 'application/zip' })
-    return {
-      blob,
-      count,
-      missingIds,
-      filename,
-      message: `已导出 ${count} 份草稿。`,
-    }
-  } catch (exc) {
-    throw new Error(await extractBlobErrorMessage(exc, '导出草稿失败'))
-  }
+  const response = await apiClient.post('/api/drafts/export', { draft_ids: draftIds })
+  const data = asRecord(response.data)
+  ensureOk(data, '导出草稿失败')
+  return normalizeExportTicket(data, 'drafts.zip', draftIds.length, `已打包 ${draftIds.length} 份草稿，开始下载。`)
 }
 
 export async function importDrafts(file: Blob): Promise<ImportDraftsResult> {
@@ -212,40 +170,10 @@ export async function importDrafts(file: Blob): Promise<ImportDraftsResult> {
 }
 
 export async function exportProducts(productIds: string[]): Promise<ExportProductsResult> {
-  try {
-    const response = await apiClient.post('/api/products/export', { product_ids: productIds }, { responseType: 'blob' })
-    const headers = (response.headers || {}) as Record<string, string | undefined>
-    const encodedName = headers['x-export-filename'] || ''
-    let filename = ''
-    if (encodedName) {
-      try {
-        filename = decodeURIComponent(encodedName)
-      } catch {
-        filename = encodedName
-      }
-    }
-    if (!filename) {
-      filename = parseFilenameFromDisposition(headers['content-disposition'] || '') || 'library-products.zip'
-    }
-    const rawCount = Number(headers['x-export-count'])
-    const count = Number.isFinite(rawCount) && rawCount > 0 ? rawCount : productIds.length
-    const missingIds = String(headers['x-export-missing-ids'] || '')
-      .split(',')
-      .map((id) => id.trim())
-      .filter(Boolean)
-    const blob = response.data instanceof Blob
-      ? response.data
-      : new Blob([response.data], { type: 'application/zip' })
-    return {
-      blob,
-      count,
-      missingIds,
-      filename,
-      message: `已导出 ${count} 个商品。`,
-    }
-  } catch (exc) {
-    throw new Error(await extractBlobErrorMessage(exc, '导出商品失败'))
-  }
+  const response = await apiClient.post('/api/products/export', { product_ids: productIds })
+  const data = asRecord(response.data)
+  ensureOk(data, '导出商品失败')
+  return normalizeExportTicket(data, 'library-products.zip', productIds.length, `已打包 ${productIds.length} 个商品，开始下载。`)
 }
 
 export async function importProducts(file: Blob): Promise<ImportProductsResult> {

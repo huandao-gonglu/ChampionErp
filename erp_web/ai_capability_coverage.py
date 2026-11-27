@@ -555,6 +555,13 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         reason="采集箱商品与草稿箱文件导入导出由界面人工下载/上传文件完成，不经模型传输大体积图片数据。",
     ) for path in ("/api/products/export", "/api/products/import", "/api/drafts/export", "/api/drafts/import")),
     AiCapabilityCoverageEntry(
+        method="GET",
+        path="/api/exports/download",
+        business_domain="商品与草稿",
+        disposition="internal_only",
+        reason="导出任务生成的短期 ZIP 文件流式下载入口，仅用于浏览器原生文件下载，不开放 AI 工具。",
+    ),
+    AiCapabilityCoverageEntry(
         method="POST",
         path="/api/load-draft",
         business_domain="商品与草稿",

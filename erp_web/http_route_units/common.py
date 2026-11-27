@@ -26,6 +26,17 @@ class JsonRequestHandler(Protocol):
     ) -> None:
         ...
 
+    def send_file_stream(
+        self,
+        file_path: Any,
+        *,
+        content_type: str,
+        filename: str = "",
+        extra_headers: dict[str, str] | None = None,
+        chunk_size: int = 64 * 1024,
+    ) -> None:
+        ...
+
     def send_json_with_keepalive(
         self,
         compute: Callable[[], tuple[Any, int]],

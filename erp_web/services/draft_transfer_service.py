@@ -42,7 +42,7 @@ from erp_web.product_model.source_facts import validate_draft_facts
 from erp_web.schemas.image_hosting import DELIVERY_FIELDS
 from erp_web.schemas.product import PRODUCT_SCHEMA_VERSION
 from erp_web.schemas.requests import RequestValidationError
-from erp_web.services import image_service
+from erp_web.services import export_archive_store, image_service
 from erp_web.services.workspace_files import owned_path
 from erp_web.stores.product_store import (
     ProductStore,
@@ -557,6 +557,44 @@ def export_drafts_archive(
     return buffer.getvalue(), filename, total_drafts, missing_ids
 
 
+def export_drafts_to_file(
+    products_store: ProductStore,
+    app_dir: Path,
+    draft_ids: list[Any],
+) -> dict[str, Any]:
+    """将草稿 ZIP 直接写入临时导出文件并签发下载票据，供浏览器原生流式下载。"""
+    zip_bytes, filename, total_drafts, missing_ids = export_drafts_archive(
+        products_store,
+        app_dir,
+        draft_ids,
+    )
+    token, target_path = export_archive_store.allocate_export_target(app_dir)
+    try:
+        target_path.write_bytes(zip_bytes)
+        entry = export_archive_store.finalize_export_archive(
+            app_dir,
+            token,
+            target_path,
+            filename=filename,
+            content_type="application/zip",
+        )
+    except Exception:
+        try:
+            target_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return {
+        "ok": True,
+        "count": total_drafts,
+        "missingIds": missing_ids,
+        "filename": entry.filename,
+        "sizeBytes": entry.size_bytes,
+        "downloadUrl": entry.download_url,
+        "message": f"已打包 {total_drafts} 份草稿，开始下载。",
+    }
+
+
 def _read_zip_member_bounded(
     zf: zipfile.ZipFile,
     info: zipfile.ZipInfo,
@@ -1036,5 +1074,6 @@ __all__ = [
     "SUPPORTED_DRAFT_EXPORT_VERSIONS",
     "ZIP_CONTENT_TYPES",
     "export_drafts_archive",
+    "export_drafts_to_file",
     "import_drafts_archive",
 ]

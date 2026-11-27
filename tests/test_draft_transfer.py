@@ -57,8 +57,8 @@ def _headers(**values: str) -> Message:
 
 
 class _DummyHandler:
-    def __init__(self, path: str, body: bytes = b"", *, content_type: str = "application/json") -> None:
-        self.command = "POST"
+    def __init__(self, path: str, body: bytes = b"", *, content_type: str = "application/json", command: str = "POST") -> None:
+        self.command = command
         self.path = path
         self.rfile = io.BytesIO(body)
         self.wfile = io.BytesIO()
@@ -92,6 +92,17 @@ class _DummyHandler:
         status: int = 200,
     ) -> None:
         self.binary_responses.append((raw, content_type, filename, dict(extra_headers or {}), status))
+
+    def send_file_stream(
+        self,
+        file_path: Path,
+        *,
+        content_type: str,
+        filename: str = "",
+        extra_headers: dict[str, str] | None = None,
+        chunk_size: int = 64 * 1024,
+    ) -> None:
+        self.binary_responses.append((Path(file_path).read_bytes(), content_type, filename, dict(extra_headers or {}), 200))
 
     def send_response(self, status: int) -> None:
         self.status = status
@@ -463,13 +474,23 @@ def test_http_drafts_export_and_import_routes(tmp_path: Path) -> None:
                 json.dumps({"draft_ids": [draft_id]}).encode("utf-8"),
             )
             http_routes.handle_post(export_handler)  # type: ignore[arg-type]
-            assert len(export_handler.binary_responses) == 1
-            zip_bytes, content_type, filename, extra_headers, status = export_handler.binary_responses[0]
+            ticket, status = export_handler.json_responses[0]
             assert status == 200
+            assert ticket["ok"] is True
+            assert ticket["count"] == 1
+            assert ticket["filename"].endswith(".zip")
+            assert ticket["sizeBytes"] > 0
+            assert ticket["downloadUrl"].startswith("/api/exports/download?token=")
+
+            # GET /api/exports/download 流式下载返回真实 ZIP
+            download_handler = _DummyHandler(ticket["downloadUrl"], command="GET")
+            http_routes.handle_get(download_handler)  # type: ignore[arg-type]
+            assert len(download_handler.binary_responses) == 1
+            zip_bytes, content_type, filename, _extra_headers, dl_status = download_handler.binary_responses[0]
+            assert dl_status == 200
             assert content_type == "application/zip"
-            assert filename.endswith(".zip")
-            assert extra_headers["X-Export-Count"] == "1"
-            assert urllib.parse.unquote(extra_headers["X-Export-Filename"]) == filename
+            assert filename == ticket["filename"]
+            assert len(zip_bytes) == ticket["sizeBytes"]
 
             # 非法 Content-Type 被 415 拒绝
             bad_ct_handler = _DummyHandler("/api/drafts/import", zip_bytes, content_type="text/plain")

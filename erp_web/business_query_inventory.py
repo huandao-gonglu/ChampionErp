@@ -42,6 +42,7 @@ RETAINED_GET_READS = {
     '/api/pricing/exchange-rates': ('显式刷新', 'refresh 参数可访问远端并更新缓存，保留独立刷新入口；缓存配置见 settings.pricing_defaults。'),
     '/api/v1/product-research/hot-products/runs': ('领域任务', '选品任务的当前/最近/指定快照，已有 research_run_status_query 覆盖其领域读取。'),
     '/api/v1/product-research/source-registry': ('凭据视图', '完整数据源编辑配置带凭据占位；普通配置见 settings.product_research。'),
+    '/api/exports/download': ('文件下载', '导出任务生成的短期 ZIP 二进制流式下载入口（支持 Range 断点续传），非普通业务只读查询。'),
 }
 
 

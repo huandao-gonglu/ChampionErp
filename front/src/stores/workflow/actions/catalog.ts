@@ -443,6 +443,23 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     await deleteProductsByIds(selectedProductIds.value)
   }
 
+  function formatArchiveSize(sizeBytes: number) {
+    if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) return ''
+    if (sizeBytes >= 1024 * 1024) return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
+    if (sizeBytes >= 1024) return `${Math.max(1, Math.round(sizeBytes / 1024))} KB`
+    return `${sizeBytes} B`
+  }
+
+  function triggerNativeDownload(downloadUrl: string, filename: string) {
+    const link = document.createElement('a')
+    link.href = downloadUrl
+    link.download = filename
+    link.rel = 'noopener'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+  }
+
   async function exportSelectedProducts(productIds: string[]) {
     const ids = Array.from(new Set(productIds.map((id) => String(id || '').trim()).filter(Boolean)))
     if (!ids.length) {
@@ -453,20 +470,12 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     setError('')
     try {
       const result = await exportProductsApi(ids)
-      const url = URL.createObjectURL(result.blob)
-      try {
-        const link = document.createElement('a')
-        link.href = url
-        link.download = result.filename
-        document.body.appendChild(link)
-        link.click()
-        link.remove()
-      } finally {
-        URL.revokeObjectURL(url)
-      }
-      const message = result.message || `已导出 ${result.count} 个商品。`
-      addLog(`${message}（${result.filename}）`)
-      return `${message}（${result.filename}）`
+      triggerNativeDownload(result.downloadUrl, result.filename)
+      const sizeLabel = formatArchiveSize(result.sizeBytes)
+      const detail = sizeLabel ? `${result.filename}，${sizeLabel}` : result.filename
+      const message = result.message || `已打包 ${result.count} 个商品，开始下载。`
+      addLog(`${message}（${detail}）`)
+      return `${message}（${detail}）`
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '导出商品失败')
       return ''
@@ -503,20 +512,12 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     setError('')
     try {
       const result = await exportDraftsApi(ids)
-      const url = URL.createObjectURL(result.blob)
-      try {
-        const link = document.createElement('a')
-        link.href = url
-        link.download = result.filename
-        document.body.appendChild(link)
-        link.click()
-        link.remove()
-      } finally {
-        URL.revokeObjectURL(url)
-      }
-      const message = result.message || `已导出 ${result.count} 份草稿。`
-      addLog(`${message}（${result.filename}）`)
-      return `${message}（${result.filename}）`
+      triggerNativeDownload(result.downloadUrl, result.filename)
+      const sizeLabel = formatArchiveSize(result.sizeBytes)
+      const detail = sizeLabel ? `${result.filename}，${sizeLabel}` : result.filename
+      const message = result.message || `已打包 ${result.count} 份草稿，开始下载。`
+      addLog(`${message}（${detail}）`)
+      return `${message}（${detail}）`
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : '导出草稿失败')
       return ''

@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover
 from erp_web.product_model import validate_product_root_fields
 from erp_web.schemas.product import PRODUCT_SCHEMA_VERSION
 from erp_web.schemas.requests import RequestValidationError
-from erp_web.services import image_service
+from erp_web.services import export_archive_store, image_service
 from erp_web.services.workspace_files import owned_path
 from erp_web.stores.product_store import (
     ProductStore,
@@ -69,6 +69,14 @@ _STRIPPED_PRODUCT_KEYS = (
     "copy_results",
     "product_file_path",
 )
+
+_SOURCE_REMOTE_IMAGE_ORIGINS = frozenset({
+    "",
+    "source",
+    "1688",
+    "collected",
+    "remote",
+})
 
 _STRIPPED_IMAGE_KEYS = (
     "platform_picture_id",
@@ -125,7 +133,7 @@ def _collect_local_asset(
     file_path: Path,
     *,
     asset_manifest: dict[str, dict[str, str]],
-    asset_blobs: dict[str, bytes],
+    asset_paths: dict[str, Path],
     path_to_key: dict[str, str],
     total_bytes: list[int],
 ) -> str:
@@ -133,12 +141,16 @@ def _collect_local_asset(
     if resolved in path_to_key:
         return path_to_key[resolved]
     try:
-        raw = file_path.read_bytes()
+        file_size = file_path.stat().st_size
     except OSError:
         return ""
-    if not raw or len(raw) > MAX_SINGLE_ASSET_BYTES:
+    if file_size <= 0 or file_size > MAX_SINGLE_ASSET_BYTES:
         return ""
-    digest = hashlib.sha256(raw).hexdigest()[:16]
+    try:
+        with file_path.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()[:16]
+    except OSError:
+        return ""
     suffix = file_path.suffix.lower() or ".png"
     if suffix == ".jpe":
         suffix = ".jpg"
@@ -146,11 +158,11 @@ def _collect_local_asset(
         suffix = ".png"
     mime = mimetypes.guess_type(f"file{suffix}")[0] or "image/png"
     key = f"asset_{digest}{suffix}"
-    if key not in asset_blobs:
-        if total_bytes[0] + len(raw) > MAX_TOTAL_EXPORT_ASSET_BYTES:
+    if key not in asset_paths:
+        if total_bytes[0] + file_size > MAX_TOTAL_EXPORT_ASSET_BYTES:
             return ""
-        total_bytes[0] += len(raw)
-        asset_blobs[key] = raw
+        total_bytes[0] += file_size
+        asset_paths[key] = file_path
         asset_manifest[key] = {
             "filename": file_path.name,
             "content_type": mime,
@@ -159,12 +171,24 @@ def _collect_local_asset(
     return key
 
 
+def _prefer_remote_url_for_source_image(item: dict[str, Any]) -> str:
+    """源平台采集原图若本身带有公开 HTTP(S) 外链，直接导出外链，不重复打包本地缓存大图。"""
+    origin = str(item.get("origin") or "").strip().lower()
+    if origin not in _SOURCE_REMOTE_IMAGE_ORIGINS:
+        return ""
+    for field in ("url", "preview_url"):
+        candidate = str(item.get(field) or "").strip()
+        if _is_remote_url(candidate):
+            return candidate
+    return ""
+
+
 def _prepare_product_for_export(
     product: dict[str, Any],
     *,
     app_dir: Path,
     asset_manifest: dict[str, dict[str, str]],
-    asset_blobs: dict[str, bytes],
+    asset_paths: dict[str, Path],
     path_to_key: dict[str, str],
     total_bytes: list[int],
 ) -> dict[str, Any]:
@@ -176,6 +200,7 @@ def _prepare_product_for_export(
     source = exported.get("source") if isinstance(exported.get("source"), dict) else {}
     pool = source.get("image_pool") if isinstance(source.get("image_pool"), list) else []
     ref_to_asset_key: dict[str, str] = {}
+    ref_to_remote_url: dict[str, str] = {}
     cleaned_pool: list[dict[str, Any]] = []
 
     for raw_item in pool:
@@ -184,6 +209,20 @@ def _prepare_product_for_export(
         item = deepcopy(raw_item)
         for key in _STRIPPED_IMAGE_KEYS:
             item.pop(key, None)
+
+        preferred_remote = _prefer_remote_url_for_source_image(item)
+        if preferred_remote:
+            for ref_field in ("path", "local_path", "preview_url", "url"):
+                ref_val = str(item.get(ref_field) or "").strip()
+                if ref_val and not _is_remote_url(ref_val):
+                    ref_to_remote_url[ref_val] = preferred_remote
+            item.pop("export_asset_key", None)
+            item["path"] = ""
+            item["local_path"] = ""
+            item["url"] = preferred_remote
+            item["preview_url"] = preferred_remote
+            cleaned_pool.append(item)
+            continue
 
         local_file: Path | None = None
         for ref_field in ("path", "local_path", "preview_url", "url"):
@@ -196,7 +235,7 @@ def _prepare_product_for_export(
             asset_key = _collect_local_asset(
                 local_file,
                 asset_manifest=asset_manifest,
-                asset_blobs=asset_blobs,
+                asset_paths=asset_paths,
                 path_to_key=path_to_key,
                 total_bytes=total_bytes,
             )
@@ -237,6 +276,9 @@ def _prepare_product_for_export(
         if _is_remote_url(text):
             cleaned_images.append(text)
             continue
+        if text in ref_to_remote_url:
+            cleaned_images.append(ref_to_remote_url[text])
+            continue
         mapped = ref_to_asset_key.get(text)
         if not mapped:
             local_file = _local_candidate_path(text, app_dir)
@@ -244,7 +286,7 @@ def _prepare_product_for_export(
                 mapped = _collect_local_asset(
                     local_file,
                     asset_manifest=asset_manifest,
-                    asset_blobs=asset_blobs,
+                    asset_paths=asset_paths,
                     path_to_key=path_to_key,
                     total_bytes=total_bytes,
                 )
@@ -261,6 +303,9 @@ def _prepare_product_for_export(
             val = str(sku.get(field) or "").strip()
             if not val or _is_remote_url(val):
                 continue
+            if val in ref_to_remote_url:
+                sku[field] = ref_to_remote_url[val]
+                continue
             mapped = ref_to_asset_key.get(val)
             if not mapped:
                 local_file = _local_candidate_path(val, app_dir)
@@ -268,7 +313,7 @@ def _prepare_product_for_export(
                     mapped = _collect_local_asset(
                         local_file,
                         asset_manifest=asset_manifest,
-                        asset_blobs=asset_blobs,
+                        asset_paths=asset_paths,
                         path_to_key=path_to_key,
                         total_bytes=total_bytes,
                     )
@@ -701,18 +746,17 @@ def _build_export_filename(exported_products: list[dict[str, Any]], stamp: str) 
     return f"{title}等{len(exported_products)}个商品.zip"
 
 
-def export_products_archive(
+def _build_products_export_plan(
     products_store: ProductStore,
     app_dir: Path,
     product_ids: list[Any],
-) -> tuple[bytes, str, int, list[str]]:
-    """导出勾选采集箱商品及其本地图片资产为 ZIP 字节流。"""
+) -> tuple[dict[str, Any], dict[str, Path], str, int, list[str]]:
     ids = list(dict.fromkeys(str(pid or "").strip() for pid in (product_ids or []) if str(pid or "").strip()))
     if not ids:
         raise RequestValidationError("请先勾选要导出的商品。")
 
     asset_manifest: dict[str, dict[str, str]] = {}
-    asset_blobs: dict[str, bytes] = {}
+    asset_paths: dict[str, Path] = {}
     path_to_key: dict[str, str] = {}
     total_bytes = [0]
     exported_products: list[dict[str, Any]] = []
@@ -728,7 +772,7 @@ def export_products_archive(
                 record,
                 app_dir=app_dir,
                 asset_manifest=asset_manifest,
-                asset_blobs=asset_blobs,
+                asset_paths=asset_paths,
                 path_to_key=path_to_key,
                 total_bytes=total_bytes,
             )
@@ -749,19 +793,73 @@ def export_products_archive(
         "products": exported_products,
         "assets": asset_manifest,
     }
+    return manifest, asset_paths, filename, len(exported_products), missing_ids
 
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, mode="w") as zf:
+
+def _write_products_zip(target: Any, manifest: dict[str, Any], asset_paths: dict[str, Path]) -> None:
+    with zipfile.ZipFile(target, mode="w") as zf:
         zf.writestr(
             "manifest.json",
             json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
             compress_type=zipfile.ZIP_DEFLATED,
         )
-        for key, raw in asset_blobs.items():
-            # 图片本身已压缩，直接存储更快且避免重复压缩开销。
-            zf.writestr(f"assets/{key}", raw, compress_type=zipfile.ZIP_STORED)
+        for key, file_path in asset_paths.items():
+            # 直接从磁盘按块拷贝写入 ZIP，避免大文件占满 Python 内存。
+            zf.write(file_path, arcname=f"assets/{key}", compress_type=zipfile.ZIP_STORED)
 
-    return buffer.getvalue(), filename, len(exported_products), missing_ids
+
+def export_products_archive(
+    products_store: ProductStore,
+    app_dir: Path,
+    product_ids: list[Any],
+) -> tuple[bytes, str, int, list[str]]:
+    """导出勾选采集箱商品及其本地图片资产为 ZIP 字节流。"""
+    manifest, asset_paths, filename, count, missing_ids = _build_products_export_plan(
+        products_store,
+        app_dir,
+        product_ids,
+    )
+    buffer = io.BytesIO()
+    _write_products_zip(buffer, manifest, asset_paths)
+    return buffer.getvalue(), filename, count, missing_ids
+
+
+def export_products_to_file(
+    products_store: ProductStore,
+    app_dir: Path,
+    product_ids: list[Any],
+) -> dict[str, Any]:
+    """流式打包落盘并签发短期下载票据，供浏览器原生流式下载。"""
+    manifest, asset_paths, filename, count, missing_ids = _build_products_export_plan(
+        products_store,
+        app_dir,
+        product_ids,
+    )
+    token, target_path = export_archive_store.allocate_export_target(app_dir)
+    try:
+        _write_products_zip(target_path, manifest, asset_paths)
+        entry = export_archive_store.finalize_export_archive(
+            app_dir,
+            token,
+            target_path,
+            filename=filename,
+            content_type="application/zip",
+        )
+    except Exception:
+        try:
+            target_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return {
+        "ok": True,
+        "count": count,
+        "missingIds": missing_ids,
+        "filename": entry.filename,
+        "sizeBytes": entry.size_bytes,
+        "downloadUrl": entry.download_url,
+        "message": f"已打包 {count} 个商品，开始下载。",
+    }
 
 
 def import_products_archive(
@@ -845,5 +943,6 @@ __all__ = [
     "SUPPORTED_EXPORT_VERSIONS",
     "ZIP_CONTENT_TYPES",
     "export_products_archive",
+    "export_products_to_file",
     "import_products_archive",
 ]

@@ -10,6 +10,7 @@ import time
 import urllib.parse
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler
+from pathlib import Path
 from typing import Any
 
 from erp_web.release_guard import release_guard
@@ -168,7 +169,89 @@ class Handler(BaseHTTPRequestHandler):
         for keyword, value in (extra_headers or {}).items():
             self.send_header(keyword, value)
         self.end_headers()
-        self.wfile.write(raw)
+        try:
+            self.wfile.write(raw)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def send_file_stream(
+        self,
+        file_path: Path | str,
+        *,
+        content_type: str,
+        filename: str = "",
+        extra_headers: dict[str, str] | None = None,
+        chunk_size: int = 64 * 1024,
+    ) -> None:
+        """从磁盘分块流式发送文件，支持 Range 断点续传并避免大文件占用内存。"""
+        target = Path(file_path)
+        total_size = target.stat().st_size
+        start = 0
+        end = total_size - 1
+        status = 200
+
+        range_header = str(getattr(self, "headers", {}).get("Range", "") or "").strip()
+        if range_header.lower().startswith("bytes=") and total_size > 0:
+            spec = range_header[6:].split(",", 1)[0].strip()
+            if "-" in spec:
+                raw_start, raw_end = spec.split("-", 1)
+                raw_start, raw_end = raw_start.strip(), raw_end.strip()
+                valid = True
+                if not raw_start and raw_end.isdigit():
+                    suffix_len = int(raw_end)
+                    if suffix_len <= 0:
+                        valid = False
+                    else:
+                        start = max(0, total_size - suffix_len)
+                        end = total_size - 1
+                elif raw_start.isdigit() and (not raw_end or raw_end.isdigit()):
+                    start = int(raw_start)
+                    end = min(int(raw_end), total_size - 1) if raw_end else total_size - 1
+                    if start >= total_size or start > end:
+                        valid = False
+                else:
+                    valid = False
+                if not valid:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{total_size}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                status = 206
+
+        content_length = max(0, end - start + 1) if total_size > 0 else 0
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(content_length))
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{total_size}")
+        if filename:
+            ascii_fallback = re.sub(r"[^A-Za-z0-9_.-]+", "_", filename).strip("._") or "download.bin"
+            encoded = urllib.parse.quote(filename, safe="")
+            self.send_header(
+                "Content-Disposition",
+                f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{encoded}',
+            )
+        for keyword, value in (extra_headers or {}).items():
+            self.send_header(keyword, value)
+        self.end_headers()
+
+        if content_length <= 0:
+            return
+        remaining = content_length
+        try:
+            with target.open("rb") as stream:
+                if start:
+                    stream.seek(start)
+                while remaining > 0:
+                    chunk = stream.read(min(chunk_size, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _log_json_response(self, data: Any, status: int) -> None:
         path = urllib.parse.urlsplit(getattr(self, "path", "")).path or "/"

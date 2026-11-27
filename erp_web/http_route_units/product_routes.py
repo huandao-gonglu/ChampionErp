@@ -93,19 +93,8 @@ def handle_delete_products(handler: JsonRequestHandler) -> None:
 
 def handle_export_products(handler: JsonRequestHandler) -> None:
     body = validate_request_payload(handler.read_body(), endpoint=handler.path)
-    zip_bytes, filename, count, missing_ids = product_facade.export_products_archive(body)
-    extra_headers = {
-        "X-Export-Count": str(count),
-        "X-Export-Filename": urllib.parse.quote(filename, safe=""),
-    }
-    if missing_ids:
-        extra_headers["X-Export-Missing-Ids"] = ",".join(missing_ids)
-    handler.send_binary(
-        zip_bytes,
-        content_type="application/zip",
-        filename=filename,
-        extra_headers=extra_headers,
-    )
+    result, status = product_facade.export_products_ticket(body)
+    handler.send_json(result, status)
 
 
 def handle_import_products(handler: JsonRequestHandler) -> None:
@@ -117,19 +106,8 @@ def handle_import_products(handler: JsonRequestHandler) -> None:
 
 def handle_export_drafts(handler: JsonRequestHandler) -> None:
     body = validate_request_payload(handler.read_body(), endpoint=handler.path)
-    zip_bytes, filename, count, missing_ids = product_facade.export_drafts_archive(body)
-    extra_headers = {
-        "X-Export-Count": str(count),
-        "X-Export-Filename": urllib.parse.quote(filename, safe=""),
-    }
-    if missing_ids:
-        extra_headers["X-Export-Missing-Ids"] = ",".join(missing_ids)
-    handler.send_binary(
-        zip_bytes,
-        content_type="application/zip",
-        filename=filename,
-        extra_headers=extra_headers,
-    )
+    result, status = product_facade.export_drafts_ticket(body)
+    handler.send_json(result, status)
 
 
 def handle_import_drafts(handler: JsonRequestHandler) -> None:
@@ -139,12 +117,31 @@ def handle_import_drafts(handler: JsonRequestHandler) -> None:
     handler.send_json(result, status)
 
 
+def handle_download_export(handler: JsonRequestHandler, parsed: object) -> None:
+    query = urllib.parse.parse_qs(getattr(parsed, "query", "") or "")
+    token = str((query.get("token") or [""])[0] or "").strip()
+    entry = product_facade.resolve_export_download(token)
+    if entry is None:
+        handler.send_json(
+            {"ok": False, "error": "导出文件不存在或已过期，请重新导出。", "error_code": "EXPORT_ARCHIVE_NOT_FOUND"},
+            404,
+        )
+        return
+    handler.send_file_stream(
+        entry.path,
+        content_type=entry.content_type,
+        filename=entry.filename,
+    )
+
+
 def handle_delete_draft(handler: JsonRequestHandler) -> None:
     result, status = product_facade.delete_draft_payload(
         validate_request_payload(handler.read_body(), endpoint=handler.path)
     )
     handler.send_json(result, status)
 
+
+GET_API_ROUTES = frozenset({"/api/exports/download"})
 
 POST_HANDLERS: dict[str, PostHandler] = {
     "/api/draft-pricing/preview": handle_draft_pricing_preview,
@@ -165,6 +162,13 @@ POST_HANDLERS: dict[str, PostHandler] = {
     "/api/drafts/import": handle_import_drafts,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
+
+
+def handle_get(handler: JsonRequestHandler, parsed: object) -> bool:
+    if getattr(parsed, "path", "") != "/api/exports/download":
+        return False
+    handle_download_export(handler, parsed)
+    return True
 
 
 def handle_post(handler: JsonRequestHandler, parsed: object) -> bool:

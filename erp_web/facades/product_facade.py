@@ -10,7 +10,11 @@ from erp_web.runtime_units.image_pool import current_image_pool, current_source_
 from erp_web.schemas.upc_capabilities import UpcAssignRequest
 from erp_web.schemas.api import ApiResponse
 from erp_web.schemas.product import Product
-from erp_web.services import draft_transfer_service, product_transfer_service
+from erp_web.services import (
+    draft_transfer_service,
+    export_archive_store,
+    product_transfer_service,
+)
 
 ResponseWithStatus = tuple[ApiResponse, int]
 
@@ -119,6 +123,20 @@ def export_products_archive(body: dict[str, Any]) -> tuple[bytes, str, int, list
     )
 
 
+def export_products_ticket(body: dict[str, Any]) -> ResponseWithStatus:
+    context = get_context()
+    product_ids = (
+        body.get("product_ids")
+        if isinstance(body.get("product_ids"), list)
+        else []
+    )
+    return product_transfer_service.export_products_to_file(
+        context.products,
+        context.paths.app_dir,
+        product_ids,
+    ), 200
+
+
 def import_products_archive(raw_zip: bytes) -> ResponseWithStatus:
     context = get_context()
     return product_transfer_service.import_products_archive(
@@ -140,6 +158,25 @@ def export_drafts_archive(body: dict[str, Any]) -> tuple[bytes, str, int, list[s
         context.paths.app_dir,
         draft_ids,
     )
+
+
+def export_drafts_ticket(body: dict[str, Any]) -> ResponseWithStatus:
+    context = get_context()
+    draft_ids = (
+        body.get("draft_ids")
+        if isinstance(body.get("draft_ids"), list)
+        else []
+    )
+    return draft_transfer_service.export_drafts_to_file(
+        context.products,
+        context.paths.app_dir,
+        draft_ids,
+    ), 200
+
+
+def resolve_export_download(token: str) -> export_archive_store.ExportArchiveEntry | None:
+    context = get_context()
+    return export_archive_store.resolve_export_archive(context.paths.app_dir, token)
 
 
 def import_drafts_archive(raw_zip: bytes) -> ResponseWithStatus:
@@ -181,9 +218,12 @@ __all__ = [
     "delete_products_payload",
     "duplicate_draft_payload",
     "export_drafts_archive",
+    "export_drafts_ticket",
     "export_products_archive",
+    "export_products_ticket",
     "import_drafts_archive",
     "import_products_archive",
+    "resolve_export_download",
     "import_upcs_payload",
     "load_draft_payload",
     "load_product_payload",

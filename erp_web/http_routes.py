@@ -50,6 +50,7 @@ GET_ROUTE_UNITS = (
     order_routes,
     online_product_routes,
     get_routes,
+    product_routes,
     ai_work_routes,
     category_routes,
     product_research_routes,
