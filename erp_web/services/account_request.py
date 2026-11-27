@@ -114,6 +114,8 @@ def _authenticate(handler, stack, public_pages):
     admin_only = parsed.path.startswith("/api/admin/") or (method == "POST" and parsed.path in {
         "/api/system-settings/forbidden-categories/import", "/api/alibaba/authorization/complete",
         "/api/alibaba/authorization/self-use-token", "/api/alibaba/onebound/key/restore",
+        "/api/image-hosting/save", "/api/image-hosting/default",
+        "/api/image-hosting/delete", "/api/image-hosting/test",
     })
     if admin_only and (session is None or session.user["role"] != "admin"):
         raise AccountError("需要管理员权限。", status_code=403, error_code="FORBIDDEN")

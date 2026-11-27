@@ -176,14 +176,9 @@ def public_app_config(
             for field in ("base_url", "base_url_env", "api_key", "api_key_env", "model_env"):
                 model.pop(field, None)
     public.pop("1688_api", None)
-    # 共享汇率 API 只通过管理员设置下发，地址可能带服务商访问参数。
+    # 共享汇率 API 与共享图片托管由管理员维护，不进入通用配置视图。
     public.pop("pricing_defaults", None)
-    hosting = public.get("image_hosting", {})
-    for profile in hosting.get("profiles", []):
-        raw = next((item for item in safe["image_hosting"]["profiles"] if item["id"] == profile["id"]), {})
-        for key in ("access_key_id", "secret_access_key"):
-            profile[key + "_configured"] = bool(raw.get(key))
-            profile.pop(key, None)
+    public.pop("image_hosting", None)
     return public
 
 

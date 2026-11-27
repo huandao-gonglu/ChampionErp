@@ -57,7 +57,7 @@ BUSINESS_QUERIES = BusinessQueries((
                   http_path='/api/system-settings'),
     BusinessQuery('settings.forbidden_categories', '共享 Yandex 禁售类目名单及导入来源；按 categories 分页，未列出不等于平台允许发布。', NoDataParameters,
                   lambda context, _: context.config.forbidden_categories(), 'categories', ('category_id', 'name'), http_path='/api/system-settings/forbidden-categories'),
-    BusinessQuery('settings.image_hosting', '图片托管配置、默认目标、公开域名与最近保存的测试结果。密钥只提供是否配置，历史测试不代表当前实时连通。', NoDataParameters,
+    BusinessQuery('settings.image_hosting', '管理员共享图片托管配置、默认目标、公开域名与最近保存的测试结果。普通账号仅只读默认目标公开状态；密钥只提供是否配置，历史测试不代表当前实时连通。', NoDataParameters,
                   lambda context, _: {'ok': True, 'image_hosting': context.config.public_image_hosting()}, 'image_hosting',
                   ('default_profile_id', 'profiles'), http_path='/api/image-hosting'),
     BusinessQuery('settings.models', '已配置 AI 模型名称、启用状态、模型类型及功能绑定；不读取密钥、命令、浏览器配置或本机文件。', NoDataParameters,

@@ -86,8 +86,8 @@ onMounted(() => run(async () => { config.value = await loadImageHosting() }))
   <section class="space-y-4 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
     <div class="flex items-start justify-between gap-4">
       <div>
-        <h3 class="font-semibold">图片托管</h3>
-        <p class="muted mt-1">Yandex、Ozon 的本地发布图片使用默认 S3 兼容存储。Mercado Libre 使用平台图片上传。</p>
+        <h3 class="font-semibold">图片托管（管理员共享）</h3>
+        <p class="muted mt-1">所有账号的 Yandex、Ozon 本地发布图片、水印图及跨境履约面单共用此默认 S3 兼容存储。Mercado Libre 使用平台图片上传。</p>
         <p class="muted mt-1">上传接口地址用于写入，公开图片地址用于平台读取，两者可能不同；公开读取和域名需在存储商侧配置。</p>
       </div>
       <button class="btn btn-primary shrink-0" :disabled="busy" @click="edit()">新增配置</button>

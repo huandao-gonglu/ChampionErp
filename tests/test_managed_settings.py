@@ -417,3 +417,99 @@ def test_admin_gemini_canvas_url_is_shared_validated_and_resettable(accounts_htt
     reset_body = settings_body(admin, url)
     reset_body['gemini_canvas_url'] = ''
     assert post_settings(admin, url, reset_body)['gemini_canvas_url'] == DEFAULT_GEMINI_CANVAS_URL
+
+
+def test_image_hosting_is_admin_shared_isolated_and_used_by_all_users(accounts_http):
+    from erp_web.schemas.image_hosting import ImageHostingError
+    from erp_web.services.image_hosting_config import config_version, default_profile
+    from tests.image_hosting_test_utils import profile as s3_profile
+
+    url, runtime, login = accounts_http
+    admin = login()
+    user = register(url)
+    client = login('user@example.com')
+
+    primary_input = {k: v for k, v in s3_profile(name='主存储', bucket='shared-primary', access_key_id='admin-ak-1', secret_access_key='admin-sk-1').items() if k != 'id'}
+    backup_input = {k: v for k, v in s3_profile(name='备用存储', bucket='shared-backup', endpoint_url='https://backup-s3.example.test', public_base_url='https://backup.example.test', access_key_id='admin-ak-2', secret_access_key='admin-sk-2').items() if k != 'id'}
+
+    # 普通用户不能新增、切换默认、删除或测试图片托管，也不能通过通用配置接口修改。
+    for path, payload in (
+        ('/api/image-hosting/save', {'profile': primary_input}),
+        ('/api/image-hosting/default', {'id': ''}),
+        ('/api/image-hosting/delete', {'id': 'any'}),
+        ('/api/image-hosting/test', {'profile': primary_input}),
+    ):
+        assert client.post(url + path, json=payload).status_code == 403
+    assert client.post(url + '/api/save-settings', json={'appConfig': {'image_hosting': {'default_profile_id': '', 'profiles': []}}}).status_code == 403
+    assert client.post(url + '/api/ai-config/save', json={'image_hosting': {'default_profile_id': '', 'profiles': []}}).status_code == 403
+
+    # 管理员配置主备两套 S3 并设为默认，记录测试回执。
+    saved_primary = admin.post(url + '/api/image-hosting/save', json={'profile': primary_input})
+    assert saved_primary.status_code == 200 and saved_primary.json()['ok']
+    primary_id = saved_primary.json()['id']
+    saved_backup = admin.post(url + '/api/image-hosting/save', json={'profile': backup_input})
+    assert saved_backup.status_code == 200 and saved_backup.json()['ok']
+    assert admin.post(url + '/api/image-hosting/default', json={'id': primary_id}).status_code == 200
+
+    saved_raw = next(item for item in runtime.root.config.load_app_config()['image_hosting']['profiles'] if item['id'] == primary_id)
+    runtime.root.config.record_image_hosting_test({
+        'profile_id': primary_id,
+        'config_version': config_version(saved_raw),
+        'checked_at': '2026-11-27T00:00:00Z',
+        'upload_ok': True,
+        'upload_attempted': True,
+        'public_access_ok': True,
+        'public_access_attempted': True,
+        'cleanup_status': 'deleted',
+        'storage_key': 'products/hosting-tests/secret-test.png',
+        'public_url': 'https://images.example.test/products/hosting-tests/secret-test.png',
+        'error_code': '',
+        'message': '匿名读取成功',
+        'cleanup_message': '本次测试对象已删除',
+    })
+
+    # /api/state 不下发 image_hosting；管理员 /api/image-hosting 可见完整配置列表，普通用户仅只读默认目标公开状态。
+    assert 'image_hosting' not in client.get(url + '/api/state').json()['appConfig']
+    admin_view = admin.get(url + '/api/image-hosting').json()['image_hosting']
+    assert admin_view['default_profile_id'] == primary_id
+    assert len(admin_view['profiles']) == 2
+    assert 'admin-sk-1' not in json.dumps(admin_view)
+
+    user_view = client.get(url + '/api/image-hosting').json()['image_hosting']
+    assert user_view['default_profile_id'] == primary_id
+    assert len(user_view['profiles']) == 1
+    user_profile = user_view['profiles'][0]
+    assert user_profile['id'] == primary_id
+    assert user_profile['name'] == '主存储'
+    assert user_profile['public_base_url'] == 'https://images.example.test'
+    assert user_profile['access_key_id_configured'] is True
+    assert user_profile['secret_access_key_configured'] is True
+    assert user_profile['last_test']['upload_ok'] is True
+    assert user_profile['last_test']['public_access_ok'] is True
+    for hidden in ('endpoint_url', 'bucket', 'region', 'key_prefix', 'addressing_style', 'config_version'):
+        assert hidden not in user_profile
+    assert 'storage_key' not in user_profile['last_test']
+    serialized_user_view = json.dumps(user_view, ensure_ascii=False)
+    for forbidden in ('admin-ak-1', 'admin-sk-1', 'shared-primary', 'shared-backup', 'backup-s3.example.test'):
+        assert forbidden not in serialized_user_view
+
+    # 普通账号运行时直接复用管理员默认 S3 配置（含凭据），保存个人配置不会将共享 S3 写入个人文件或个人库。
+    user_ctx = runtime.context_for(next(row for row in runtime.store.users() if row['id'] == user['id']))
+    effective = default_profile(user_ctx.config.load_app_config())
+    assert effective['id'] == primary_id
+    assert effective['bucket'] == 'shared-primary'
+    assert effective['access_key_id'] == 'admin-ak-1'
+    assert effective['secret_access_key'] == 'admin-sk-1'
+
+    user_ctx.config.save_app_config(user_ctx.config.load_app_config())
+    personal_json = json.loads(user_ctx.paths.app_config_path.read_text(encoding='utf-8'))
+    assert personal_json['image_hosting'] == {'default_profile_id': '', 'profiles': []}
+    personal_secrets = json.dumps(user_ctx.db.load_runtime_secrets('app_config'), ensure_ascii=False)
+    assert 'admin-ak-1' not in personal_secrets and 'admin-sk-1' not in personal_secrets
+
+    # 管理员解除默认后，普通账号视图与交付解析即时同步失效。
+    assert admin.post(url + '/api/image-hosting/default', json={'id': ''}).status_code == 200
+    assert client.get(url + '/api/image-hosting').json()['image_hosting'] == {'default_profile_id': '', 'profiles': []}
+    with pytest.raises(ImageHostingError) as exc:
+        default_profile(user_ctx.config.load_app_config())
+    assert exc.value.code == 'IMAGE_HOSTING_NOT_CONFIGURED'

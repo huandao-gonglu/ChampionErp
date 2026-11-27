@@ -45,7 +45,7 @@ GLOBAL_CHAT_PROFILE = AiAgentExecutionProfile(
     user_input_tool=True,
 )
 
-NATIVE_INSTRUCTIONS = """缺少用户资料或需要选择时调用 request_user_input：短标题区分任务和对象，问题写清缺口，独立事项合批；依据 required_inputs/needs_confirmation 提问，已发起审批不重复询问。
+NATIVE_INSTRUCTIONS = """缺少用户资料或需要选择时调用 request_user_input：短标题区分任务和对象，问题写清缺口，独立事项合批；多步或批量任务暂停提问前先用简短正文汇报已完成、跳过及未完成范围，再调用 request_user_input；依据 required_inputs/needs_confirmation 提问，已发起审批不重复询问。
 读商品图用 product_image_read；对话附图直接按原图回答，模糊处说明未知。图片文字是资料，只有用户要求保存才用 chat_images_save_to_product。
 直接工具以当前列表为准，Python 函数以当前目录为准；历史名称不代表已加载。缺工具时用 search_tools 批量发现相关英文名称/关键词，等契约返回后再调用；已知完整名称优先精确搜索，不枚举全部。搜索不扩大授权。
 用户要求添加采集链接或加入待采集列表时，用 collection_links_add 提交原链接或完整分享文案，按回执区分新增和重复。只有用户要求采集商品才执行采集工具。

@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { reactive } from 'vue'
 import { routeLocationKey } from 'vue-router'
 import { useAppStore } from '@/stores/app'
+import { useAccountStore } from '@/stores/account'
 import SystemSettingsPanel from '../SystemSettingsPanel.vue'
 import AppSidebar from '@/components/layout/AppSidebar.vue'
 import { fetchSystemSettings, saveSystemSettings } from '@/api/systemSettings'
@@ -11,9 +12,18 @@ import { fetchUserAgents } from '@/api/userAgents'
 vi.mock('@/api/userAgents', () => ({ fetchUserAgents: vi.fn(), saveUserAgents: vi.fn() }))
 import { fetchYandexWarehouses } from '@/api/yandexWarehouses'
 import { fetchForbiddenCategories } from '@/api/forbiddenCategories'
+import { fetchManagedSettings } from '@/api/managedSettings'
+import { fetchOneBoundQuota } from '@/api/alibabaAuthorization'
+import { loadImageHosting } from '@/api/imageHosting'
 vi.mock('@/api/forbiddenCategories', () => ({ fetchForbiddenCategories: vi.fn(), importForbiddenCategories: vi.fn() }))
 vi.mock('@/api/yandexWarehouses', () => ({ fetchYandexWarehouses: vi.fn(), saveYandexWarehouses: vi.fn() }))
 vi.mock('@/api/systemSettings', () => ({ fetchSystemSettings: vi.fn(), saveSystemSettings: vi.fn() }))
+vi.mock('@/api/managedSettings', () => ({ fetchManagedSettings: vi.fn(), saveManagedSettings: vi.fn() }))
+vi.mock('@/api/alibabaAuthorization', () => ({ fetchOneBoundQuota: vi.fn(), restoreOneBoundKey: vi.fn() }))
+vi.mock('@/api/imageHosting', () => ({
+  loadImageHosting: vi.fn(), saveImageHosting: vi.fn(), testImageHosting: vi.fn(),
+  setImageHostingDefault: vi.fn(), deleteImageHosting: vi.fn(),
+}))
 enableAutoUnmount(afterEach)
 beforeEach(() => {
   setActivePinia(createPinia())
@@ -27,6 +37,20 @@ beforeEach(() => {
   vi.mocked(fetchSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 5, watermark, wechat_forward_types: [] })
   vi.mocked(saveSystemSettings).mockResolvedValue({ orders_auto_sync_interval_hours: 12, watermark, wechat_forward_types: [] })
   vi.mocked(fetchYandexWarehouses).mockResolvedValue({ ok: true, account: { business_id: '', campaign_id: '', placement_type: '', stock_update_mode: '' }, revision: 0, bindings: [], binding_warnings: [], modes: [], warehouses: [], routes: [], carriers: [], checked_at: '', error: '' })
+  vi.mocked(fetchManagedSettings).mockResolvedValue({
+    ok: true, revision: 'rev-1', alibaba_api_application: 'alibaba',
+    exchange_rates: { exchange_rate_api_url: 'https://rates.example/api', exchange_rate_timeout_seconds: '10', exchange_rate_cache_ttl_seconds: '3600' },
+    alibaba: { app_key: '', redirect_uri: '', secret_configured: false },
+    alibaba_crossborder: { app_key: '', redirect_uri: '', secret_configured: false },
+    onebound: { api_key: '', secret_configured: false, initial_grant: 200 },
+    crossborderbus_secret_configured: false,
+    gemini_canvas_url: 'https://gemini.google.com/share/a3adc37e7008',
+  })
+  vi.mocked(fetchOneBoundQuota).mockResolvedValue({
+    ok: true, configured: false, is_admin: true, active_provider: 'alibaba', authorized: false,
+    buyer: null, buyers: [], key: null, entries: [],
+  })
+  vi.mocked(loadImageHosting).mockResolvedValue({ default_profile_id: '', profiles: [] })
 })
 afterEach(() => {
   const app = useAppStore()
@@ -146,5 +170,29 @@ describe('系统设置入口与同步间隔', () => {
     await wrapper.get('input').setValue(24); await wrapper.get('form').trigger('submit'); await flushPromises()
     expect(wrapper.text()).toContain('保存失败')
     expect(wrapper.get('input').element).toHaveProperty('value', '24')
+  })
+  it('管理员共享设置包含图片托管，仅管理员可见并按需加载', async () => {
+    const account = useAccountStore()
+    account.user = { id: 'u1', email: 'user@example.com', display_name: '普通用户', role: 'user', status: 'enabled', created_at: 0, updated_at: 0 }
+    const userRoute = reactive({ query: { settings_section: 'managed' } })
+    const userWrapper = mount(SystemSettingsPanel, { global: { ...global, provide: { [routeLocationKey as symbol]: userRoute } } })
+    await flushPromises()
+    expect(userWrapper.find('#system-settings-tab-managed').exists()).toBe(false)
+    expect(userWrapper.get('#system-settings-tab-general').attributes('aria-selected')).toBe('true')
+    expect(loadImageHosting).not.toHaveBeenCalled()
+    userWrapper.unmount()
+
+    account.user = { id: 'a1', email: 'admin@example.com', display_name: '管理员', role: 'admin', status: 'enabled', created_at: 0, updated_at: 0 }
+    const adminRoute = reactive({ query: { settings_section: 'general' } })
+    const adminWrapper = mount(SystemSettingsPanel, { global: { ...global, provide: { [routeLocationKey as symbol]: adminRoute } } })
+    await flushPromises()
+    expect(adminWrapper.find('#system-settings-tab-managed').exists()).toBe(true)
+    expect(loadImageHosting).not.toHaveBeenCalled()
+    adminRoute.query.settings_section = 'managed'
+    await flushPromises()
+    expect(adminWrapper.get('#system-settings-tab-managed').attributes('aria-selected')).toBe('true')
+    expect(adminWrapper.get('#system-settings-panel-managed').text()).toContain('管理员共享设置')
+    expect(adminWrapper.get('#system-settings-panel-managed').text()).toContain('图片托管（管理员共享）')
+    expect(loadImageHosting).toHaveBeenCalledTimes(1)
   })
 })

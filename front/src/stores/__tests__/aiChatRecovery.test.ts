@@ -275,4 +275,51 @@ describe('普通聊天选择恢复', () => {
     expect(store.error?.message).toBe('目标草稿无效')
     store.disconnectEvents()
   })
+
+  it('仅等待用户问答或审批时依赖事件流通知，不每 2 秒轮询全量 ui-messages', async () => {
+    vi.useFakeTimers()
+    try {
+      const store = useAiChatStore()
+      const id = `conversation_global_chat_${'ef'.repeat(16)}`
+      const waitingDetail = {
+        ...detail(id),
+        history_version: 3,
+        run_active: false,
+        pending_tool_calls: [{
+          tool_call_id: 'ask-1',
+          tool_name: 'request_user_input',
+          kind: 'input' as const,
+          summary: '',
+          title: '确认规格',
+          question: '请确认规格',
+        }],
+      }
+      mocks.fetchUiMessages.mockResolvedValue(waitingDetail)
+      store.openConversation(waitingDetail)
+      expect(store.pendingUserActionsCount).toBe(1)
+
+      // 等待 10 秒也不应触发无意义的周期性 /ui-messages 轮询。
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(mocks.fetchUiMessages).not.toHaveBeenCalled()
+
+      // 切换为后台 external 长任务时仍按预期轮询进度。
+      const externalDetail = {
+        ...waitingDetail,
+        history_version: 4,
+        pending_tool_calls: [{
+          tool_call_id: 'job-1',
+          tool_name: 'draft_images_prepare',
+          kind: 'external' as const,
+          summary: '',
+        }],
+      }
+      mocks.fetchUiMessages.mockResolvedValue(externalDetail)
+      store.openConversation(externalDetail)
+      await vi.advanceTimersByTimeAsync(250)
+      expect(mocks.fetchUiMessages).toHaveBeenCalledTimes(1)
+      store.disconnectEvents()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

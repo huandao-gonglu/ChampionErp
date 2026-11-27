@@ -10,6 +10,7 @@ import WatermarkSettingsPanel from '@/components/settings/WatermarkSettingsPanel
 import WechatSettingsPanel from '@/components/settings/WechatSettingsPanel.vue'
 import ForbiddenCategoriesPanel from '@/components/settings/ForbiddenCategoriesPanel.vue'
 import ManagedSettingsPanel from '@/components/settings/ManagedSettingsPanel.vue'
+import ImageHostingSettingsPanel from '@/components/auth/ImageHostingSettingsPanel.vue'
 import TariffSettingsPanel from '@/components/settings/TariffSettingsPanel.vue'
 import UserAgentsSettingsPanel from '@/components/settings/UserAgentsSettingsPanel.vue'
 import { fetchSystemSettings, saveSystemSettings } from '@/api/systemSettings'
@@ -29,7 +30,7 @@ const tabs = computed(() => [
   { key: 'watermark', label: '图片水印', summary: '发布水印、文字与自定义图片' },
   { key: 'forbidden_categories', label: '禁售类目', summary: '导入 Yandex 禁售名单并在预检时拦截' },
   { key: 'tariffs', label: '国际物流运费表', summary: 'FBS 默认费率、个人导入与版本升级' },
-  ...(account.isAdmin ? [{ key: 'managed', label: '管理员共享设置', summary: '企业应用凭据、汇率 API 与 Canvas 项目地址' }] as const : []),
+  ...(account.isAdmin ? [{ key: 'managed', label: '管理员共享设置', summary: '企业应用凭据、汇率 API、Canvas 地址与图片托管' }] as const : []),
   { key: 'yandex_warehouses', label: 'Yandex 发布仓库', summary: '同步远端仓库并指定运输模式' },
   { key: 'about', label: '关于', summary: '版本信息、开源许可证、软件许可与服务协议、隐私政策' },
 ] as const)
@@ -109,8 +110,9 @@ onMounted(load)
       <section v-if="section === 'tariffs'" id="system-settings-panel-tariffs" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-tariffs">
         <TariffSettingsPanel />
       </section>
-      <section v-if="section === 'managed' && account.isAdmin" id="system-settings-panel-managed" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-managed">
+      <section v-if="section === 'managed' && account.isAdmin" id="system-settings-panel-managed" class="mt-5 space-y-6" role="tabpanel" aria-labelledby="system-settings-tab-managed">
         <ManagedSettingsPanel />
+        <ImageHostingSettingsPanel />
       </section>
       <section v-if="section === 'about'" id="system-settings-panel-about" class="mt-5" role="tabpanel" aria-labelledby="system-settings-tab-about">
         <AboutSettingsPanel />

@@ -27,12 +27,17 @@ function toggleEarlier(event: Event) {
 const display = computed(() => presentAssistantParts(props.parts, props.pendingToolCalls, props.active, props.writeReceipts))
 const timeline = computed(() => display.value.timeline.filter(entry => entry.part.type !== 'reasoning'))
 const process = computed(() => display.value.process.filter(entry => entry.part.type !== 'reasoning'))
+const hasExternalWork = computed(() => timeline.value.some(entry => entry.pendingKind === 'external'))
+const hasPendingInput = computed(() => timeline.value.some(entry => entry.pendingKind === 'input'))
+const hasPendingApproval = computed(() => timeline.value.some(entry => entry.pendingKind === 'approval'))
+const isActivelyRunning = computed(() => Boolean(props.active) || hasExternalWork.value)
+const waitingForUser = computed(() => display.value.live && !isActivelyRunning.value && (hasPendingInput.value || hasPendingApproval.value))
 const now = ref(Date.now())
 let timer: ReturnType<typeof setInterval> | undefined
-watch(() => display.value.live, live => {
+watch(() => display.value.live && isActivelyRunning.value, ticking => {
   clearInterval(timer)
   now.value = Date.now()
-  if (live) timer = setInterval(() => { now.value = Date.now() }, 1000)
+  if (ticking) timer = setInterval(() => { now.value = Date.now() }, 1000)
 }, { immediate: true })
 const activeStepStarts = ref<Record<string, number>>({})
 watch([timeline, () => display.value.live], ([entries, live]) => {
@@ -61,6 +66,7 @@ function entryCodeProgress(entry: DisplayPart): CodeProgressSnapshot | undefined
   return callId ? props.codeProgress[callId] : undefined
 }
 const liveToolSummary = computed(() => {
+  if (waitingForUser.value) return ''
   const tools = timeline.value.filter(entry => isAiToolPart(entry.part))
   if (tools.length < 2) return ''
   const done = tools.filter(entry => !['preparing', 'waiting', 'running', 'approval', 'input'].includes(aiToolStatus(entry.part, entry.pendingKind, true))).length
@@ -96,9 +102,15 @@ const duration = computed(() => {
     ? `${minutes}分钟 ${seconds % 60}秒`
     : `${seconds}秒`
 })
-const processLabel = computed(() => duration.value
-  ? (display.value.live ? `已处理 ${duration.value}` : `用时 ${duration.value}`)
-  : (display.value.live ? '正在处理…' : '处理过程'))
+const processLabel = computed(() => {
+  if (waitingForUser.value) {
+    if (hasPendingInput.value && hasPendingApproval.value) return '等待你回复与确认'
+    return hasPendingInput.value ? '等待你回复' : '等待你确认'
+  }
+  return duration.value
+    ? (display.value.live ? `已处理 ${duration.value}` : `用时 ${duration.value}`)
+    : (display.value.live ? '正在处理…' : '处理过程')
+})
 const finishedTime = computed(() => Number.isFinite(finishedAt.value)
   ? new Date(finishedAt.value).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
   : '')

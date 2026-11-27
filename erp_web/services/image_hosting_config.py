@@ -114,7 +114,7 @@ def default_profile(config: dict) -> dict:
     hosting = config.get("image_hosting", {})
     profile = next((item for item in hosting.get("profiles", []) if item["id"] == hosting.get("default_profile_id")), None)
     if profile is None:
-        raise ImageHostingError("IMAGE_HOSTING_NOT_CONFIGURED", "需要配置图片托管", "在设置中配置 S3 兼容存储并设为默认")
+        raise ImageHostingError("IMAGE_HOSTING_NOT_CONFIGURED", "需要配置图片托管", "请由管理员在「系统设置 → 管理员共享设置」中配置 S3 兼容存储并设为默认")
     return require_ready(profile)
 
 

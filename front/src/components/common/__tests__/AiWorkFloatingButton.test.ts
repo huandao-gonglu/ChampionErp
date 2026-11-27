@@ -368,4 +368,84 @@ describe('AiWorkFloatingButton', () => {
     expect(store.input).toBe('原对话尚未发送的输入')
     store.closeFloating()
   })
+
+  it('有待回复问答或审批时在聊天图标右上角展示红色数字角标，已处理后自动消失', async () => {
+    const { wrapper, store } = await mountFloatingButton()
+    const toggle = wrapper.get('[data-testid="ai-work-floating-toggle"]')
+    expect(wrapper.find('[data-testid="ai-work-floating-badge"]').exists()).toBe(false)
+
+    // 仅后台运行中的 external 任务不触发红点数字角标。
+    store.pendingToolCalls = [{ tool_call_id: 'job-1', tool_name: 'draft_images_prepare', kind: 'external', summary: '' }]
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="ai-work-floating-badge"]').exists()).toBe(false)
+
+    // 出现 1 条问答时展示红色数字 1。
+    store.pendingToolCalls = [{
+      tool_call_id: 'ask-1',
+      tool_name: 'request_user_input',
+      kind: 'input',
+      summary: '',
+      title: '确认包装尺寸',
+      question: '请提供包装尺寸',
+    }]
+    await wrapper.vm.$nextTick()
+    const badge = wrapper.get('[data-testid="ai-work-floating-badge"]')
+    expect(badge.text()).toBe('1')
+    expect(badge.classes()).toContain('bg-rose-500')
+    expect(toggle.attributes('aria-label')).toBe('打开 AI 助手（1 条待处理）')
+
+    // 并行回复也有待确认项时累计数量。
+    store.parallelReplies = [{
+      ok: true,
+      conversation_id: 'parallel-1',
+      history_version: 1,
+      messages: [],
+      created_at: '',
+      updated_at: '',
+      pending_tool_calls: [
+        { tool_call_id: 'ask-2', tool_name: 'request_user_input', kind: 'input', summary: '', title: '确认库存', question: '库存多少？' },
+        { tool_call_id: 'app-1', tool_name: 'product_publish_request', kind: 'approval', summary: '确认发布' },
+      ],
+    }]
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('[data-testid="ai-work-floating-badge"]').text()).toBe('3')
+
+    // 回复完成后角标消失。
+    store.pendingToolCalls = []
+    store.parallelReplies = []
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="ai-work-floating-badge"]').exists()).toBe(false)
+    expect(toggle.attributes('aria-label')).toBe('打开 AI 助手')
+  })
+
+  it('页面加载恢复上次会话后，无需悬停即可直接在聊天图标展示未答问答红点角标', async () => {
+    const id = `conversation_global_chat_${'cd'.repeat(16)}`
+    const saved = new Map([[AI_CHAT_SELECTION_KEY, id]])
+    const get = vi.spyOn(localStorage, 'getItem').mockImplementation(key => saved.get(key) ?? null)
+    const set = vi.spyOn(localStorage, 'setItem').mockImplementation((key, value) => { saved.set(key, value) })
+    mocks.fetchUiMessages.mockResolvedValue({
+      ok: true,
+      conversation_id: id,
+      history_version: 5,
+      run_active: false,
+      messages: [],
+      pending_tool_calls: [{
+        tool_call_id: 'ask-restored',
+        tool_name: 'request_user_input',
+        kind: 'input',
+        summary: '',
+        title: '确认规格',
+        question: '请确认规格',
+      }],
+    })
+    try {
+      const { wrapper, store } = await mountFloatingButton()
+      await flushPromises()
+      expect(wrapper.get('[data-testid="ai-work-floating-badge"]').text()).toBe('1')
+      store.disconnectEvents()
+    } finally {
+      get.mockRestore()
+      set.mockRestore()
+    }
+  })
 })

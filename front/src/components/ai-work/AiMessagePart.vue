@@ -40,6 +40,17 @@ const isToolPart = computed(() => isAiToolPart(props.part))
 const tool = computed(() => props.part as ToolPartView)
 const rawToolName = computed(() => aiToolName(props.part))
 const isRunCode = computed(() => rawToolName.value === 'run_code')
+const userInputPrompt = computed(() => {
+  if (!isToolPart.value || rawToolName.value !== 'request_user_input') return null
+  const input = tool.value.input && typeof tool.value.input === 'object'
+    ? tool.value.input as { title?: unknown; question?: unknown }
+    : undefined
+  const title = typeof input?.title === 'string' ? input.title.trim() : ''
+  const question = typeof input?.question === 'string' ? input.question.trim() : ''
+  if (!title && !question) return null
+  const reply = typeof tool.value.output === 'string' ? tool.value.output.trim() : ''
+  return { title, question, reply }
+})
 const toolName = computed(() => (
   isRunCode.value
     ? describeRunCodeAction(tool.value.input, props.codeProgress, props.writeReceipts, tool.value.toolCallId)
@@ -317,6 +328,33 @@ const statusLabels: Record<string, string> = {
       </div>
     </div>
     <p class="mt-1.5 break-words leading-5 text-rose-800 dark:text-rose-100">{{ fatalModelError.message || toolError }}</p>
+  </div>
+
+  <!-- AI 发起的等待用户补充信息提问：直接在消息区展示完整标题与问题，不埋入折叠工具行 -->
+  <div
+    v-else-if="isToolPart && userInputPrompt"
+    class="min-w-0 rounded-xl border px-3.5 py-2.5 text-sm"
+    :class="status === 'input'
+      ? 'border-amber-300 bg-amber-50/80 text-slate-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-accent-100'
+      : 'border-slate-200 bg-slate-50/70 text-slate-700 dark:border-dark-700 dark:bg-dark-800/60 dark:text-accent-200'"
+    data-testid="ai-part-user-input"
+  >
+    <div class="flex flex-wrap items-center gap-2">
+      <component :is="toolIcon" :size="16" class="shrink-0 text-amber-600 dark:text-amber-300" aria-hidden="true" />
+      <span class="min-w-0 font-semibold">{{ userInputPrompt.title || toolName }}</span>
+      <span
+        class="inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset"
+        :class="toolStatusClass"
+      >
+        {{ toolStatusLabel }}
+      </span>
+    </div>
+    <p v-if="userInputPrompt.question" class="mt-1.5 whitespace-pre-wrap break-words text-sm leading-6">
+      {{ userInputPrompt.question }}
+    </p>
+    <p v-if="userInputPrompt.reply" class="mt-2 border-t border-slate-200/80 pt-1.5 text-xs text-slate-500 dark:border-dark-700 dark:text-accent-300">
+      你的回复：{{ userInputPrompt.reply }}
+    </p>
   </div>
 
   <!-- 工具在原位置更新；仅展开时展示参数和回执。 -->

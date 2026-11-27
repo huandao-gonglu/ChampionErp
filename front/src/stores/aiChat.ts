@@ -56,6 +56,12 @@ export const useAiChatStore = defineStore('aiChat', () => {
   const parallelReplies = ref<AiWorkUiMessagesResponse[]>([])
   const queueAction = ref('')
   const parallelActive = computed(() => parallelReplies.value.some(reply => reply.run_active || reply.received_messages?.length || reply.pending_tool_calls?.length))
+  const parallelPolling = computed(() => parallelReplies.value.some(reply => reply.run_active || reply.received_messages?.length || reply.pending_tool_calls?.some(call => call.kind === 'external')))
+  const hasExternalPending = computed(() => pendingToolCalls.value.some(call => call.kind === 'external'))
+  const pendingUserActionsCount = computed(() => {
+    const count = (calls?: PendingToolCall[]) => (calls ?? []).filter(call => call.kind === 'input' || call.kind === 'approval').length
+    return count(pendingToolCalls.value) + parallelReplies.value.reduce((sum, reply) => sum + count(reply.pending_tool_calls), 0)
+  })
   const queueRows = computed(() => [
     ...receivedMessages.value.map(row => ({ ...row, conversation_id: activeConversationId.value! })),
     ...parallelReplies.value.flatMap(reply => (reply.received_messages ?? []).map(row => ({ ...row, conversation_id: reply.conversation_id }))),
@@ -211,12 +217,12 @@ export const useAiChatStore = defineStore('aiChat', () => {
       pendingToolCalls.value = detail.pending_tool_calls ?? []
       parallelReplies.value = detail.parallel_replies ?? []
       if (!pendingInputIds.size) latestMessageId.value = detail.latest_message_id ?? latestMessageId.value
-      if (parallelActive.value) {
+      if (parallelPolling.value) {
         if (retryTimer) clearTimeout(retryTimer)
         retryTimer = setTimeout(() => void resyncFromServer(conversationId, 0, true), 1000)
       }
       if (isBusy.value) {
-        if (receivedMessages.value.length && !parallelActive.value) {
+        if (receivedMessages.value.length && !parallelPolling.value) {
           connectEvents(conversationId, detail.history_version)
           if (typeof EventSource === 'undefined') retryTimer = setTimeout(() => void resyncFromServer(conversationId), 2000)
         }
@@ -240,8 +246,8 @@ export const useAiChatStore = defineStore('aiChat', () => {
       if (chat.value.error && !(chat.value.error as AiChatError).status) chat.value.clearError()
       localError.value = detail.run_error ? Object.assign(new Error(detail.run_error.message), { code: detail.run_error.code }) : undefined
       receivedNotice.value = ''
-      if (!parallelActive.value) connectEvents(conversationId)
-      if (!parallelActive.value && (watchingActionJob.value || pendingToolCalls.value.length || (runActive.value && typeof EventSource === 'undefined'))) retryTimer = setTimeout(() => void resyncFromServer(conversationId), 2000)
+      if (!parallelPolling.value) connectEvents(conversationId)
+      if (!parallelPolling.value && (watchingActionJob.value || hasExternalPending.value || (runActive.value && typeof EventSource === 'undefined'))) retryTimer = setTimeout(() => void resyncFromServer(conversationId), 2000)
     } catch (cause) {
       if (requestGeneration !== generation || activeConversationId.value !== conversationId) return
       if ((cause as AiChatError)?.code === 'CHAT_DELETED') {
@@ -583,7 +589,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
     receivedNotice.value = ''
     finishRestore()
     connectEvents(id)
-    if (runActive.value || parallelActive.value || pendingToolCalls.value.length || watchingActionJob.value) retryTimer = setTimeout(() => void resyncFromServer(id), 200)
+    if (runActive.value || parallelPolling.value || hasExternalPending.value || watchingActionJob.value) retryTimer = setTimeout(() => void resyncFromServer(id), 200)
   }
   function estimatePackageDimensions(draftId: string, skuIds: string[], markets: string[]): void {
     startConversation()
@@ -656,9 +662,9 @@ export const useAiChatStore = defineStore('aiChat', () => {
   }
   function clearError(): void { localError.value = undefined; chat.value?.clearError() }
   return { images, resumeOpen, openResume, activeTitle, conversationListVersion, applyConversationChange, activeConversationId, conversationLinkId, chat, input, floatingOpen, historyVersion, stopping, canStop, status, messages,
-    error, isBusy, isRunning, canSend, pendingToolCalls, codeProgress, receivedNotice, receivedMessages, startConversation,
+    error, isBusy, isRunning, canSend, pendingToolCalls, pendingUserActionsCount, codeProgress, receivedNotice, receivedMessages, startConversation,
     restoring, restoreError, restoreConversation, actOnQueue, queueAction, queueRows, parallelReplies, stopParallelReply, respondToParallelApproval,
     sendMessage, stopStreaming, respondToApproval, answerQuestion, clearError, openConversation, connectEvents, disconnectEvents,
     prepareDrafts, estimatePackageDimensions, restoreDesktopInput, refreshHistory, startManualAction, finishManualAction, forking, forkConversation,
-    openFloating: () => { floatingOpen.value = true; void restoreConversation() }, closeFloating: () => { floatingOpen.value = false } }
+    openFloating: () => { floatingOpen.value = true; if (!restoreError.value) void restoreConversation() }, closeFloating: () => { floatingOpen.value = false } }
 })

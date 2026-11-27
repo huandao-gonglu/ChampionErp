@@ -17,7 +17,7 @@ from erp_web.services.s3_image_storage import S3ImageStorage
 
 def mutate_image_hosting(body: dict, action: str) -> tuple[dict, int]:
     try:
-        store = get_context().config
+        store = get_context().config.shared_config
         if action == "save":
             identity = store.save_image_hosting_profile(body["profile"])
         elif action == "default":
@@ -36,7 +36,7 @@ def mutate_image_hosting(body: dict, action: str) -> tuple[dict, int]:
 
 
 def test_image_hosting(body: dict) -> tuple[dict, int]:
-    store = get_context().config
+    store = get_context().config.shared_config
     try:
         profile = store.image_hosting_test_profile(body["profile"])
     except ImageHostingError as exc:

@@ -461,4 +461,53 @@ describe('AI 对话按轮次展示', () => {
     expect(push).toHaveBeenCalledWith({ path: '/', query: { tab: 'auth', auth_section: 'ai_models' } })
     expect(JSON.stringify(messages)).toBe(saved)
   })
+
+  it('等待用户回复提问时直接在消息区展示完整问题，且暂停顶部持续计时', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-11-26T15:16:00Z'))
+    const timing = { started_at: '2026-11-26T15:01:16Z', finished_at: '', status: 'claimed' }
+    const promptPart = {
+      type: 'tool-request_user_input',
+      toolCallId: 'ask-1',
+      state: 'approval-requested',
+      input: {
+        title: '确认包装与库存',
+        question: '1. 请提供外包装尺寸。\n2. 充气泵库存是多少？',
+      },
+    } as unknown as AiUiPart
+    const pending: PendingToolCall[] = [{
+      tool_call_id: 'ask-1',
+      tool_name: 'request_user_input',
+      kind: 'input',
+      summary: '',
+      title: '确认包装与库存',
+      question: '1. 请提供外包装尺寸。\n2. 充气泵库存是多少？',
+    }]
+    const wrapper = mount(AiMessageList, {
+      props: {
+        active: false,
+        pendingToolCalls: pending,
+        messages: [
+          user('u1', '处理草稿'),
+          { ...reply('a1', [tool('read-1'), promptPart]), metadata: { ai_turn: timing } },
+        ],
+      },
+    })
+    try {
+      expect(wrapper.get('[data-testid="ai-turn-timing"]').text()).toBe('等待你回复')
+      expect(wrapper.find('[data-testid="ai-turn-step-count"]').exists()).toBe(false)
+      const card = wrapper.get('[data-testid="ai-part-user-input"]')
+      expect(card.element.closest('details')).toBeNull()
+      expect(card.text()).toContain('确认包装与库存')
+      expect(card.text()).toContain('1. 请提供外包装尺寸。')
+      expect(card.text()).toContain('等待回复')
+
+      // 推进时间后不应变成“已处理 XX 分钟”持续累加。
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(wrapper.get('[data-testid="ai-turn-timing"]').text()).toBe('等待你回复')
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
 })

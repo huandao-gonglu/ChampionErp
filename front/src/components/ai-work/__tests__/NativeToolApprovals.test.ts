@@ -19,7 +19,8 @@ describe('原生工具审批卡', () => {
     store.pendingToolCalls = [{ tool_call_id: 'rule', tool_name: 'user_agents_update', kind: 'approval', summary: '确认替换自定义指令' }]
     const respond = vi.spyOn(store, 'respondToApproval').mockResolvedValue()
     const wrapper = mount(ChatPendingActions)
-    await wrapper.get('button[aria-expanded]').trigger('click')
+    // 单条待办默认自动展开，无需再点击折叠按钮。
+    expect(wrapper.get('button[aria-expanded]').attributes('aria-expanded')).toBe('true')
     const card = wrapper.get('[data-testid="native-tool-approvals"]')
     expect(card.findAll('dd').map(item => item.text())).toEqual([input.current_text, input.text])
     expect(card.find('details').exists()).toBe(false)
@@ -37,7 +38,7 @@ describe('原生工具审批卡', () => {
     store.pendingToolCalls = [{ tool_call_id: 'estimate', tool_name: 'draft_package_estimates_confirm', kind: 'approval', summary: '确认建议值' }]
     const respond = vi.spyOn(store, 'respondToApproval').mockResolvedValue()
     const wrapper = mount(ChatPendingActions)
-    await wrapper.get('button[aria-expanded]').trigger('click')
+    expect(wrapper.get('button[aria-expanded]').attributes('aria-expanded')).toBe('true')
     const review = wrapper.get('[aria-label="待确认的包装外尺寸"]').text()
     for (const text of ['10 L 桶', 's-1', '包装长 30 cm', '28–32 cm', input.estimates[0].basis]) expect(review).toContain(text)
     expect(respond).not.toHaveBeenCalled()
@@ -54,8 +55,8 @@ describe('原生工具审批卡', () => {
     store.pendingToolCalls = [{ tool_call_id: 'call-1', tool_name: 'publish', kind: 'approval', summary: '发布指定草稿' }, { tool_call_id: 'call-2', tool_name: 'prepare', kind: 'external', summary: '' }]
     const respond = vi.spyOn(store, 'respondToApproval').mockResolvedValue()
     const wrapper = mount(ChatPendingActions)
-    await wrapper.get('button[aria-expanded]').trigger('click')
     expect(wrapper.findAll('button[aria-expanded]')).toHaveLength(1)
+    expect(wrapper.get('button[aria-expanded]').attributes('aria-expanded')).toBe('true')
     expect(wrapper.text()).toContain('发布指定草稿')
     await wrapper.get('button.btn-outline').trigger('click')
     await flushPromises()
@@ -143,9 +144,35 @@ describe('原生工具审批卡', () => {
     expect(wrapper.get('textarea').element.value).toBe('12')
     store.parallelReplies = []
     await flushPromises()
-    expect(wrapper.find('textarea').exists()).toBe(false)
-    await second.trigger('click')
+    // 剩下一条待回复时自动展开，并保留之前输入的草稿内容。
     expect(wrapper.get('textarea').element.value).toBe('蓝色')
+    wrapper.unmount()
+  })
+
+  it('单条 AI 问答自动展开完整问题与回复框，用户手动折叠后保持收起', async () => {
+    const store = useAiChatStore()
+    store.activeConversationId = 'main'
+    store.pendingToolCalls = [{
+      tool_call_id: 'ask-1',
+      tool_name: 'request_user_input',
+      kind: 'input',
+      summary: '',
+      title: '确认包装尺寸与库存',
+      question: '请补充各规格的外包装尺寸和可售库存。',
+    }]
+    const wrapper = mount(ChatPendingActions)
+    expect(wrapper.get('[data-testid="chat-pending-header"]').text()).toContain('AI 正在等待你回复')
+    expect(wrapper.get('button[aria-expanded]').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.text()).toContain('请补充各规格的外包装尺寸和可售库存。')
+    expect(wrapper.find('textarea').exists()).toBe(true)
+
+    await wrapper.get('button[aria-expanded]').trigger('click')
+    expect(wrapper.get('button[aria-expanded]').attributes('aria-expanded')).toBe('false')
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    // 刷新同条待办后尊重用户手动折叠状态。
+    store.pendingToolCalls = [{ ...store.pendingToolCalls[0]! }]
+    await flushPromises()
+    expect(wrapper.find('textarea').exists()).toBe(false)
     wrapper.unmount()
   })
 

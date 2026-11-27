@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { PhPushPin } from '@phosphor-icons/vue'
 import AiChatPanel from '@/components/ai-work/AiChatPanel.vue'
@@ -19,6 +19,18 @@ const isPinned = ref(false)
 const shouldRender = computed(() => route.name !== 'AiWork')
 
 const panelError = computed(() => chatStore.error?.message || '')
+const pendingBadgeCount = computed(() => chatStore.pendingUserActionsCount)
+const pendingBadgeText = computed(() => (
+  pendingBadgeCount.value > 99 ? '99+' : pendingBadgeCount.value > 0 ? String(pendingBadgeCount.value) : ''
+))
+const toggleAriaLabel = computed(() => (
+  pendingBadgeCount.value > 0 ? `打开 AI 助手（${pendingBadgeCount.value} 条待处理）` : '打开 AI 助手'
+))
+const toggleTitle = computed(() => (
+  pendingBadgeCount.value > 0
+    ? `有 ${pendingBadgeCount.value} 条待回复或待确认，点击打开 AI 助手`
+    : '点击打开 AI 助手，拖拽调整位置'
+))
 
 const workspaceReturnQuery = computed(() => {
   if (route.name !== 'WorkflowHome') return {}
@@ -75,6 +87,11 @@ function togglePinned(): void {
 
 watch(shouldRender, (visible) => {
   if (!visible) chatStore.closeFloating()
+})
+
+onMounted(() => {
+  // 恢复上次会话以便后台提问/审批到达时直接在聊天图标上展示红点角标，无需先悬停打开。
+  if (shouldRender.value) void chatStore.restoreConversation()
 })
 
 onBeforeUnmount(() => {
@@ -170,18 +187,26 @@ onBeforeUnmount(() => {
 
     <RouterLink
       :to="aiWorkRoute"
-      aria-label="打开 AI 助手"
+      :aria-label="toggleAriaLabel"
       :aria-expanded="chatStore.floatingOpen && !floatingDrag.dragging.value"
       aria-controls="ai-work-floating-panel"
-      title="点击打开 AI 助手，拖拽调整位置"
+      :title="toggleTitle"
       data-testid="ai-work-floating-toggle"
-      class="flex size-14 shrink-0 touch-none select-none items-center justify-center rounded-full border border-white/60 bg-primary-600 text-white shadow-xl shadow-primary-950/25 transition-colors duration-200 hover:bg-primary-500 hover:shadow-2xl hover:shadow-primary-950/30 focus:outline-none focus-visible:ring-4 focus-visible:ring-primary-300 dark:border-primary-300/20 dark:bg-primary-500 dark:hover:bg-primary-400"
+      class="relative flex size-14 shrink-0 touch-none select-none items-center justify-center rounded-full border border-white/60 bg-primary-600 text-white shadow-xl shadow-primary-950/25 transition-colors duration-200 hover:bg-primary-500 hover:shadow-2xl hover:shadow-primary-950/30 focus:outline-none focus-visible:ring-4 focus-visible:ring-primary-300 dark:border-primary-300/20 dark:bg-primary-500 dark:hover:bg-primary-400"
       :class="floatingDrag.dragging.value ? 'cursor-grabbing' : 'cursor-grab'"
       @pointerdown="floatingDrag.start"
       @lostpointercapture="floatingDrag.cancel"
       @click.capture="floatingDrag.handleClick"
       @dragstart.prevent
     >
+      <span
+        v-if="pendingBadgeText"
+        data-testid="ai-work-floating-badge"
+        class="pointer-events-none absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-rose-500 px-1 text-[11px] font-bold leading-none text-white shadow-sm ring-2 ring-white dark:ring-dark-900"
+        aria-hidden="true"
+      >
+        {{ pendingBadgeText }}
+      </span>
       <svg
         aria-hidden="true"
         viewBox="0 0 24 24"

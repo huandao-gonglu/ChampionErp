@@ -105,8 +105,9 @@ Yandex 新核价保留实际筛选与整组选仓依据；历史缺失依据不�
 
 ### 管理员共享设置与个人费率
 
-- `AccountRuntime.context_for` 将每个空间的 `ConfigStore.shared_config` 和 `AppContext.shared_paths` 绑定到根配置与路径，客户端不能选择共享 owner。仅汇率 API 配置、禁售名单和企业应用使用此共享来源。个人核价模板、手动汇率、店铺授权与 Mercado 应用配置仍由个人持有。
-- GET/POST `/api/admin/settings` 经 `managed_settings_facade`、`schemas/managed_settings.py` 和 `ConfigStore.managed_settings/save_managed_settings` 管理企业应用、汇率 API 与共享 Gemini Canvas 修图项目地址（`gemini_canvas_url`）；请求带配置 revision，冲突拒绝整次更新。企业密钥只返回是否配置。通用设置和 AI 设置不能改写汇率 API 或共享 Canvas 地址，普通配置视图不下发汇率地址；汇率缓存记录来源，切换 API 不复用旧来源缓存。
+- `AccountRuntime.context_for` 将每个空间的 `ConfigStore.shared_config` 和 `AppContext.shared_paths` 绑定到根配置与路径，客户端不能选择共享 owner。汇率 API 配置、禁售名单、企业应用、共享 Gemini Canvas 地址与图片托管（S3）使用此共享来源。个人核价模板、手动汇率、店铺授权与 Mercado 应用配置仍由个人持有。
+- GET/POST `/api/admin/settings` 经 `managed_settings_facade`、`schemas/managed_settings.py` 和 `ConfigStore.managed_settings/save_managed_settings` 管理企业应用、汇率 API 与共享 Gemini Canvas 修图项目地址（`gemini_canvas_url`）；请求带配置 revision，冲突拒绝整次更新。企业密钥只返回是否配置。通用设置和 AI 设置不能改写汇率 API、共享 Canvas 地址或图片托管，普通配置视图不下发汇率地址与图片托管；汇率缓存记录来源，切换 API 不复用旧来源缓存。
+- 管理员共享图片托管（S3）由 `ConfigStore.shared_config` 统一持久化于根配置及根库 `runtime_secrets`；`POST /api/image-hosting/{save,default,delete,test}` 校验管理员角色并写入根配置，普通账号的 `save_app_config` 不落盘共享 S3 配置或凭据，交付写回与队列准入经 `image_hosting_commit_scope` 同时串行化当前账号与共享配置锁。普通账号调用 `GET /api/image-hosting` / `settings.image_hosting` 仅返回当前默认目标的脱敏公开状态，不暴露上传端点、桶名、前缀或备选配置。前端入口位于「系统设置 → 管理员共享设置」（`SystemSettingsPanel.vue` 挂载 `ImageHostingSettingsPanel.vue`），已移除「授权配置 → 图片托管」旧页签。
 - `AppContext.tariffs` 装配 `TariffSettingsService`。共享费率位于根 `data/tariffs`，普通用户覆盖位于其空间 `data/tariffs`，根管理员的个人覆盖位于 `data/personal-tariffs`。按平台选择来源，未自定义者自动跟随；自定义表记录 `customized_from`，管理员版本改变时提示更新，用户显式确认覆盖后恢复跟随，原版本文件保留。
 - GET `/api/shipping/tariffs`、POST `/import` 与 `/upgrade` 位于 `pricing_workspace_routes`。仅管理员可写 shared scope，所有用户可写 personal scope。导入复用模块 XLSX 解析和差异比较，限制文件/解压大小，校验表头、单位、明确数值和完整规则，失败保留生效版本。预览后显式发布，写入与升级均核对预期版本，尚未生效日期拒绝发布。
 - 核价 `ShippingModule`、Yandex 发布仓运输模式和 `draft_pricing._pricing_environment` 使用同一份有效费率来源；单次核价固定快照，更新后旧预览须重算。发布校验会比较已保存报价的运费版本与当前有效版本，单次 SKU 批次由 `PublishValidationSession` 固定版本读取，历史报价保留展示。当前导入支持 Yandex FBS 与 Ozon OGL，Mercado 按个人店铺授权调用远端试算。
@@ -1605,7 +1606,7 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   上传、公开读取与清理分开报告，测试结果绑定配置版本，不静默保存未保存表单。
   测试结果记录上传和匿名检查是否已执行；PUT 发送前被拦截时跳过匿名 GET 与
   DELETE，不声称有残留对象。PUT 后 HEAD 失败仍尝试精确清理本次测试 key。
-- `front/src/components/auth/ImageHostingSettingsPanel.vue`：设置中的列表、凭据表单、
+- `front/src/components/auth/ImageHostingSettingsPanel.vue`：挂载于「系统设置 → 管理员共享设置」（仅管理员可见），提供列表、凭据表单、
   默认项与显式测试。复用 WorkspaceDialog，提交中禁止关闭和重复提交；修改表单后
   旧测试结果失效。高级设置提供可取消的“移除已保存凭据”，保存时一次移除两项；
   默认配置须先解除默认，普通输入留空保留原凭据。

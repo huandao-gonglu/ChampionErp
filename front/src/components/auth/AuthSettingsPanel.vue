@@ -9,7 +9,6 @@ import ApiModelPicker from './ApiModelPicker.vue'
 import GeminiCanvasSettingsCard from './GeminiCanvasSettingsCard.vue'
 import { testAiModel } from '@/api/workflow/settings'
 import PageHeader from '@/components/layout/PageHeader.vue'
-import ImageHostingSettingsPanel from '@/components/auth/ImageHostingSettingsPanel.vue'
 import ProductResearchSettingsPanel from '@/components/auth/ProductResearchSettingsPanel.vue'
 import AlibabaSettingsPanel from '@/components/auth/AlibabaSettingsPanel.vue'
 import CrossborderBusSettingsPanel from '@/components/auth/CrossborderBusSettingsPanel.vue'
@@ -73,10 +72,10 @@ const selectedStorePlatform = ref<Marketplace>('mercadolibre')
 const activePinia = getActivePinia()
 const accountStore = activePinia ? useAccountStore(activePinia) : null
 const isAdmin = computed(() => Boolean(accountStore?.isAdmin))
-type AuthSettingsTab = 'ai_models' | 'ai_bindings' | 'stores' | 'research' | 'image_hosting' | 'crossborderbus' | 'alibaba'
+type AuthSettingsTab = 'ai_models' | 'ai_bindings' | 'stores' | 'research' | 'crossborderbus' | 'alibaba'
 const activeAuthSettingsTab = ref<AuthSettingsTab>('ai_models')
 const authRoute = inject(routeLocationKey, undefined)
-const validAuthSections = new Set<AuthSettingsTab>(['ai_models', 'ai_bindings', 'stores', 'research', 'image_hosting', 'crossborderbus', 'alibaba'])
+const validAuthSections = new Set<AuthSettingsTab>(['ai_models', 'ai_bindings', 'stores', 'research', 'crossborderbus', 'alibaba'])
 watch(() => authRoute?.query.auth_section, section => {
   const value = Array.isArray(section) ? section[0] : section
   if (value && validAuthSections.has(value as AuthSettingsTab)) {
@@ -134,7 +133,6 @@ const authSettingsTabs: Array<{ key: AuthSettingsTab; label: string; summary: st
   { key: 'ai_bindings', label: '功能绑定', summary: '模型和功能 Prompt' },
   { key: 'stores', label: '店铺授权', summary: '按一级平台保存，子站点共用凭证' },
   { key: 'alibaba', label: '1688 授权', summary: '采购订单、物流查询与商品采集' },
-  { key: 'image_hosting', label: '图片托管', summary: 'S3 存储、默认目标与公开读取测试' },
   { key: 'research', label: '调研来源', summary: '选品调研搜索手段和市场' },
   { key: 'crossborderbus', label: '跨境巴士', summary: '账号授权与物流收货地址' },
 ]
@@ -2697,10 +2695,6 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
             <AlibabaSettingsPanel provider="onebound" />
           </div>
         </template>
-
-        <section v-if="activeAuthSettingsTab === 'image_hosting'">
-          <ImageHostingSettingsPanel />
-        </section>
 
         <section v-show="activeAuthSettingsTab === 'research'">
           <ProductResearchSettingsPanel embedded />
