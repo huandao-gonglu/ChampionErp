@@ -92,16 +92,26 @@ def handle_delete_products(handler: JsonRequestHandler) -> None:
 
 
 def handle_export_products(handler: JsonRequestHandler) -> None:
-    result, status = product_facade.export_products_payload(
-        validate_request_payload(handler.read_body(), endpoint=handler.path)
+    body = validate_request_payload(handler.read_body(), endpoint=handler.path)
+    zip_bytes, filename, count, missing_ids = product_facade.export_products_archive(body)
+    extra_headers = {
+        "X-Export-Count": str(count),
+        "X-Export-Filename": urllib.parse.quote(filename, safe=""),
+    }
+    if missing_ids:
+        extra_headers["X-Export-Missing-Ids"] = ",".join(missing_ids)
+    handler.send_binary(
+        zip_bytes,
+        content_type="application/zip",
+        filename=filename,
+        extra_headers=extra_headers,
     )
-    handler.send_json(result, status)
 
 
 def handle_import_products(handler: JsonRequestHandler) -> None:
-    result, status = product_facade.import_products_payload(
-        validate_request_payload(handler.read_body(), endpoint=handler.path)
-    )
+    raw_zip = handler.read_binary_body(allowed_content_types=ZIP_CONTENT_TYPES)
+    validate_request_payload({}, endpoint=handler.path)
+    result, status = product_facade.import_products_archive(raw_zip)
     handler.send_json(result, status)
 
 

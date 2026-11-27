@@ -1839,13 +1839,26 @@ class ErpDatabase:
             )
             if not _draft_matches_scope(publish_state, scope):
                 continue
+            projected_targets = [
+                {
+                    "platform": target["platform"],
+                    "site": target["site"],
+                    "language": target["language"],
+                    **(
+                        {"sites_to_sell": target["sites_to_sell"]}
+                        if "sites_to_sell" in target
+                        else {}
+                    ),
+                }
+                for target in targets
+            ]
             item.update(
                 status=display_status,
                 publish_state=publish_state,
                 publish_status=effective_publish_status,
-                language=targets[0]["language"],
-                target_sites=targets,
-                platforms=_draft_platforms({"target_sites": targets}, row["platform"]),
+                language=projected_targets[0]["language"],
+                target_sites=projected_targets,
+                platforms=_draft_platforms({"target_sites": projected_targets}, row["platform"]),
                 source_product_id=item["source_product_id"] or item["product_id"],
             )
             items.append(item)

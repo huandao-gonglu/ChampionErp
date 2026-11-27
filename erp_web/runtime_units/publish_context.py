@@ -172,7 +172,9 @@ def prepare_publish_context(
                     if category_id.isascii() and category_id.isdigit()
                     else category_id
                 )
-                if normalized_cid not in catalog.cached_category_ancestor_map(platform, site=site):
+                if normalized_cid != "90401" and not catalog.cached_category_ancestor_ids(
+                    platform, normalized_cid, site=site
+                ):
                     try:
                         catalog.category_detail(
                             platform,

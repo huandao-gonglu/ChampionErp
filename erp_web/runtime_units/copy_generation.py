@@ -112,7 +112,7 @@ def save_copy_result(
     )
 
 
-_BATCH_COPY_MAX_WORKERS = 8
+_BATCH_COPY_MAX_WORKERS = 16
 
 
 def _resolve_item_language(

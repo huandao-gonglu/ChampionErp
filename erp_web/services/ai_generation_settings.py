@@ -40,6 +40,103 @@ REASONING_MODE_ENABLED = "enabled"
 REASONING_MODES = (REASONING_MODE_DISABLED, REASONING_MODE_ENABLED)
 REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
 
+# 文案生成与类目匹配属于高频批量结构化任务，在用户未显式配置推理策略时默认使用
+# 低/关闭 Thinking，兼顾吞吐与稳定性；功能绑定、模型开关或自定义请求体均可显式覆盖。
+LOW_THINKING_USE_CASES = frozenset(
+    {
+        "copy.generate",
+        "category.product_match",
+    }
+)
+_EXPLICIT_REASONING_BODY_FIELDS = frozenset(
+    {
+        "reasoning",
+        "reasoning_effort",
+        "thinking",
+        "enable_thinking",
+        "thinking_budget",
+        "anthropic_thinking",
+        "google_thinking_config",
+    }
+)
+
+
+def has_explicit_reasoning_config(
+    model: dict[str, Any],
+    settings: dict[str, Any] | None,
+) -> bool:
+    """判断用户是否在功能绑定、模型开关或自定义请求体中显式指定了推理设置。"""
+
+    if isinstance(settings, dict) and settings.get("reasoning") not in (None, "", {}):
+        return True
+    if isinstance(model.get("thinking_enabled"), bool):
+        return True
+    extra = model.get("extra") if isinstance(model.get("extra"), dict) else {}
+    request_body = extra.get("request_body")
+    if isinstance(request_body, dict):
+        if _EXPLICIT_REASONING_BODY_FIELDS.intersection(request_body.keys()):
+            return True
+        template_kwargs = request_body.get("chat_template_kwargs")
+        if isinstance(template_kwargs, dict) and (
+            "enable_thinking" in template_kwargs or "reasoning_effort" in template_kwargs
+        ):
+            return True
+    return False
+
+
+def apply_default_low_thinking_settings(
+    model: dict[str, Any],
+    model_settings: dict[str, Any],
+    *,
+    provider_family: str,
+    api_style: str,
+    profile: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """为支持思考的模型应用默认低/关闭推理设置；非思考模型与未知兼容网关保持原样。"""
+
+    if str(model.get("connection_type") or CONNECTION_TYPE_API).strip().lower() != CONNECTION_TYPE_API:
+        return model_settings
+    if provider_family == PROVIDER_FAMILY_GENERIC_OPENAI:
+        return model_settings
+    resolved_profile = profile or {}
+    if not resolved_profile.get("supports_thinking", False):
+        return model_settings
+
+    always_thinking = bool(resolved_profile.get("thinking_always_enabled", False))
+    updated = dict(model_settings)
+    if provider_family in {PROVIDER_FAMILY_OPENAI, PROVIDER_FAMILY_DEEPSEEK}:
+        if not always_thinking and bool(
+            resolved_profile.get("openai_supports_reasoning_effort_none", False)
+        ):
+            updated["thinking"] = False
+        else:
+            updated["thinking"] = "low"
+        return updated
+    if provider_family in {PROVIDER_FAMILY_ANTHROPIC, PROVIDER_FAMILY_GOOGLE}:
+        updated["thinking"] = "low" if always_thinking else False
+        return updated
+    if provider_family == PROVIDER_FAMILY_OMLX:
+        if always_thinking:
+            return model_settings
+        extra_body = dict(updated.get("extra_body") or {})
+        raw_kwargs = extra_body.get("chat_template_kwargs")
+        template_kwargs = dict(raw_kwargs) if isinstance(raw_kwargs, dict) else {}
+        template_kwargs["enable_thinking"] = False
+        extra_body["chat_template_kwargs"] = template_kwargs
+        updated["extra_body"] = extra_body
+        return updated
+    if provider_family == PROVIDER_FAMILY_ALIBABA:
+        if always_thinking:
+            return model_settings
+        extra_body = dict(updated.get("extra_body") or {})
+        if api_style == API_STYLE_OPENAI_RESPONSES:
+            extra_body["reasoning"] = {"effort": "none"}
+        else:
+            extra_body["enable_thinking"] = False
+        updated["extra_body"] = extra_body
+        return updated
+    return model_settings
+
 def _optional_float(value: Any, *, field: str, minimum: float, maximum: float) -> float | None:
     if value in (None, ""):
         return None
@@ -555,7 +652,10 @@ def pydantic_native_model_profile_payload(
 
 __all__ = [
     "FORBIDDEN_PYDANTIC_PROTOCOL_FIELDS",
+    "LOW_THINKING_USE_CASES",
+    "apply_default_low_thinking_settings",
     "generation_capabilities",
+    "has_explicit_reasoning_config",
     "normalize_generation_settings",
     "pydantic_model_settings_payload",
     "pydantic_native_model_profile_payload",

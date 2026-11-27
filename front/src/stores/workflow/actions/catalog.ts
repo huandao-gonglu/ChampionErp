@@ -453,9 +453,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     setError('')
     try {
       const result = await exportProductsApi(ids)
-      const jsonText = JSON.stringify(result.exportData, null, 2)
-      const blob = new Blob([jsonText], { type: 'application/json;charset=utf-8' })
-      const url = URL.createObjectURL(blob)
+      const url = URL.createObjectURL(result.blob)
       try {
         const link = document.createElement('a')
         link.href = url
@@ -477,11 +475,12 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     }
   }
 
-  async function importProductsFromJson(payload: Record<string, unknown>) {
+  async function importProductsFromZip(file: File) {
     loading.value = true
     setError('')
     try {
-      const result = await importProductsApi(payload)
+      const result = await importProductsApi(file)
+      libraryRows.value = result.productsIndex
       productsIndex.value = result.productsIndex
       const message = result.message || `已导入 ${result.imported} 个商品到采集箱。`
       addLog(message)
@@ -882,7 +881,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
   return {
     acceptLoadedDraft,
     productsRefreshing, draftsRefreshing, refreshProductsIndex, refreshDraftsIndex, loadProduct, loadDraft, loadDraftForPricing, duplicateDraft, updateDraftTargets,
-    updateDraftLanguage, deleteDraft, deleteDrafts, deleteProduct, deleteSelectedProducts, exportSelectedProducts, importProductsFromJson, exportSelectedDrafts, importDraftsFromZip, toggleProductSelection,
+    updateDraftLanguage, deleteDraft, deleteDrafts, deleteProduct, deleteSelectedProducts, exportSelectedProducts, importProductsFromZip, exportSelectedDrafts, importDraftsFromZip, toggleProductSelection,
     selectAllProducts, claimProductsToDrafts, generateCopyForSelectedProducts, enqueueSelectedProducts,
     uploadReferenceImages, clearSourceImages, saveCurrentImagePool, setMainImage, deleteImages, editImagesWithPrompt,
     saveCurrentProduct, saveCurrentDraft, assignUpc, generateCopy, generateImagePromptPack, translateImages,

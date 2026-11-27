@@ -515,6 +515,10 @@ def canonicalize_product_for_category_match(
             {"role": "user", "content": user_text},
         ]
 
+    use_case_binding = ai_model_config.ai_use_case_binding(
+        dict(app_config),
+        _CANONICALIZER_USE_CASE_ID,
+    )
     try:
         result = ai_direct_request_service.chat_structured(
             app_dir=app_dir,
@@ -522,7 +526,7 @@ def canonicalize_product_for_category_match(
             model=model,
             required_capabilities=required_caps,
             messages=messages,
-            generation_settings=None,
+            generation_settings=use_case_binding.get("generation"),
             temperature=0.1,
             max_tokens=None,
             timeout_seconds=max(5, int(timeout_seconds)),

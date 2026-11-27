@@ -652,7 +652,7 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         path="/api/v1/category-match/batch",
         business_domain="类目与属性",
         disposition="capability",
-        capability_names=("category_match",),
+        capability_names=("category_match", "category_match_batch"),
     ),
     # -------------------------------------------------- 采集与认领（POST）
     AiCapabilityCoverageEntry(

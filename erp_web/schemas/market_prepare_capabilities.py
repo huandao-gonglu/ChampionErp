@@ -54,6 +54,57 @@ class CategoryMatchCapabilityResult(BaseModel):
     changed: bool
 
 
+class CategoryMatchBatchRequest(BaseModel):
+    """对多份草稿的同一目标市场并发执行自动类目匹配并保存结果。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    draft_ids: list[StableId] = Field(
+        min_length=1,
+        max_length=100,
+        description="待批量自动匹配类目的草稿 ID 列表。",
+    )
+    target_platform: PlatformKey
+    site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+
+
+class CategoryMatchBatchOption(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    value: StableId
+    label: Annotated[TrimmedText, StringConstraints(max_length=1000)]
+
+
+class CategoryMatchBatchItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    draft_id: StableId
+    ok: bool
+    status: Annotated[TrimmedText, StringConstraints(max_length=40)]
+    platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    category_id: Annotated[TrimmedText, StringConstraints(max_length=160)] = ""
+    category_path: Annotated[TrimmedText, StringConstraints(max_length=1000)] = ""
+    query: Annotated[TrimmedText, StringConstraints(max_length=500)] = ""
+    model_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    changed: bool = False
+    error_code: Annotated[TrimmedText, StringConstraints(max_length=120)] = ""
+    error: Annotated[TrimmedText, StringConstraints(max_length=1000)] = ""
+    needs_confirmation: bool = False
+    candidate_options: list[CategoryMatchBatchOption] = Field(default_factory=list)
+
+
+class CategoryMatchBatchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    total: int = Field(ge=0)
+    matched_count: int = Field(ge=0)
+    unresolved_count: int = Field(ge=0)
+    forbidden_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+    items: list[CategoryMatchBatchItem] = Field(default_factory=list)
+
+
 
 
 
@@ -112,6 +163,10 @@ class DraftPrepareForMarketResult(BaseModel):
 
 
 __all__ = [
+    "CategoryMatchBatchItem",
+    "CategoryMatchBatchOption",
+    "CategoryMatchBatchRequest",
+    "CategoryMatchBatchResult",
     "CategoryMatchCapabilityResult",
     "CategoryMatchRequest",
     "DraftPrepareForMarketRequest",

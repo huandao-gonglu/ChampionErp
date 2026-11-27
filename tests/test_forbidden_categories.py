@@ -282,8 +282,8 @@ def test_ai_category_precheck_and_publish_validation_block_forbidden_ancestor(mo
 
     monkeypatch.setattr(
         get_context().category_catalog.provider_for("yandex"),
-        "cached_category_ancestor_map",
-        lambda **kw: {"60491375": ancestors},
+        "cached_category_ancestor_ids",
+        lambda category_id, **kw: ancestors if str(category_id) == "60491375" else (),
     )
     product = _validatable_product(category_id="60491375")
     pub_res = validate_yandex_draft(product, _config(), _record(category_id="60491375"), image_stage="source")

@@ -433,6 +433,9 @@ def _chat_response(
         generation_settings=generation,
         timeout_seconds=timeout_seconds,
         required_capabilities=required_capabilities,
+        default_low_thinking=(
+            use_case_id in ai_generation_settings.LOW_THINKING_USE_CASES
+        ),
     )
     binding = omit_unsupported_reasoning_temperature(binding)
     native_tools, model_settings = _web_search_parameters(

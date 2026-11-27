@@ -2,6 +2,8 @@ from __future__ import annotations
 
 """商品事实读取、幂等属性设置与确定性草稿图片准备。"""
 
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Annotated, Any, Protocol, ContextManager
@@ -23,6 +25,9 @@ from erp_web.runtime_units.category_attribute_updates import validate_attribute_
 from erp_web.runtime_units.product_attribute_patch import apply_attribute_patch
 from erp_web.schemas.product_capabilities import (
     DraftSkuAttributesUpdateRequest,
+    DraftSkuVariantsCheckBatchItem,
+    DraftSkuVariantsCheckBatchRequest,
+    DraftSkuVariantsCheckBatchResult,
     DraftSkuVariantsCheckRequest,
     DraftSkuVariantsCheckResult,
     DraftAttributesReadRequest,
@@ -37,6 +42,7 @@ from erp_web.schemas.product_capabilities import (
     ProductReadRequest,
     ProductReadResult,
 )
+from erp_web.services.ai_run_cancellation import check_cancellation
 from erp_web.schemas.publish_capabilities import PublishIssueSku
 from erp_web.runtime_units.category_attribute_access import attribute_write_scope
 from erp_web.runtime_units.category_catalog import get_category_catalog
@@ -726,15 +732,13 @@ def draft_attributes_read(
     )
 
 
-@ai_tool(
-    name="draft_sku_variants_check",
-    description="核对指定目标当前已保存的 SKU 组合。填写差异属性后或确认无字段可写时使用。Yandex 真实差异在公共字段时传 yandex_variant_field_ids 实时查询店铺规则及后台操作步骤；用户保存后用同一组 ID 重查。返回各差异字段实际填写数量、必填缺口、重复组及受影响 SKU ID；distinct 仅表示规格组合可区分。独立刊登或少于两个可编辑 SKU 时不比较。不写草稿、不核价、不发布。",
-    permission="product.read", side_effect="none", recovery_policy="retry_safe", version="1",
-)
-def draft_sku_variants_check(
+_BATCH_VARIANTS_CHECK_MAX_WORKERS = 8
+
+
+def _check_draft_sku_variants(
     request: DraftSkuVariantsCheckRequest,
-    scope: Annotated[ProductCapabilityScope, Injected()],
-    execution: Annotated[AiExecutionContext, Injected()],
+    scope: ProductCapabilityScope,
+    execution: AiExecutionContext,
 ) -> DraftSkuVariantsCheckResult:
     draft, product = _load_draft(scope.products, request.draft_id)
     target = _select_target(draft, platform=request.platform, site=request.site)
@@ -844,6 +848,86 @@ def draft_sku_variants_check(
 
 
 @ai_tool(
+    name="draft_sku_variants_check",
+    description="核对指定目标当前已保存的 SKU 组合。填写差异属性后或确认无字段可写时使用。Yandex 真实差异在公共字段时传 yandex_variant_field_ids 实时查询店铺规则及后台操作步骤；用户保存后用同一组 ID 重查。返回各差异字段实际填写数量、必填缺口、重复组及受影响 SKU ID；distinct 仅表示规格组合可区分。独立刊登或少于两个可编辑 SKU 时不比较。不写草稿、不核价、不发布。",
+    permission="product.read", side_effect="none", recovery_policy="retry_safe", version="1",
+)
+def draft_sku_variants_check(
+    request: DraftSkuVariantsCheckRequest,
+    scope: Annotated[ProductCapabilityScope, Injected()],
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> DraftSkuVariantsCheckResult:
+    return _check_draft_sku_variants(request, scope, execution)
+
+
+@ai_tool(
+    name="draft_sku_variants_check_batch",
+    description=(
+        "批量并发核对多份草稿在指定目标下已保存的 SKU 变体组合，可选按 draft_id 传入 yandex_variant_field_ids_by_draft 做 Yandex 实时设置检查。"
+        "多份草稿统一核对变体组合时优先调用本工具，避免在脚本里高并发循环调用单个 draft_sku_variants_check。严格只读，不写草稿、不核价、不发布。"
+    ),
+    permission="product.read", side_effect="none", recovery_policy="retry_safe", version="1",
+)
+def draft_sku_variants_check_batch(
+    request: DraftSkuVariantsCheckBatchRequest,
+    scope: Annotated[ProductCapabilityScope, Injected()],
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> DraftSkuVariantsCheckBatchResult:
+    draft_ids = list(dict.fromkeys(request.draft_ids))
+
+    def _run_one(draft_id: str) -> DraftSkuVariantsCheckBatchItem:
+        check_cancellation()
+        try:
+            field_ids = list(request.yandex_variant_field_ids_by_draft.get(draft_id) or ())
+            result = _check_draft_sku_variants(
+                DraftSkuVariantsCheckRequest(
+                    draft_id=draft_id,
+                    platform=request.platform,
+                    site=request.site,
+                    yandex_variant_field_ids=field_ids,
+                ),
+                scope,
+                execution,
+            )
+            return DraftSkuVariantsCheckBatchItem(draft_id=draft_id, ok=True, result=result)
+        except BusinessCapabilityError as exc:
+            return DraftSkuVariantsCheckBatchItem(
+                draft_id=draft_id,
+                ok=False,
+                error_code=exc.code,
+                error=str(exc),
+            )
+        except Exception as exc:
+            return DraftSkuVariantsCheckBatchItem(
+                draft_id=draft_id,
+                ok=False,
+                error_code="SKU_VARIANTS_CHECK_FAILED",
+                error=str(exc) or "SKU 变体组合核对失败",
+            )
+
+    workers = min(_BATCH_VARIANTS_CHECK_MAX_WORKERS, len(draft_ids))
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="sku-variants-check-batch") as pool:
+            futures = [pool.submit(copy_context().run, _run_one, draft_id) for draft_id in draft_ids]
+            items = [future.result() for future in futures]
+    else:
+        items = [_run_one(draft_id) for draft_id in draft_ids]
+
+    distinct_count = sum(1 for item in items if item.ok and item.result and item.result.status == "distinct")
+    issues_count = sum(1 for item in items if item.ok and item.result and item.result.status == "issues")
+    not_applicable_count = sum(1 for item in items if item.ok and item.result and item.result.status == "not_applicable")
+    error_count = sum(1 for item in items if not item.ok)
+    return DraftSkuVariantsCheckBatchResult(
+        total=len(items),
+        distinct_count=distinct_count,
+        issues_count=issues_count,
+        not_applicable_count=not_applicable_count,
+        error_count=error_count,
+        items=items,
+    )
+
+
+@ai_tool(
     name=PRODUCT_ATTRIBUTES_UPDATE_TOOL,
     description="保存草稿指定类目的公共属性。读取 draft_attributes_read 与 category_attributes_query(scope=common) 后，将同一目标已确定的值合并到一次 updates 提交；只写 write_scope=common 的字段，托管/只读字段不可写。多项公共/SKU 修改可合并用 draft_changes_apply。返回实际已存值和必填缺口；写入成功不等于全部属性填齐。工具不推断、不调用模型。",
     permission="product.write",
@@ -900,6 +984,7 @@ PRODUCT_AI_CAPABILITIES = (
     product_read,
     draft_attributes_read,
     draft_sku_variants_check,
+    draft_sku_variants_check_batch,
     product_attributes_update,
     draft_sku_attributes_update,
     product_images_prepare,
@@ -920,6 +1005,7 @@ __all__ = [
     "product_read",
     "draft_attributes_read",
     "draft_sku_variants_check",
+    "draft_sku_variants_check_batch",
     "read_product",
     "update_product_attributes",
 ]

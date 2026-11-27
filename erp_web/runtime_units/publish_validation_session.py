@@ -1,8 +1,8 @@
-"""单次发布校验的共享读取；不跨请求复用、不持久化。"""
+"""单次发布校验（或一次批量只读预检）的共享读取；不跨请求复用、不持久化。"""
 from dataclasses import dataclass, field
-from functools import cached_property
 import json
 import sqlite3
+import threading
 from typing import Any
 
 from erp_web.context import get_context
@@ -15,18 +15,29 @@ class PublishValidationSession:
     sku_inputs_checked: bool = False
     images: ImageInspectionCache = field(default_factory=ImageInspectionCache)
     logistics_errors: dict[str, str] = field(default_factory=dict)
-    _yandex_plans_cache: list[dict[str, Any]] | None = field(
-        default=None, repr=False, compare=False,
-    )
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
+    _shared_values: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
     _platform_sku_index: dict[str, tuple[dict[str, set[str]], set[str]]] = field(
         default_factory=dict, repr=False, compare=False,
     )
-    _yandex_ancestors_by_token: dict[str, dict[str, tuple[str, ...]]] = field(
+    _yandex_ancestors_by_key: dict[tuple[str, str], tuple[str, ...]] = field(
         default_factory=dict, repr=False, compare=False,
     )
     _yandex_schema_cache: tuple[dict[str, Any] | None, dict[str, dict[str, Any]], list[dict[str, Any]]] | None = field(
         default=None, repr=False, compare=False,
     )
+
+    def for_sku_group(self) -> "PublishValidationSession":
+        """构造共享只读查找缓存的组内视图，隔离每份草稿的图片与类目临时缓存。"""
+        return PublishValidationSession(
+            sku_inputs_checked=True,
+            images=ImageInspectionCache(),
+            logistics_errors=self.logistics_errors,
+            _lock=self._lock,
+            _shared_values=self._shared_values,
+            _platform_sku_index=self._platform_sku_index,
+            _yandex_ancestors_by_key=self._yandex_ancestors_by_key,
+        )
 
     def yandex_schema_definitions(
         self,
@@ -55,14 +66,22 @@ class PublishValidationSession:
         self._yandex_schema_cache = (category_record, definitions, required_defs)
         return definitions, required_defs
 
-    @cached_property
+    @property
     def store_config(self) -> dict[str, Any]:
-        return get_context().config.load_store_config()
+        with self._lock:
+            if "store_config" not in self._shared_values:
+                self._shared_values["store_config"] = get_context().config.load_store_config()
+            return self._shared_values["store_config"]
 
-    @cached_property
+    @property
     def forbidden_categories(self) -> dict[str, str]:
-        settings = get_context().config.forbidden_categories()
-        return {item["category_id"]: item["name"] for item in settings["categories"]}
+        with self._lock:
+            if "forbidden_categories" not in self._shared_values:
+                settings = get_context().config.forbidden_categories()
+                self._shared_values["forbidden_categories"] = {
+                    item["category_id"]: item["name"] for item in settings["categories"]
+                }
+            return self._shared_values["forbidden_categories"]
 
     def yandex_ancestor_ids(
         self,
@@ -77,36 +96,47 @@ class PublishValidationSession:
         if cid.isascii() and cid.isdigit():
             cid = str(int(cid))
         token = str(api_token or "").strip()
-        if token not in self._yandex_ancestors_by_token:
-            self._yandex_ancestors_by_token[token] = (
-                get_context().category_catalog.cached_category_ancestor_map(
-                    "yandex",
-                    api_token=token,
-                )
+        cache_key = (token, cid)
+        with self._lock:
+            cached = self._yandex_ancestors_by_key.get(cache_key)
+        if cached is None:
+            # 按类目 ID 走 O(log N) 单条索引查询，不把整棵 Yandex 类目树读进内存。
+            looked_up = get_context().category_catalog.cached_category_ancestor_ids(
+                "yandex",
+                cid,
+                api_token=token,
             )
-        ancestor_map = self._yandex_ancestors_by_token[token]
-        if cid in ancestor_map:
-            return ancestor_map[cid]
+            with self._lock:
+                cached = self._yandex_ancestors_by_key.setdefault(cache_key, tuple(looked_up or ()))
+        if cached:
+            return cached
         if isinstance(category_record, dict):
             raw = category_record.get("ancestor_ids")
             if isinstance(raw, (list, tuple)):
                 return tuple(str(item).strip() for item in raw if str(item).strip())
         return ()
 
-    @cached_property
+    @property
     def tariff_versions(self) -> dict[str, str]:
-        return get_context().tariffs.versions()
+        with self._lock:
+            if "tariff_versions" not in self._shared_values:
+                self._shared_values["tariff_versions"] = get_context().tariffs.versions()
+            return self._shared_values["tariff_versions"]
 
     def yandex_logistics_error(self, plan: dict[str, Any]) -> str:
         key = json.dumps(plan, sort_keys=True, ensure_ascii=False)
-        if key not in self.logistics_errors:
-            try:
-                get_context().yandex_logistics.validate(plan)
-            except ValueError as exc:
-                self.logistics_errors[key] = str(exc)
-            else:
-                self.logistics_errors[key] = ""
-        return self.logistics_errors[key]
+        with self._lock:
+            if key in self.logistics_errors:
+                return self.logistics_errors[key]
+        try:
+            get_context().yandex_logistics.validate(plan)
+        except ValueError as exc:
+            error_text = str(exc)
+        else:
+            error_text = ""
+        with self._lock:
+            self.logistics_errors[key] = error_text
+        return error_text
 
     def yandex_shipping_selection_error(self, selection: dict[str, Any]) -> str:
         """校验草稿指定的 Yandex 发布仓库与物流路线是否属于当前账号可用方案。"""
@@ -116,16 +146,20 @@ class PublishValidationSession:
         route_id = str(selection.get("route_id") or "").strip()
         if not warehouse_id and not route_id:
             return ""
-        if self._yandex_plans_cache is None:
+        with self._lock:
+            plans_cache = self._shared_values.get("yandex_plans")
+        if plans_cache is None:
             try:
                 plans = get_context().yandex_logistics.plans()
-                self._yandex_plans_cache = list(plans) if isinstance(plans, list) else []
+                loaded_plans = list(plans) if isinstance(plans, list) else []
             except Exception:
-                self._yandex_plans_cache = []
+                loaded_plans = []
+            with self._lock:
+                plans_cache = self._shared_values.setdefault("yandex_plans", loaded_plans)
         matched = any(
             (not warehouse_id or str(plan.get("publish_warehouse_id") or "").strip() == warehouse_id)
             and (not route_id or str(plan.get("route_id") or "").strip() == route_id)
-            for plan in self._yandex_plans_cache
+            for plan in plans_cache
         )
         if not matched:
             return "草稿指定的 Yandex 发布仓库或物流方式在当前账号不可用，请重新选择或重算核价"
@@ -133,33 +167,51 @@ class PublishValidationSession:
 
     def _load_platform_sku_index(self, platform: str) -> tuple[dict[str, set[str]], set[str]]:
         key = str(platform or "").strip().lower()
-        if key in self._platform_sku_index:
-            return self._platform_sku_index[key]
+        with self._lock:
+            if key in self._platform_sku_index:
+                return self._platform_sku_index[key]
         draft_skus: dict[str, set[str]] = {}
         online_skus: set[str] = set()
         try:
             db = get_context().db
             with db._connect() as conn:
-                rows = conn.execute(
-                    "SELECT draft_id, draft_json FROM platform_drafts WHERE platform = ?",
-                    (key,),
-                ).fetchall()
-                for row in rows:
-                    draft_id = str(row["draft_id"] or "").strip()
-                    if not draft_id:
-                        continue
-                    try:
-                        payload = json.loads(row["draft_json"] or "{}")
-                    except (TypeError, ValueError):
-                        continue
-                    if not isinstance(payload, dict):
-                        continue
-                    for item in payload.get("sku_items") or []:
-                        if not isinstance(item, dict) or item.get("selected") is False:
-                            continue
-                        code = str(item.get("sku") or "").strip()
-                        if code:
+                try:
+                    rows = conn.execute(
+                        "SELECT pd.draft_id, json_extract(je.value, '$.sku') AS sku "
+                        "FROM platform_drafts pd, json_each(pd.draft_json, '$.sku_items') je "
+                        "WHERE pd.platform = ? "
+                        "AND COALESCE(json_extract(je.value, '$.selected'), 1) != 0 "
+                        "AND json_extract(je.value, '$.sku') IS NOT NULL "
+                        "AND json_extract(je.value, '$.sku') != ''",
+                        (key,),
+                    ).fetchall()
+                    for row in rows:
+                        draft_id = str(row["draft_id"] or "").strip()
+                        code = str(row["sku"] or "").strip()
+                        if draft_id and code:
                             draft_skus.setdefault(code, set()).add(draft_id)
+                except sqlite3.OperationalError:
+                    # 兼容包含非法 JSON 草稿或精简 SQLite 环境的读取回退。
+                    rows = conn.execute(
+                        "SELECT draft_id, draft_json FROM platform_drafts WHERE platform = ?",
+                        (key,),
+                    ).fetchall()
+                    for row in rows:
+                        draft_id = str(row["draft_id"] or "").strip()
+                        if not draft_id:
+                            continue
+                        try:
+                            payload = json.loads(row["draft_json"] or "{}")
+                        except (TypeError, ValueError):
+                            continue
+                        if not isinstance(payload, dict):
+                            continue
+                        for item in payload.get("sku_items") or []:
+                            if not isinstance(item, dict) or item.get("selected") is False:
+                                continue
+                            code = str(item.get("sku") or "").strip()
+                            if code:
+                                draft_skus.setdefault(code, set()).add(draft_id)
                 online_rows = conn.execute(
                     "SELECT json_extract(snapshot_json, '$.seller_sku') AS seller_sku "
                     "FROM online_listings WHERE platform = ?",
@@ -172,8 +224,8 @@ class PublishValidationSession:
         except (AttributeError, RuntimeError, sqlite3.Error):
             pass
         result = (draft_skus, online_skus)
-        self._platform_sku_index[key] = result
-        return result
+        with self._lock:
+            return self._platform_sku_index.setdefault(key, result)
 
     def local_sku_conflict(
         self,

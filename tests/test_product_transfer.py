@@ -1,21 +1,28 @@
 from __future__ import annotations
 
+import io
+import json
 from pathlib import Path
+import zipfile
+
+from PIL import Image
 import pytest
 
 from erp_web.context import AppContext, AppPaths, bind_context
 from erp_web.db import ErpDatabase
-from erp_web.facades.product_facade import export_products_payload, import_products_payload
+from erp_web.facades.product_facade import export_products_archive, import_products_archive
 from erp_web.schemas.product import PRODUCT_SCHEMA_VERSION
 from erp_web.schemas.requests import RequestValidationError, validate_request_payload
 from erp_web.services.product_transfer_service import EXPORT_FORMAT, EXPORT_VERSION
 
 
-PNG_1X1 = (
-    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\xff"
-    b"\xff?\x00\x05\xfe\x02\xfe\xdc\xccY\xe7\x00\x00\x00\x00IEND\xaeB`\x82"
-)
+def _make_png(color: tuple[int, int, int, int] = (20, 120, 220, 255)) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGBA", (2, 2), color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+PNG_1X1 = _make_png()
 
 
 def _make_context(root: Path, user_id: str) -> AppContext:
@@ -38,6 +45,30 @@ def _envelope(products: list[dict], **overrides) -> dict:
     }
     payload.update(overrides)
     return payload
+
+
+def _pack_zip(manifest: dict, asset_files: dict[str, bytes] | None = None) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w") as zf:
+        zf.writestr(
+            "manifest.json",
+            json.dumps(manifest, ensure_ascii=False).encode("utf-8"),
+            compress_type=zipfile.ZIP_DEFLATED,
+        )
+        for key, raw in (asset_files or {}).items():
+            zf.writestr(f"assets/{key}", raw, compress_type=zipfile.ZIP_STORED)
+    return buf.getvalue()
+
+
+def _read_zip(raw_zip: bytes) -> tuple[dict, dict[str, bytes]]:
+    with zipfile.ZipFile(io.BytesIO(raw_zip), mode="r") as zf:
+        manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+        assets = {
+            name[len("assets/"):]: zf.read(name)
+            for name in zf.namelist()
+            if name.startswith("assets/") and not name.endswith("/")
+        }
+    return manifest, assets
 
 
 def test_export_and_import_products_roundtrip_with_local_images(tmp_path: Path) -> None:
@@ -93,48 +124,50 @@ def test_export_and_import_products_roundtrip_with_local_images(tmp_path: Path) 
                 {"product_ids": ["prod_origin"]},
                 endpoint="/api/products/export",
             )
-            exported, status = export_products_payload(export_body)
-            assert status == 200
-            assert exported["ok"] is True
-            assert exported["count"] == 1
-            assert exported["filename"] == "不锈钢保温杯.json"
-            export_data = exported["exportData"]
-            assert export_data["format"] == EXPORT_FORMAT
-            assert export_data["version"] == EXPORT_VERSION
-            assert export_data["product_schema_version"] == PRODUCT_SCHEMA_VERSION
-            assert isinstance(export_data["app_version"], str) and export_data["app_version"]
-            assert len(export_data["assets"]) == 1
-            exported_item = export_data["products"][0]
+            zip_bytes, filename, count, missing_ids = export_products_archive(export_body)
+            assert count == 1
+            assert missing_ids == []
+            assert filename == "不锈钢保温杯.zip"
+            manifest, asset_blobs = _read_zip(zip_bytes)
+            assert manifest["format"] == EXPORT_FORMAT
+            assert manifest["version"] == EXPORT_VERSION
+            assert manifest["product_schema_version"] == PRODUCT_SCHEMA_VERSION
+            assert isinstance(manifest["app_version"], str) and manifest["app_version"]
+            assert len(manifest["assets"]) == 1
+            assert len(asset_blobs) == 1
+            asset_key = next(iter(asset_blobs))
+            assert asset_blobs[asset_key] == PNG_1X1
+            assert "data_url" not in manifest["assets"][asset_key]
+            exported_item = manifest["products"][0]
             assert exported_item["schema_version"] == PRODUCT_SCHEMA_VERSION
             assert "drafts" not in exported_item
             pool_item = exported_item["source"]["image_pool"][0]
             assert "platform_picture_id" not in pool_item
             assert pool_item["path"] == ""
-            assert pool_item["export_asset_key"] in export_data["assets"]
+            assert pool_item["export_asset_key"] == asset_key
 
             # 在同一账号重复导入时生成新 ID，不覆盖原商品；不同 app_version 不拦截
-            dup_payload = {**export_data, "app_version": "0.9.0"}
-            dup_body = validate_request_payload(dup_payload, endpoint="/api/products/import")
-            dup_result, dup_status = import_products_payload(dup_body)
+            dup_zip = _pack_zip({**manifest, "app_version": "0.9.0"}, asset_blobs)
+            validate_request_payload({}, endpoint="/api/products/import")
+            dup_result, dup_status = import_products_archive(dup_zip)
             assert dup_status == 200
             assert dup_result["imported"] == 1
             assert dup_result["importedIds"][0] != "prod_origin"
             assert len(source_ctx.products.load_products_index()) == 2
 
             # 导出多个商品时使用首个商品标题 + 数量命名
-            multi_exported, multi_status = export_products_payload(
+            _, multi_filename, multi_count, _ = export_products_archive(
                 validate_request_payload(
                     {"product_ids": ["prod_origin", dup_result["importedIds"][0]]},
                     endpoint="/api/products/export",
                 )
             )
-            assert multi_status == 200
-            assert multi_exported["filename"] == "不锈钢保温杯等2个商品.json"
+            assert multi_count == 2
+            assert multi_filename == "不锈钢保温杯等2个商品.zip"
 
         # 跨账号导入可完整还原商品与图片到目标账号空间
         with bind_context(target_ctx):
-            import_body = validate_request_payload(export_data, endpoint="/api/products/import")
-            imported, import_status = import_products_payload(import_body)
+            imported, import_status = import_products_archive(zip_bytes)
             assert import_status == 200
             assert imported["ok"] is True
             assert imported["imported"] == 1
@@ -182,24 +215,28 @@ def test_import_products_validates_versions_integrity_and_atomic_precheck(tmp_pa
     }
     try:
         with bind_context(ctx):
+            # 0. 非 ZIP 文件拒绝
+            with pytest.raises(RequestValidationError, match="不支持的导入文件格式"):
+                import_products_archive(b"not-a-zip")
+
             # 1. 错误 format 拒绝
             with pytest.raises(RequestValidationError, match="不支持的导入文件格式"):
-                import_products_payload(_envelope([valid_product], format="other.format"))
+                import_products_archive(_pack_zip(_envelope([valid_product], format="other.format")))
 
             # 2. 更高导出包版本拒绝
             with pytest.raises(RequestValidationError, match="高于当前系统支持的版本"):
-                import_products_payload(_envelope([valid_product], version=EXPORT_VERSION + 1))
+                import_products_archive(_pack_zip(_envelope([valid_product], version=EXPORT_VERSION + 1)))
 
             # 3. 不兼容的顶层 product_schema_version 拒绝
             with pytest.raises(RequestValidationError, match="高于当前系统支持的版本"):
-                import_products_payload(
-                    _envelope([valid_product], product_schema_version=PRODUCT_SCHEMA_VERSION + 1)
+                import_products_archive(
+                    _pack_zip(_envelope([valid_product], product_schema_version=PRODUCT_SCHEMA_VERSION + 1))
                 )
 
             # 4. 第 2 个商品版本错误或内嵌资产缺失时，全量预校验拦截，第 1 个商品也不会写入
             bad_schema_product = {**valid_product, "schema_version": PRODUCT_SCHEMA_VERSION - 1}
             with pytest.raises(RequestValidationError, match="第 2 个商品校验失败"):
-                import_products_payload(_envelope([valid_product, bad_schema_product]))
+                import_products_archive(_pack_zip(_envelope([valid_product, bad_schema_product])))
             assert ctx.products.load_products_index() == []
 
             missing_asset_product = {
@@ -207,15 +244,15 @@ def test_import_products_validates_versions_integrity_and_atomic_precheck(tmp_pa
                 "name": "缺图商品",
                 "source": {
                     "title": "缺图商品",
-                    "image_pool": [{"id": "img-x", "export_asset_key": "asset_missing.png"}],
+                    "image_pool": [{"id": "img-x", "export_asset_key": "asset_0123456789abcdef.png"}],
                 },
             }
             with pytest.raises(RequestValidationError, match="引用的内嵌图片资产缺失"):
-                import_products_payload(_envelope([valid_product, missing_asset_product]))
+                import_products_archive(_pack_zip(_envelope([valid_product, missing_asset_product])))
             assert ctx.products.load_products_index() == []
 
             # 5. 合法包导入成功，且过滤掉外来本地路径
-            result, status = import_products_payload(_envelope([valid_product]))
+            result, status = import_products_archive(_pack_zip(_envelope([valid_product])))
             assert status == 200
             saved = ctx.products.find_indexed_product(result["importedIds"][0])
             pool = saved["source"]["image_pool"]
@@ -298,21 +335,21 @@ def test_import_preserves_distinct_pool_assets_sharing_identical_file_bytes(tmp_
                 },
                 preserve_platform_facts=False,
             )
-            exported, status = export_products_payload(
+            zip_bytes, filename, count, _ = export_products_archive(
                 validate_request_payload({"product_ids": ["prod_same_bytes"]}, endpoint="/api/products/export")
             )
-            assert status == 200
-            export_data = exported["exportData"]
+            assert count == 1
+            assert filename == "纯手工草鞋.zip"
+            manifest, asset_blobs = _read_zip(zip_bytes)
             # 导出包仍按内容哈希去重内嵌资产以控制体积
-            assert len(export_data["assets"]) == 1
-            exported_pool = export_data["products"][0]["source"]["image_pool"]
+            assert len(manifest["assets"]) == 1
+            assert len(asset_blobs) == 1
+            exported_pool = manifest["products"][0]["source"]["image_pool"]
             assert len(exported_pool) == 2
             assert exported_pool[0]["export_asset_key"] == exported_pool[1]["export_asset_key"]
 
         with bind_context(target_ctx):
-            imported, import_status = import_products_payload(
-                validate_request_payload(export_data, endpoint="/api/products/import")
-            )
+            imported, import_status = import_products_archive(zip_bytes)
             assert import_status == 200
             restored = target_ctx.products.find_indexed_product(imported["importedIds"][0])
             restored_pool = restored["source"]["image_pool"]

@@ -1,27 +1,35 @@
 # -*- coding: utf-8 -*-
-"""采集箱商品 JSON 导出与导入服务。
+"""采集箱商品 ZIP 导出与导入服务。
 
-导出的 JSON 只包含采集箱商品事实、SKU 及通用图片资产，不包含草稿箱与平台上传态；
-本地图片按当前账号空间内嵌为 base64 资产，导入时先完成版本与完整性全量预校验，
-全部通过后再写入目标账号的 ``data/images`` 目录与数据库。
+导出的 ZIP 包包含 ``manifest.json`` 与 ``assets/<asset_key>`` 原始二进制图片：
+- 只包含采集箱商品事实、SKU 及通用图片资产，不包含草稿箱与平台上传态；
+- 图片直接以原始二进制存储在 ZIP 内（无 Base64 膨胀与重复压缩开销）；
+- 导入时先完成 ZIP 安全性、版本、结构与图片完整性全量预校验，
+  全部通过后再写入目标账号的 ``data/images`` 目录与数据库。
 """
 
 from __future__ import annotations
 
-import base64
 from copy import deepcopy
 from datetime import datetime, timezone
 from functools import lru_cache
 import hashlib
+import io
 import json
 import mimetypes
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 from tempfile import NamedTemporaryFile
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 from uuid import uuid4
+import zipfile
+
+try:
+    from PIL import Image
+except Exception:  # pragma: no cover
+    Image = None  # type: ignore[assignment]
 
 from erp_web.product_model import validate_product_root_fields
 from erp_web.schemas.product import PRODUCT_SCHEMA_VERSION
@@ -38,12 +46,21 @@ from erp_web.stores.product_store import (
 EXPORT_FORMAT = "champion-erp.library-products"
 EXPORT_VERSION = 1
 SUPPORTED_EXPORT_VERSIONS = frozenset({EXPORT_VERSION})
+ZIP_CONTENT_TYPES = frozenset({
+    "application/zip",
+    "application/x-zip-compressed",
+    "application/octet-stream",
+})
+
 MAX_IMPORT_PRODUCTS = 200
-MAX_SINGLE_ASSET_BYTES = 5 * 1024 * 1024
-MAX_TOTAL_EXPORT_ASSET_BYTES = 32 * 1024 * 1024
-MAX_TOTAL_IMPORT_ASSET_BYTES = 32 * 1024 * 1024
+MAX_ZIP_ENTRIES = 2000
+MAX_MANIFEST_BYTES = 32 * 1024 * 1024
+MAX_SINGLE_ASSET_BYTES = 15 * 1024 * 1024
+MAX_TOTAL_EXPORT_ASSET_BYTES = 128 * 1024 * 1024
+MAX_TOTAL_IMPORT_ASSET_BYTES = 128 * 1024 * 1024
 
 _INVALID_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
+_ASSET_KEY_PATTERN = re.compile(r"^asset_[0-9a-f]{16}\.(?:jpg|jpeg|png|webp)$")
 
 _STRIPPED_PRODUCT_KEYS = (
     "drafts",
@@ -104,10 +121,11 @@ def _local_candidate_path(raw: str, app_dir: Path) -> Path | None:
     return None
 
 
-def _embed_local_file(
+def _collect_local_asset(
     file_path: Path,
     *,
-    assets: dict[str, dict[str, str]],
+    asset_manifest: dict[str, dict[str, str]],
+    asset_blobs: dict[str, bytes],
     path_to_key: dict[str, str],
     total_bytes: list[int],
 ) -> str:
@@ -120,8 +138,6 @@ def _embed_local_file(
         return ""
     if not raw or len(raw) > MAX_SINGLE_ASSET_BYTES:
         return ""
-    if total_bytes[0] + len(raw) > MAX_TOTAL_EXPORT_ASSET_BYTES:
-        return ""
     digest = hashlib.sha256(raw).hexdigest()[:16]
     suffix = file_path.suffix.lower() or ".png"
     if suffix == ".jpe":
@@ -130,13 +146,14 @@ def _embed_local_file(
         suffix = ".png"
     mime = mimetypes.guess_type(f"file{suffix}")[0] or "image/png"
     key = f"asset_{digest}{suffix}"
-    if key not in assets:
+    if key not in asset_blobs:
+        if total_bytes[0] + len(raw) > MAX_TOTAL_EXPORT_ASSET_BYTES:
+            return ""
         total_bytes[0] += len(raw)
-        encoded = base64.b64encode(raw).decode("ascii")
-        assets[key] = {
+        asset_blobs[key] = raw
+        asset_manifest[key] = {
             "filename": file_path.name,
             "content_type": mime,
-            "data_url": f"data:{mime};base64,{encoded}",
         }
     path_to_key[resolved] = key
     return key
@@ -146,7 +163,8 @@ def _prepare_product_for_export(
     product: dict[str, Any],
     *,
     app_dir: Path,
-    assets: dict[str, dict[str, str]],
+    asset_manifest: dict[str, dict[str, str]],
+    asset_blobs: dict[str, bytes],
     path_to_key: dict[str, str],
     total_bytes: list[int],
 ) -> dict[str, Any]:
@@ -175,9 +193,10 @@ def _prepare_product_for_export(
 
         asset_key = ""
         if local_file is not None:
-            asset_key = _embed_local_file(
+            asset_key = _collect_local_asset(
                 local_file,
-                assets=assets,
+                asset_manifest=asset_manifest,
+                asset_blobs=asset_blobs,
                 path_to_key=path_to_key,
                 total_bytes=total_bytes,
             )
@@ -222,9 +241,10 @@ def _prepare_product_for_export(
         if not mapped:
             local_file = _local_candidate_path(text, app_dir)
             if local_file is not None:
-                mapped = _embed_local_file(
+                mapped = _collect_local_asset(
                     local_file,
-                    assets=assets,
+                    asset_manifest=asset_manifest,
+                    asset_blobs=asset_blobs,
                     path_to_key=path_to_key,
                     total_bytes=total_bytes,
                 )
@@ -245,9 +265,10 @@ def _prepare_product_for_export(
             if not mapped:
                 local_file = _local_candidate_path(val, app_dir)
                 if local_file is not None:
-                    mapped = _embed_local_file(
+                    mapped = _collect_local_asset(
                         local_file,
-                        assets=assets,
+                        asset_manifest=asset_manifest,
+                        asset_blobs=asset_blobs,
                         path_to_key=path_to_key,
                         total_bytes=total_bytes,
                     )
@@ -256,26 +277,88 @@ def _prepare_product_for_export(
     return exported
 
 
-def _validate_import_envelope(body: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]:
+def _read_zip_member_bounded(
+    zf: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    *,
+    max_bytes: int,
+    label: str,
+) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    with zf.open(info, "r") as stream:
+        while True:
+            chunk = stream.read(64 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                raise RequestValidationError(
+                    f"{label} 解压大小超过限制（最大 {max_bytes // (1024 * 1024)} MB）。"
+                )
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _validate_zip_entry_paths(zf: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
+    infos = zf.infolist()
+    if len(infos) > MAX_ZIP_ENTRIES:
+        raise RequestValidationError(f"ZIP 包内文件数过多（最多 {MAX_ZIP_ENTRIES} 个）。")
+    entries: dict[str, zipfile.ZipInfo] = {}
+    for info in infos:
+        raw_name = info.filename
+        if not raw_name or raw_name.endswith("/"):
+            continue
+        if "\\" in raw_name or raw_name.startswith("/") or ":" in raw_name:
+            raise RequestValidationError(f"ZIP 包包含不安全的文件路径：{raw_name}")
+        # 拒绝 POSIX 符号链接条目。
+        if (info.external_attr >> 16) & 0o170000 == 0o120000:
+            raise RequestValidationError(f"ZIP 包不允许包含符号链接：{raw_name}")
+        posix = PurePosixPath(raw_name)
+        if any(part in {"", ".", ".."} for part in posix.parts):
+            raise RequestValidationError(f"ZIP 包包含不安全的文件路径：{raw_name}")
+        normalized = posix.as_posix()
+        if normalized in entries:
+            raise RequestValidationError(f"ZIP 包包含重复文件路径：{normalized}")
+        entries[normalized] = info
+    return entries
+
+
+def _validate_image_bytes(raw: bytes, suffix: str, asset_key: str) -> None:
+    if not raw:
+        raise RequestValidationError(f"图片资产内容为空：{asset_key}")
+    if suffix not in image_service.IMAGE_SUFFIXES:
+        raise RequestValidationError(f"图片资产格式不受支持：{asset_key}")
+    if Image is not None:
+        try:
+            with Image.open(io.BytesIO(raw)) as img:
+                img.verify()
+        except Exception:
+            raise RequestValidationError(f"图片资产内容损坏或不是合法图片：{asset_key}") from None
+
+
+def _validate_import_envelope(body: Any) -> tuple[list[Any], dict[str, Any]]:
+    if not isinstance(body, dict):
+        raise RequestValidationError("采集箱导入包中的 manifest.json 格式无效。")
     fmt = str(body.get("format") or "").strip()
     if fmt != EXPORT_FORMAT:
-        raise RequestValidationError("不支持的导入文件格式，请选择从采集箱导出的商品 JSON 文件。")
+        raise RequestValidationError("不支持的导入文件格式，请选择从采集箱导出的商品 ZIP 文件。")
 
     version = body.get("version")
     if not _is_exact_int(version):
-        raise RequestValidationError("导入文件缺少有效的格式版本号（version）。")
+        raise RequestValidationError("导入包缺少有效的格式版本号（version）。")
     if version > EXPORT_VERSION:
         raise RequestValidationError(
-            f"导入文件格式版本（v{version}）高于当前系统支持的版本（v{EXPORT_VERSION}），请先升级系统后再导入。"
+            f"导入包格式版本（v{version}）高于当前系统支持的版本（v{EXPORT_VERSION}），请先升级系统后再导入。"
         )
     if version not in SUPPORTED_EXPORT_VERSIONS:
         raise RequestValidationError(
-            f"导入文件格式版本（v{version}）不受支持，当前仅支持 v{EXPORT_VERSION}，请重新导出。"
+            f"导入包格式版本（v{version}）不受支持，当前仅支持 v{EXPORT_VERSION}，请重新导出。"
         )
 
     schema_version = body.get("product_schema_version")
     if not _is_exact_int(schema_version):
-        raise RequestValidationError("导入文件缺少有效的商品数据结构版本（product_schema_version）。")
+        raise RequestValidationError("导入包缺少有效的商品数据结构版本（product_schema_version）。")
     if schema_version > PRODUCT_SCHEMA_VERSION:
         raise RequestValidationError(
             f"商品数据结构版本（v{schema_version}）高于当前系统支持的版本（v{PRODUCT_SCHEMA_VERSION}），请先升级系统后再导入。"
@@ -287,43 +370,57 @@ def _validate_import_envelope(body: dict[str, Any]) -> tuple[list[Any], dict[str
 
     raw_products = body.get("products")
     if not isinstance(raw_products, list) or not raw_products:
-        raise RequestValidationError("导入 JSON 中缺少有效的商品列表（products）。")
+        raise RequestValidationError("导入包中缺少有效的商品列表（products）。")
     if len(raw_products) > MAX_IMPORT_PRODUCTS:
         raise RequestValidationError(f"单次最多导入 {MAX_IMPORT_PRODUCTS} 个商品。")
 
     raw_assets = body.get("assets")
     if raw_assets is not None and not isinstance(raw_assets, dict):
-        raise RequestValidationError("导入 JSON 中的图片资产字段（assets）格式无效。")
+        raise RequestValidationError("导入包中的图片资产索引（assets）格式无效。")
     return raw_products, (raw_assets if isinstance(raw_assets, dict) else {})
 
 
 def _validate_asset_reference(
     asset_key: str,
-    assets: dict[str, Any],
     *,
+    asset_manifest: dict[str, Any],
+    zf: zipfile.ZipFile,
+    zip_entries: dict[str, zipfile.ZipInfo],
     decoded_assets: dict[str, tuple[bytes, str, str]],
     total_asset_bytes: list[int],
 ) -> None:
     if asset_key in decoded_assets:
         return
-    entry = assets.get(asset_key)
-    if not isinstance(entry, dict):
+    if not _ASSET_KEY_PATTERN.match(asset_key):
+        raise RequestValidationError(f"引用的内嵌图片资产名称无效：{asset_key}")
+    member_path = f"assets/{asset_key}"
+    info = zip_entries.get(member_path)
+    if info is None:
         raise RequestValidationError(f"引用的内嵌图片资产缺失：{asset_key}")
-    raw, suffix = image_service.decode_upload(entry)
-    if not raw:
-        raise RequestValidationError(f"内嵌图片资产内容无效或损坏：{asset_key}")
-    if len(raw) > MAX_SINGLE_ASSET_BYTES:
-        raise RequestValidationError(f"单张内嵌图片超过 5 MB 限制：{asset_key}")
+    raw = _read_zip_member_bounded(
+        zf,
+        info,
+        max_bytes=MAX_SINGLE_ASSET_BYTES,
+        label=f"图片资产 {asset_key}",
+    )
+    suffix = Path(asset_key).suffix.lower() or ".png"
+    _validate_image_bytes(raw, suffix, asset_key)
     if total_asset_bytes[0] + len(raw) > MAX_TOTAL_IMPORT_ASSET_BYTES:
-        raise RequestValidationError("导入文件中的图片总大小超出限制（最大 32 MB）。")
+        raise RequestValidationError(
+            f"导入包中的图片总大小超出限制（最大 {MAX_TOTAL_IMPORT_ASSET_BYTES // (1024 * 1024)} MB）。"
+        )
     total_asset_bytes[0] += len(raw)
-    decoded_assets[asset_key] = (raw, suffix, str(entry.get("filename") or asset_key))
+    meta = asset_manifest.get(asset_key) if isinstance(asset_manifest.get(asset_key), dict) else {}
+    original_name = str(meta.get("filename") or asset_key).strip() or asset_key
+    decoded_assets[asset_key] = (raw, suffix, original_name)
 
 
 def _prevalidate_import_product(
     raw_product: Any,
     *,
-    assets: dict[str, Any],
+    asset_manifest: dict[str, Any],
+    zf: zipfile.ZipFile,
+    zip_entries: dict[str, zipfile.ZipInfo],
     decoded_assets: dict[str, tuple[bytes, str, str]],
     total_asset_bytes: list[int],
 ) -> None:
@@ -356,7 +453,7 @@ def _prevalidate_import_product(
     if not has_identity:
         raise RequestValidationError("商品缺少标题、来源链接或 SKU 信息。")
 
-    # 校验所有内嵌图片引用都存在且可正常解码。
+    # 校验所有内嵌图片引用都存在且为合法图片二进制。
     pool = source.get("image_pool") if isinstance(source.get("image_pool"), list) else []
     for raw_img in pool:
         if not isinstance(raw_img, dict):
@@ -365,7 +462,9 @@ def _prevalidate_import_product(
         if asset_key:
             _validate_asset_reference(
                 asset_key,
-                assets,
+                asset_manifest=asset_manifest,
+                zf=zf,
+                zip_entries=zip_entries,
                 decoded_assets=decoded_assets,
                 total_asset_bytes=total_asset_bytes,
             )
@@ -376,7 +475,9 @@ def _prevalidate_import_product(
         if text.startswith("asset://"):
             _validate_asset_reference(
                 text[len("asset://"):].strip(),
-                assets,
+                asset_manifest=asset_manifest,
+                zf=zf,
+                zip_entries=zip_entries,
                 decoded_assets=decoded_assets,
                 total_asset_bytes=total_asset_bytes,
             )
@@ -390,7 +491,9 @@ def _prevalidate_import_product(
             if val.startswith("asset://"):
                 _validate_asset_reference(
                     val[len("asset://"):].strip(),
-                    assets,
+                    asset_manifest=asset_manifest,
+                    zf=zf,
+                    zip_entries=zip_entries,
                     decoded_assets=decoded_assets,
                     total_asset_bytes=total_asset_bytes,
                 )
@@ -594,20 +697,22 @@ def _build_export_filename(exported_products: list[dict[str, Any]], stamp: str) 
         fallback_id = _sanitize_filename_title(str(first.get("product_id") or ""))
         title = fallback_id if len(exported_products) == 1 and fallback_id else f"library-products-{stamp}"
     if len(exported_products) == 1:
-        return f"{title}.json"
-    return f"{title}等{len(exported_products)}个商品.json"
+        return f"{title}.zip"
+    return f"{title}等{len(exported_products)}个商品.zip"
 
 
-def export_products(
+def export_products_archive(
     products_store: ProductStore,
     app_dir: Path,
     product_ids: list[Any],
-) -> dict[str, Any]:
+) -> tuple[bytes, str, int, list[str]]:
+    """导出勾选采集箱商品及其本地图片资产为 ZIP 字节流。"""
     ids = list(dict.fromkeys(str(pid or "").strip() for pid in (product_ids or []) if str(pid or "").strip()))
     if not ids:
         raise RequestValidationError("请先勾选要导出的商品。")
 
-    assets: dict[str, dict[str, str]] = {}
+    asset_manifest: dict[str, dict[str, str]] = {}
+    asset_blobs: dict[str, bytes] = {}
     path_to_key: dict[str, str] = {}
     total_bytes = [0]
     exported_products: list[dict[str, Any]] = []
@@ -622,7 +727,8 @@ def export_products(
             _prepare_product_for_export(
                 record,
                 app_dir=app_dir,
-                assets=assets,
+                asset_manifest=asset_manifest,
+                asset_blobs=asset_blobs,
                 path_to_key=path_to_key,
                 total_bytes=total_bytes,
             )
@@ -634,47 +740,78 @@ def export_products(
     now = datetime.now(timezone.utc)
     stamp = now.strftime("%Y%m%d-%H%M%S")
     filename = _build_export_filename(exported_products, stamp)
-    export_payload = {
+    manifest = {
         "format": EXPORT_FORMAT,
         "version": EXPORT_VERSION,
         "product_schema_version": PRODUCT_SCHEMA_VERSION,
         "app_version": _current_app_version(),
         "exported_at": now.isoformat(timespec="seconds"),
         "products": exported_products,
-        "assets": assets,
-    }
-    return {
-        "ok": True,
-        "count": len(exported_products),
-        "missingIds": missing_ids,
-        "filename": filename,
-        "exportData": export_payload,
-        "message": f"已导出 {len(exported_products)} 个商品。",
+        "assets": asset_manifest,
     }
 
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w") as zf:
+        zf.writestr(
+            "manifest.json",
+            json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+            compress_type=zipfile.ZIP_DEFLATED,
+        )
+        for key, raw in asset_blobs.items():
+            # 图片本身已压缩，直接存储更快且避免重复压缩开销。
+            zf.writestr(f"assets/{key}", raw, compress_type=zipfile.ZIP_STORED)
 
-def import_products(
+    return buffer.getvalue(), filename, len(exported_products), missing_ids
+
+
+def import_products_archive(
     products_store: ProductStore,
     app_dir: Path,
-    body: dict[str, Any],
+    raw_zip: bytes,
 ) -> dict[str, Any]:
-    raw_products, assets = _validate_import_envelope(body)
+    """校验并导入采集箱商品 ZIP 归档。"""
+    if not raw_zip:
+        raise RequestValidationError("上传的导入文件为空，请选择采集箱导出的 ZIP 文件。")
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(raw_zip), mode="r")
+    except zipfile.BadZipFile:
+        raise RequestValidationError("不支持的导入文件格式，请选择从采集箱导出的商品 ZIP 文件。") from None
 
-    # 第一阶段：全量预校验版本、结构与内嵌资产完整性，任何异常均不写入部分数据。
-    decoded_assets: dict[str, tuple[bytes, str, str]] = {}
-    total_asset_bytes = [0]
-    for index, raw_product in enumerate(raw_products, start=1):
+    with zf:
+        zip_entries = _validate_zip_entry_paths(zf)
+        manifest_info = zip_entries.get("manifest.json")
+        if manifest_info is None:
+            raise RequestValidationError("ZIP 包缺少 manifest.json，请选择从采集箱导出的商品 ZIP 文件。")
+        manifest_bytes = _read_zip_member_bounded(
+            zf,
+            manifest_info,
+            max_bytes=MAX_MANIFEST_BYTES,
+            label="manifest.json",
+        )
         try:
-            _prevalidate_import_product(
-                raw_product,
-                assets=assets,
-                decoded_assets=decoded_assets,
-                total_asset_bytes=total_asset_bytes,
-            )
-        except RequestValidationError as exc:
-            raise RequestValidationError(f"第 {index} 个商品校验失败：{exc}") from None
-        except ValueError as exc:
-            raise RequestValidationError(f"第 {index} 个商品资料无效：{exc}") from None
+            manifest = json.loads(manifest_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise RequestValidationError("导入包中的 manifest.json 不是合法的 UTF-8 JSON。") from None
+
+        raw_products, asset_manifest = _validate_import_envelope(manifest)
+
+        # 第一阶段：全量预校验版本、结构与内嵌图片二进制完整性，任何异常均不写入部分数据。
+        decoded_assets: dict[str, tuple[bytes, str, str]] = {}
+        total_asset_bytes = [0]
+        for index, raw_product in enumerate(raw_products, start=1):
+            try:
+                _prevalidate_import_product(
+                    raw_product,
+                    asset_manifest=asset_manifest,
+                    zf=zf,
+                    zip_entries=zip_entries,
+                    decoded_assets=decoded_assets,
+                    total_asset_bytes=total_asset_bytes,
+                )
+            except RequestValidationError as exc:
+                raise RequestValidationError(f"第 {index} 个商品校验失败：{exc}") from None
+            except ValueError as exc:
+                raise RequestValidationError(f"第 {index} 个商品资料无效：{exc}") from None
 
     # 第二阶段：全部校验通过后再统一写盘与入库。
     imported_ids: list[str] = []
@@ -697,7 +834,7 @@ def import_products(
         "ok": True,
         "imported": len(imported_ids),
         "importedIds": imported_ids,
-        "productsIndex": products_store.load_products_index(),
+        "productsIndex": products_store.load_product_list_rows(),
         "message": f"已成功导入 {len(imported_ids)} 个商品到采集箱。",
     }
 
@@ -706,6 +843,7 @@ __all__ = [
     "EXPORT_FORMAT",
     "EXPORT_VERSION",
     "SUPPORTED_EXPORT_VERSIONS",
-    "export_products",
-    "import_products",
+    "ZIP_CONTENT_TYPES",
+    "export_products_archive",
+    "import_products_archive",
 ]

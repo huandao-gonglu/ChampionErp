@@ -485,27 +485,27 @@ async function claimAndOpenDrafts(productIds: string[], targets: MarketplaceTarg
 }
 
 async function handleExportLibraryProducts(productIds: string[]) {
-  libraryNotice.value = ''
+  libraryNotice.value = `正在打包导出 ${productIds.length} 个商品（ZIP），请稍候…`
   const message = await store.exportSelectedProducts(productIds)
-  if (message) libraryNotice.value = message
+  libraryNotice.value = message || ''
 }
 
-async function handleImportLibraryProducts(payload: Record<string, unknown>) {
-  libraryNotice.value = ''
-  const message = await store.importProductsFromJson(payload)
-  if (message) libraryNotice.value = message
+async function handleImportLibraryProducts(file: File) {
+  libraryNotice.value = '正在校验并导入商品压缩包（ZIP），请稍候…'
+  const message = await store.importProductsFromZip(file)
+  libraryNotice.value = message || ''
 }
 
 async function handleExportDrafts(draftIds: string[]) {
-  draftsNotice.value = ''
+  draftsNotice.value = `正在打包导出 ${draftIds.length} 份草稿（ZIP），请稍候…`
   const message = await store.exportSelectedDrafts(draftIds)
-  if (message) draftsNotice.value = message
+  draftsNotice.value = message || ''
 }
 
 async function handleImportDrafts(file: File) {
-  draftsNotice.value = ''
+  draftsNotice.value = '正在校验并导入草稿压缩包（ZIP），请稍候…'
   const message = await store.importDraftsFromZip(file)
-  if (message) draftsNotice.value = message
+  draftsNotice.value = message || ''
 }
 
 function warnUnsavedImages(event: BeforeUnloadEvent) {

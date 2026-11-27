@@ -691,10 +691,12 @@ class ErpDbTests(unittest.TestCase):
             self.assertTrue(bool(db.load_draft_model(publishing_draft_id)))
 
             # 7. 删除所有已发布草稿后，采集箱仍记住历史已发布平台；重推同平台时 SKU 自动避让历史已发布 SKU
+            db.save_publish_job({**state, "terminal_results_persisted": True})
             sku_history_job = {
                 "job_id": "sku-history-job",
                 "idempotency_key": "test:sku-history-job",
                 "status": "completed",
+                "terminal_results_persisted": True,
                 "draft_id": draft_id,
                 "product": {
                     "product_id": product_id,
@@ -712,7 +714,8 @@ class ErpDbTests(unittest.TestCase):
                     }
                 },
             }
-            db.create_publish_job(sku_history_job)
+            _, created = db.create_publish_job(sku_history_job)
+            self.assertTrue(created)
             for did in (draft_id, yandex_draft_id, sibling_id):
                 db.delete_draft_model(did)
             library_after_delete = {row["product_id"]: row for row in db.list_product_records(list_only=True)}

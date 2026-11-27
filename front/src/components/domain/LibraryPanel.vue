@@ -44,7 +44,7 @@ const emit = defineEmits<{
   deleteItem: [item: ProductIndexItem]
   deleteSelected: []
   exportProducts: [productIds: string[]]
-  importProducts: [payload: UnknownRecord]
+  importProducts: [file: File]
   clearNotice: []
   claim: [productIds: string[], targets: MarketplaceTargetSite[]]
 }>()
@@ -173,61 +173,23 @@ function triggerExportSelected() {
   emit('exportProducts', [...props.selectedIds])
 }
 
-const EXPORT_FORMAT = 'champion-erp.library-products'
-const SUPPORTED_EXPORT_VERSION = 1
-
-function normalizeImportedJson(parsed: unknown): UnknownRecord {
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('不支持的导入文件格式，请选择从采集箱导出的商品 JSON 文件。')
-  }
-  const record = parsed as UnknownRecord
-  if (record.format !== EXPORT_FORMAT) {
-    throw new Error('不支持的导入文件格式，请选择从采集箱导出的商品 JSON 文件。')
-  }
-  if (typeof record.version !== 'number' || !Number.isInteger(record.version) || record.version < 1) {
-    throw new Error('导入文件缺少有效的格式版本号（version）。')
-  }
-  if (record.version > SUPPORTED_EXPORT_VERSION) {
-    throw new Error(`导入文件格式版本（v${record.version}）高于当前系统支持的版本（v${SUPPORTED_EXPORT_VERSION}），请先升级后再导入。`)
-  }
-  if (record.version !== SUPPORTED_EXPORT_VERSION) {
-    throw new Error(`导入文件格式版本（v${record.version}）不受支持，请重新导出。`)
-  }
-  if (typeof record.product_schema_version !== 'number' || !Number.isInteger(record.product_schema_version) || record.product_schema_version < 1) {
-    throw new Error('导入文件缺少有效的商品数据结构版本（product_schema_version）。')
-  }
-  if (!Array.isArray(record.products) || !record.products.length) {
-    throw new Error('导入 JSON 中缺少有效的商品列表（products）。')
-  }
-  return record
-}
-
-async function handleImportFile(event: Event) {
+function handleImportFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
   if (!file) return
   localError.value = ''
-  try {
-    const text = typeof file.text === 'function'
-      ? await file.text()
-      : await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader()
-          reader.onload = () => resolve(String(reader.result || ''))
-          reader.onerror = () => reject(new Error('读取 JSON 文件失败。'))
-          reader.readAsText(file, 'utf-8')
-        })
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(text)
-    } catch {
-      throw new Error('所选文件不是合法的 JSON 格式。')
-    }
-    const payload = normalizeImportedJson(parsed)
-    emit('importProducts', payload)
-  } catch (exc) {
-    localError.value = exc instanceof Error ? exc.message : '导入 JSON 失败。'
+  const name = String(file.name || '').toLowerCase()
+  const type = String(file.type || '').toLowerCase()
+  const isZip = name.endsWith('.zip')
+    || type === 'application/zip'
+    || type === 'application/x-zip-compressed'
+    || type === 'application/octet-stream'
+  if (!isZip) {
+    localError.value = '不支持的导入文件格式，请选择从采集箱导出的商品 ZIP 压缩包。'
+    return
   }
+  emit('importProducts', file)
 }
 
 function handleDocumentPointerDown(event: PointerEvent) {
@@ -418,14 +380,14 @@ function confirmDeleteAction() {
             <option value="title">按标题排序</option>
           </select>
 
-          <!-- 操作下拉（导入 / 导出 JSON） -->
+          <!-- 操作下拉（导入 / 导出 ZIP） -->
           <div ref="actionMenuRef" class="relative">
             <input
               ref="importFileInput"
               type="file"
-              accept=".json,application/json"
+              accept=".zip,application/zip,application/x-zip-compressed"
               class="sr-only"
-              aria-label="选择导入的商品 JSON 文件"
+              aria-label="选择导入的商品 ZIP 文件"
               @change="handleImportFile"
             />
             <button
@@ -457,7 +419,7 @@ function confirmDeleteAction() {
                 <PhUploadSimple :size="15" class="mt-0.5 shrink-0 text-primary-600 dark:text-primary-400" aria-hidden="true" />
                 <span class="min-w-0">
                   <span class="block text-xs font-semibold text-accent-900 dark:text-white">导入</span>
-                  <span class="block text-[11px] text-accent-500 dark:text-accent-400">从 JSON 文件导入商品数据</span>
+                  <span class="block text-[11px] text-accent-500 dark:text-accent-400">从 ZIP 压缩包导入商品数据</span>
                 </span>
               </button>
               <button
@@ -472,7 +434,7 @@ function confirmDeleteAction() {
                 <span class="min-w-0">
                   <span class="block text-xs font-semibold text-accent-900 dark:text-white">导出<span v-if="selectedCount" class="ml-1 tabular-nums text-primary-700 dark:text-primary-300">（{{ selectedCount }}）</span></span>
                   <span class="block text-[11px] text-accent-500 dark:text-accent-400">
-                    {{ selectedCount ? `导出已勾选的 ${selectedCount} 个商品为 JSON` : '请先勾选要导出的商品' }}
+                    {{ selectedCount ? `导出已勾选的 ${selectedCount} 个商品为 ZIP` : '请先勾选要导出的商品' }}
                   </span>
                 </span>
               </button>
@@ -715,7 +677,7 @@ function confirmDeleteAction() {
             {{ props.refreshing && !props.items.length ? '正在读取采集箱…' : props.items.length ? '没有匹配的商品' : '采集箱暂无商品' }}
           </p>
           <p v-if="!props.refreshing || props.items.length" class="max-w-xs text-xs leading-relaxed text-accent-500 dark:text-accent-400">
-            {{ props.items.length ? '尝试更换搜索关键词、来源平台或状态标签。' : '在「采集」页采集商品或通过右上「操作 → 导入」导入 JSON 后，商品会自动保存到这里。' }}
+            {{ props.items.length ? '尝试更换搜索关键词、来源平台或状态标签。' : '在「采集」页采集商品或通过右上「操作 → 导入」导入 ZIP 压缩包后，商品会自动保存到这里。' }}
           </p>
           <button
             v-if="props.items.length && hasActiveFilters"

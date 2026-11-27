@@ -22,6 +22,16 @@ class ProductPublishValidateRequest(BaseModel):
     site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
 
 
+class ProductPublishValidateBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    draft_ids: list[
+        Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]
+    ] = Field(min_length=1, max_length=100, description="待批量执行只读发布校验的草稿 ID 列表。")
+    platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+
+
 class ProductPublishPrepareRequest(ProductPublishValidateRequest):
     check_public_access: bool = Field(default=False, description="按需从当前服务器探测实际图片 URL；不代表平台侧抓取结果")
 
@@ -139,6 +149,27 @@ class ProductPublishValidationResult(BaseModel):
     validation_digest: Annotated[TrimmedText, StringConstraints(max_length=128)] = ""
 
 
+class ProductPublishValidateBatchItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    draft_id: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]
+    ok: bool
+    passed: bool = False
+    validation: ProductPublishValidationResult | None = None
+    error_code: Annotated[TrimmedText, StringConstraints(max_length=120)] = ""
+    error: Annotated[TrimmedText, StringConstraints(max_length=1000)] = ""
+
+
+class ProductPublishValidateBatchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    total: int = Field(ge=0)
+    passed_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+    error_count: int = Field(ge=0)
+    items: list[ProductPublishValidateBatchItem] = Field(default_factory=list)
+
+
 class ImagePublicAccessCheck(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -236,6 +267,9 @@ __all__ = [
     "ProductPublishRequest",
     "ProductPublishRequestResult",
     "ProductPublishSummary",
+    "ProductPublishValidateBatchItem",
+    "ProductPublishValidateBatchRequest",
+    "ProductPublishValidateBatchResult",
     "ProductPublishValidateRequest",
     "ProductPublishValidationResult",
     "PublishRequestConfirmation",

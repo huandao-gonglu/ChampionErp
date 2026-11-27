@@ -289,6 +289,7 @@ def build_global_chat_toolset(context: AppContext | None = None, *, chat_config:
     model_dependencies = {
         'text_translate': 'text.translate', 'copy_generate': 'copy.generate',
         'copy_generate_batch': 'copy.generate', 'category_match': 'category.product_match',
+        'category_match_batch': 'category.product_match',
     }
 
     def availability(name):

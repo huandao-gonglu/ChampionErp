@@ -96,10 +96,10 @@ export async function deleteProducts(productIds: string[]): Promise<DeleteProduc
 }
 
 export interface ExportProductsResult {
+  blob: Blob
   count: number
   missingIds: string[]
   filename: string
-  exportData: UnknownRecord
   message: string
 }
 
@@ -212,20 +212,46 @@ export async function importDrafts(file: Blob): Promise<ImportDraftsResult> {
 }
 
 export async function exportProducts(productIds: string[]): Promise<ExportProductsResult> {
-  const response = await apiClient.post('/api/products/export', { product_ids: productIds })
-  const data = asRecord(response.data)
-  ensureOk(data, '导出商品失败')
-  return {
-    count: getNumber(data, ['count']),
-    missingIds: Array.isArray(data.missingIds) ? data.missingIds.map((id) => String(id || '')).filter(Boolean) : [],
-    filename: getString(data, ['filename']) || 'library-products.json',
-    exportData: asRecord(data.exportData),
-    message: getString(data, ['message']),
+  try {
+    const response = await apiClient.post('/api/products/export', { product_ids: productIds }, { responseType: 'blob' })
+    const headers = (response.headers || {}) as Record<string, string | undefined>
+    const encodedName = headers['x-export-filename'] || ''
+    let filename = ''
+    if (encodedName) {
+      try {
+        filename = decodeURIComponent(encodedName)
+      } catch {
+        filename = encodedName
+      }
+    }
+    if (!filename) {
+      filename = parseFilenameFromDisposition(headers['content-disposition'] || '') || 'library-products.zip'
+    }
+    const rawCount = Number(headers['x-export-count'])
+    const count = Number.isFinite(rawCount) && rawCount > 0 ? rawCount : productIds.length
+    const missingIds = String(headers['x-export-missing-ids'] || '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean)
+    const blob = response.data instanceof Blob
+      ? response.data
+      : new Blob([response.data], { type: 'application/zip' })
+    return {
+      blob,
+      count,
+      missingIds,
+      filename,
+      message: `已导出 ${count} 个商品。`,
+    }
+  } catch (exc) {
+    throw new Error(await extractBlobErrorMessage(exc, '导出商品失败'))
   }
 }
 
-export async function importProducts(payload: UnknownRecord): Promise<ImportProductsResult> {
-  const response = await apiClient.post('/api/products/import', payload)
+export async function importProducts(file: Blob): Promise<ImportProductsResult> {
+  const response = await apiClient.post('/api/products/import', file, {
+    headers: { 'Content-Type': 'application/zip' },
+  })
   const data = asRecord(response.data)
   ensureOk(data, '导入商品失败')
   return {

@@ -55,6 +55,8 @@ CATEGORY_PREFETCHED_INSTRUCTIONS = (
     "输入中的 prefetched_candidates 是服务端已基于商品标准化信息预先召回的真实可发布叶子类目。"
     "请优先在 prefetched_candidates 中逐项比对完整路径（及中文参考名）；"
     "若已存在与商品实物完全相符的合规叶子类目，请直接提交最终结果，无需再调用检索工具。"
+    "若预召回中唯一与商品实物精确匹配的叶子类目已标为 forbidden=true，且同领域没有其他真实兼容的合规替代类目，"
+    "应直接 abstain 并设置 abstain_reason=\"forbidden_only\"，不要反复换词重搜同一禁售商品。"
     "仅当预召回候选中确实缺少匹配项、或所有候选与实物存在明确冲突时，才调用工具针对缺口补查或展开类目树分支。"
 )
 
@@ -143,10 +145,10 @@ CATEGORY_MATCH_AGENT_PROFILE = AiAgentExecutionProfile(
     budget_profile=CATEGORY_MATCH_BUDGET_PROFILE,
     permissions=frozenset({CATEGORY_SEARCH_PERMISSION}),
     timeout_seconds=CATEGORY_MATCH_DEADLINE_SECONDS,
-    max_model_requests=12,
-    max_tool_calls=8,
+    max_model_requests=6,
+    max_tool_calls=4,
     max_tool_output_bytes=CATEGORY_SEARCH_MAX_OUTPUT_BYTES,
-    retries=4,
+    retries=3,
     result_version=CATEGORY_MATCH_RESULT_VERSION,
 )
 

@@ -129,6 +129,7 @@ def _build_pydantic_model_binding(
     generation_settings: dict[str, Any] | None = None,
     timeout_seconds: int | float | None = None,
     operation_capabilities: Iterable[str] = (),
+    default_low_thinking: bool = False,
 ) -> PydanticModelBinding:
     """只根据连接配置与本次操作构造 Model，不执行能力声明校验。"""
 
@@ -321,6 +322,22 @@ def _build_pydantic_model_binding(
             always_thinking = pydantic_model.profile.get("thinking_always_enabled", False)
             if model_settings["thinking"] is False and always_thinking:
                 raise AiModelFactoryError(f"模型 {model_name} 的原生能力声明不支持关闭 Thinking。")
+        elif (
+            default_low_thinking
+            and not (image_capabilities & set(normalized_operation_capabilities))
+            and not ai_generation_settings.has_explicit_reasoning_config(
+                model, generation_settings
+            )
+        ):
+            adjusted = ai_generation_settings.apply_default_low_thinking_settings(
+                model,
+                dict(model_settings),
+                provider_family=provider_family,
+                api_style=api_style,
+                profile=getattr(pydantic_model, "profile", None),
+            )
+            if adjusted != dict(model_settings):
+                model_settings = ModelSettings(**adjusted)
     except AiModelFactoryError:
         raise
     except ValueError as exc:
@@ -349,6 +366,7 @@ def create_pydantic_model_binding(
     generation_settings: dict[str, Any] | None = None,
     timeout_seconds: int | float | None = None,
     required_capabilities: Iterable[str] = (),
+    default_low_thinking: bool = False,
 ) -> PydanticModelBinding:
     """正式业务入口：校验已启用能力后创建 Pydantic Model binding。"""
 
@@ -362,6 +380,7 @@ def create_pydantic_model_binding(
         generation_settings=generation_settings,
         timeout_seconds=timeout_seconds,
         operation_capabilities=normalized_required_capabilities,
+        default_low_thinking=default_low_thinking,
     )
 
 
@@ -445,6 +464,9 @@ def create_pydantic_model_binding_for_use_case(
         generation_settings=use_case_binding.get("generation"),
         timeout_seconds=effective_timeout,
         required_capabilities=required_capabilities,
+        default_low_thinking=(
+            normalized_use_case_id in ai_generation_settings.LOW_THINKING_USE_CASES
+        ),
     )
 
 

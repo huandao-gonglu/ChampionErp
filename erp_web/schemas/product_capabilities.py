@@ -162,6 +162,44 @@ class DraftSkuVariantsCheckResult(BaseModel):
     issues: list[PublishValidationIssue] = Field(default_factory=list)
 
 
+class DraftSkuVariantsCheckBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    draft_ids: list[
+        Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]
+    ] = Field(min_length=1, max_length=100, description="待批量核对 SKU 变体组合的草稿 ID 列表。")
+    platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    yandex_variant_field_ids_by_draft: dict[
+        Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)],
+        list[Annotated[TrimmedText, StringConstraints(min_length=1, max_length=80)]],
+    ] = Field(
+        default_factory=dict,
+        description="按 draft_id 指定的 Yandex 实时核对候选变体属性 ID 列表；仅需实时检查店铺设置的草稿传入。",
+    )
+
+
+class DraftSkuVariantsCheckBatchItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    draft_id: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]
+    ok: bool
+    result: DraftSkuVariantsCheckResult | None = None
+    error_code: Annotated[TrimmedText, StringConstraints(max_length=120)] = ""
+    error: Annotated[TrimmedText, StringConstraints(max_length=1000)] = ""
+
+
+class DraftSkuVariantsCheckBatchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    total: int = Field(ge=0)
+    distinct_count: int = Field(ge=0)
+    issues_count: int = Field(ge=0)
+    not_applicable_count: int = Field(ge=0)
+    error_count: int = Field(ge=0)
+    items: list[DraftSkuVariantsCheckBatchItem] = Field(default_factory=list)
+
+
 class DraftAttributeTarget(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     platform: str
@@ -245,6 +283,9 @@ __all__ = [
     "DraftAttributeTarget",
     "DraftAttributeSku",
     "DraftSkuAttributesUpdateRequest",
+    "DraftSkuVariantsCheckBatchItem",
+    "DraftSkuVariantsCheckBatchRequest",
+    "DraftSkuVariantsCheckBatchResult",
     "DraftSkuVariantsCheckRequest",
     "DraftSkuVariantsCheckResult",
     "ProductAttributesUpdateRequest",

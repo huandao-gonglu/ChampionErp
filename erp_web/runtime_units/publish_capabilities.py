@@ -2,8 +2,10 @@ from __future__ import annotations
 
 """发布校验与确认后提交的薄 Capability adapter。"""
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
-from dataclasses import dataclass
+from contextvars import copy_context
+from dataclasses import dataclass, replace
 import hmac
 from typing import Annotated, Any, Protocol
 
@@ -29,6 +31,7 @@ from erp_web.runtime_units.publish_confirmation import (
 )
 from erp_web.runtime_units.publish_context import prepare_publish_context
 from erp_web.runtime_units.publish_helpers import _draft_images
+from erp_web.runtime_units.publish_validation_session import PublishValidationSession
 from erp_web.schemas.ai_tools import (
     ToolApprovalSnapshot,
 )
@@ -42,11 +45,15 @@ from erp_web.schemas.publish_capabilities import (
     ProductPublishRequestResult,
     ProductPublishSummary,
     ProductPublishSkuSummary,
+    ProductPublishValidateBatchItem,
+    ProductPublishValidateBatchRequest,
+    ProductPublishValidateBatchResult,
     ProductPublishValidateRequest,
     ProductPublishValidationResult,
     PublishRequestConfirmation,
     PublishValidationIssue,
 )
+from erp_web.services.ai_run_cancellation import check_cancellation
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_errors import BusinessCapabilityError
 from erp_web.services.image_public_access import check_image_public_access
@@ -389,6 +396,7 @@ def evaluate_publish_validation(
     request: ProductPublishValidateRequest,
     *,
     context: AppContext | None = None,
+    validation_session: PublishValidationSession | None = None,
 ) -> _ValidationEvaluation:
     """只读地校验当前已持久化发布事实并生成 payload digest。
 
@@ -407,12 +415,18 @@ def evaluate_publish_validation(
             f"平台 {platform or request.platform} 尚未接入发布能力。",
         )
     try:
-        config = active_context.config.load_store_config()
+        config = (
+            validation_session.store_config
+            if validation_session is not None
+            else active_context.config.load_store_config()
+        )
         prepared_product = publish_context["product"]
         if not isinstance(prepared_product, dict):
             raise TypeError("发布上下文中的商品不是对象")
         # 一次评估只加载一次类目定义；预检与 payload 编译共享该上下文。
         prepared_context = prepare_publish_context(prepared_product, platform)
+        if validation_session is not None:
+            prepared_context = replace(prepared_context, validation_session=validation_session)
         precheck = adapter.validate_draft(prepared_context, config)
         if not isinstance(precheck, dict):
             raise TypeError("平台 adapter 返回的校验结果不是对象")
@@ -523,6 +537,9 @@ def prepare_and_evaluate_publish_validation(
     )
 
 
+_BATCH_VALIDATE_MAX_WORKERS = 8
+
+
 def validate_product_publish(
     request: ProductPublishValidateRequest,
     *,
@@ -531,6 +548,73 @@ def validate_product_publish(
     """复用平台 adapter 完成草稿预检、payload 校验与摘要 digest。"""
 
     return evaluate_publish_validation(request, context=context).result
+
+
+def validate_products_publish_batch(
+    request: ProductPublishValidateBatchRequest,
+    *,
+    context: AppContext | None = None,
+    max_workers: int = _BATCH_VALIDATE_MAX_WORKERS,
+) -> ProductPublishValidateBatchResult:
+    """并发对多份草稿执行只读发布校验，并在本批内共享只读配置与本地 SKU 索引。"""
+
+    active_context = context or get_context()
+    draft_ids = list(dict.fromkeys(request.draft_ids))
+    shared_session = PublishValidationSession()
+
+    def _run_one(draft_id: str) -> ProductPublishValidateBatchItem:
+        check_cancellation()
+        try:
+            evaluation = evaluate_publish_validation(
+                ProductPublishValidateRequest(
+                    draft_id=draft_id,
+                    platform=request.platform,
+                    site=request.site,
+                ),
+                context=active_context,
+                validation_session=shared_session,
+            )
+            return ProductPublishValidateBatchItem(
+                draft_id=draft_id,
+                ok=True,
+                passed=evaluation.result.passed,
+                validation=evaluation.result,
+            )
+        except BusinessCapabilityError as exc:
+            return ProductPublishValidateBatchItem(
+                draft_id=draft_id,
+                ok=False,
+                passed=False,
+                error_code=exc.code,
+                error=str(exc),
+            )
+        except Exception as exc:
+            return ProductPublishValidateBatchItem(
+                draft_id=draft_id,
+                ok=False,
+                passed=False,
+                error_code="PUBLISH_VALIDATION_EXECUTION_FAILED",
+                error=str(exc) or "发布校验执行失败",
+            )
+
+    workers = min(max(1, int(max_workers or 1)), len(draft_ids))
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="publish-validate-batch") as pool:
+            futures = [pool.submit(copy_context().run, _run_one, draft_id) for draft_id in draft_ids]
+            items = [future.result() for future in futures]
+    else:
+        items = [_run_one(draft_id) for draft_id in draft_ids]
+
+    passed_count = sum(1 for item in items if item.ok and item.passed)
+    error_count = sum(1 for item in items if not item.ok)
+    failed_count = len(items) - passed_count - error_count
+    return ProductPublishValidateBatchResult(
+        total=len(items),
+        passed_count=passed_count,
+        failed_count=failed_count,
+        error_count=error_count,
+        items=items,
+    )
 
 
 def prepare_product_publish(
@@ -726,6 +810,7 @@ class PublishCapabilityScope:
 
 
 PRODUCT_PUBLISH_VALIDATE_TOOL = "product_publish_validate"
+PRODUCT_PUBLISH_VALIDATE_BATCH_TOOL = "product_publish_validate_batch"
 PRODUCT_PUBLISH_PREPARE_TOOL = "product_publish_prepare"
 PRODUCT_PUBLISH_REQUEST_TOOL = "product_publish_request"
 
@@ -770,6 +855,24 @@ def product_publish_validate(
     scope: Annotated[PublishCapabilityScope, Injected()],
 ) -> ProductPublishValidationResult:
     return validate_product_publish(request, context=scope.context)
+
+
+@ai_tool(
+    name=PRODUCT_PUBLISH_VALIDATE_BATCH_TOOL,
+    description=(
+        "批量并发对多份草稿执行只读发布校验，在服务端共享配置与本地 SKU 索引缓存并返回逐草稿预检摘要、错误与 digest；"
+        "多份草稿统一预检优先调用本工具，避免在脚本里高并发循环调用单个 product_publish_validate。严格只读，不准备图片、不提交发布。"
+    ),
+    permission="product.publish",
+    side_effect="none",
+    recovery_policy="retry_safe",
+    version="1",
+)
+def product_publish_validate_batch(
+    request: ProductPublishValidateBatchRequest,
+    scope: Annotated[PublishCapabilityScope, Injected()],
+) -> ProductPublishValidateBatchResult:
+    return validate_products_publish_batch(request, context=scope.context)
 
 
 def _publish_request_approval_snapshot(
@@ -906,6 +1009,7 @@ def product_publish_request(
 PUBLISH_AI_CAPABILITIES = (
     product_publish_prepare,
     product_publish_validate,
+    product_publish_validate_batch,
     product_publish_request,
 )
 
@@ -915,13 +1019,16 @@ __all__ = [
     "product_publish_prepare",
     "prepare_product_publish",
     "PRODUCT_PUBLISH_REQUEST_TOOL",
+    "PRODUCT_PUBLISH_VALIDATE_BATCH_TOOL",
     "PRODUCT_PUBLISH_VALIDATE_TOOL",
     "PUBLISH_AI_CAPABILITIES",
     "PublishCapabilityScope",
     "PublishingBusLike",
     "product_publish_request",
     "product_publish_validate",
+    "product_publish_validate_batch",
     "prepare_and_evaluate_publish_validation",
     "request_product_publish",
     "validate_product_publish",
+    "validate_products_publish_batch",
 ]

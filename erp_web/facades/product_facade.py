@@ -105,26 +105,26 @@ def delete_products_payload(body: dict[str, Any]) -> ResponseWithStatus:
     return result, 200 if result.get("ok") else 400
 
 
-def export_products_payload(body: dict[str, Any]) -> ResponseWithStatus:
+def export_products_archive(body: dict[str, Any]) -> tuple[bytes, str, int, list[str]]:
     context = get_context()
     product_ids = (
         body.get("product_ids")
         if isinstance(body.get("product_ids"), list)
         else []
     )
-    return product_transfer_service.export_products(
+    return product_transfer_service.export_products_archive(
         context.products,
         context.paths.app_dir,
         product_ids,
-    ), 200
+    )
 
 
-def import_products_payload(body: dict[str, Any]) -> ResponseWithStatus:
+def import_products_archive(raw_zip: bytes) -> ResponseWithStatus:
     context = get_context()
-    return product_transfer_service.import_products(
+    return product_transfer_service.import_products_archive(
         context.products,
         context.paths.app_dir,
-        body,
+        raw_zip,
     ), 200
 
 
@@ -181,9 +181,9 @@ __all__ = [
     "delete_products_payload",
     "duplicate_draft_payload",
     "export_drafts_archive",
-    "export_products_payload",
+    "export_products_archive",
     "import_drafts_archive",
-    "import_products_payload",
+    "import_products_archive",
     "import_upcs_payload",
     "load_draft_payload",
     "load_product_payload",

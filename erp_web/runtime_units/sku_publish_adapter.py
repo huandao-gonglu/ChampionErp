@@ -86,8 +86,13 @@ class SkuGroupPublishingAdapter:
             for field in self.item_adapter.required_attributes_missing(sku_context(context, fact, row, grouping), config)))
 
     def validate_draft(self, context: PreparedPublishContext, config: dict[str, Any], *, image_stage: str = "final") -> dict[str, Any]:
-        # 每次校验新建作用域；最终校验不能沿用基础预检的文件或配置结果。
-        context = replace(context, validation_session=PublishValidationSession(sku_inputs_checked=True))
+        # 每次单草稿校验新建作用域；批量只读预检显式传入共享 session 时复用其只读查找缓存。
+        session = (
+            context.validation_session.for_sku_group()
+            if context.validation_session is not None
+            else PublishValidationSession(sku_inputs_checked=True)
+        )
+        context = replace(context, validation_session=session)
         if self.platform == "yandex":
             context = context.with_product(normalize_product_fields(context.product))
         errors, warnings = PrecheckIssues(), PrecheckIssues()

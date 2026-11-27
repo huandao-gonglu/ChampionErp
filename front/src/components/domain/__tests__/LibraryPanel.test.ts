@@ -106,7 +106,7 @@ describe('采集箱按语言选择目标市场', () => {
     expect(wrapper.emitted('deleteItem')?.[0]).toEqual([richItems[1]])
   })
 
-  it('操作下拉支持导出已勾选商品以及选择 JSON 文件导入商品', async () => {
+  it('操作下拉支持导出已勾选商品以及选择 ZIP 文件导入商品', async () => {
     const wrapper = mountPanel(['product-1'])
     await wrapper.get('[data-testid="library-actions-trigger"]').trigger('click')
     const exportBtn = wrapper.get('[data-testid="library-action-export"]')
@@ -114,29 +114,18 @@ describe('采集箱按语言选择目标市场', () => {
     await exportBtn.trigger('click')
     expect(wrapper.emitted('exportProducts')?.[0]).toEqual([['product-1']])
 
-    const samplePayload = {
-      format: 'champion-erp.library-products',
-      version: 1,
-      product_schema_version: 5,
-      products: [{ schema_version: 5, name: '导入商品', source: { title: '导入商品' } }],
-    }
-    const file = new File([JSON.stringify(samplePayload)], 'products.json', { type: 'application/json' })
-    Object.defineProperty(file, 'text', { value: async () => JSON.stringify(samplePayload) })
+    const zipFile = new File([new Uint8Array([80, 75, 3, 4])], 'products.zip', { type: 'application/zip' })
     const fileInput = wrapper.get<HTMLInputElement>('input[type="file"]')
-    Object.defineProperty(fileInput.element, 'files', { value: [file], configurable: true })
+    Object.defineProperty(fileInput.element, 'files', { value: [zipFile], configurable: true })
     await fileInput.trigger('change')
-    await new Promise(resolve => setTimeout(resolve, 0))
-    expect(wrapper.emitted('importProducts')?.[0]).toEqual([samplePayload])
+    expect(wrapper.emitted('importProducts')?.[0]).toEqual([zipFile])
 
-    // 高版本或不匹配格式在前端预校验阶段即拦截提示
-    const futurePayload = { ...samplePayload, version: 99 }
-    const badFile = new File([JSON.stringify(futurePayload)], 'future.json', { type: 'application/json' })
-    Object.defineProperty(badFile, 'text', { value: async () => JSON.stringify(futurePayload) })
+    // 非 ZIP 文件在前端预校验阶段即拦截提示
+    const badFile = new File(['{}'], 'products.json', { type: 'application/json' })
     Object.defineProperty(fileInput.element, 'files', { value: [badFile], configurable: true })
     await fileInput.trigger('change')
-    await new Promise(resolve => setTimeout(resolve, 0))
     expect(wrapper.emitted('importProducts')).toHaveLength(1)
-    expect(wrapper.get('[role="alert"]').text()).toContain('高于当前系统支持的版本')
+    expect(wrapper.get('[role="alert"]').text()).toContain('不支持的导入文件格式')
   })
 
   it('支持按未推草稿、已推草稿和已发布筛选，并展示已发布平台标签', async () => {

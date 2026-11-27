@@ -3,8 +3,11 @@ from __future__ import annotations
 """稳定草稿上的 focused ``category.match`` Capability。"""
 
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from copy import deepcopy
 from dataclasses import dataclass
+import threading
 from typing import Annotated, Any
 
 from erp_web.context import get_context
@@ -28,9 +31,14 @@ from erp_web.runtime_units.market_capability_support import (
 )
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.market_prepare_capabilities import (
+    CategoryMatchBatchItem,
+    CategoryMatchBatchOption,
+    CategoryMatchBatchRequest,
+    CategoryMatchBatchResult,
     CategoryMatchCapabilityResult,
     CategoryMatchRequest,
 )
+from erp_web.services.ai_run_cancellation import check_cancellation
 from erp_web.services.ai_tool_declaration import Injected, ai_tool
 from erp_web.services.capability_input_provenance import require_category_user_selection
 from erp_web.services.capability_errors import (
@@ -299,11 +307,132 @@ class CategoryCapabilityScope:
 
 
 CATEGORY_MATCH_TOOL = "category_match"
+CATEGORY_MATCH_BATCH_TOOL = "category_match_batch"
+_CATEGORY_MATCH_BATCH_MAX_WORKERS = 10
+_CATEGORY_MATCH_BATCH_RETRYABLE_FAILURE_LIMIT = 3
+
+
+def match_categories_for_drafts(
+    request: CategoryMatchBatchRequest,
+    *,
+    product_store: MarketPrepareStore,
+    matcher: CategoryMatcher,
+    category_record_loader: CategoryRecordLoader = fetch_category_record,
+    max_workers: int = _CATEGORY_MATCH_BATCH_MAX_WORKERS,
+) -> CategoryMatchBatchResult:
+    """用滑动窗口线程池并发匹配多份草稿类目，避免分批同步屏障被单个慢尾阻塞。"""
+
+    platform = require_platform(request.target_platform)
+    draft_ids = list(dict.fromkeys(request.draft_ids))
+    failure_lock = threading.Lock()
+    retryable_failures = 0
+
+    def _run_one(draft_id: str) -> CategoryMatchBatchItem:
+        nonlocal retryable_failures
+        check_cancellation()
+        with failure_lock:
+            if retryable_failures >= _CATEGORY_MATCH_BATCH_RETRYABLE_FAILURE_LIMIT:
+                return CategoryMatchBatchItem(
+                    draft_id=draft_id,
+                    ok=False,
+                    status="failed",
+                    platform=platform,
+                    site=request.site,
+                    error_code="CATEGORY_SERVICE_UNAVAILABLE",
+                    error="本批该平台类目服务已连续失败多次，停止继续请求相同依赖；网络或服务恢复后可重试未完成项。",
+                )
+        try:
+            matched = match_category(
+                CategoryMatchRequest(
+                    draft_id=draft_id,
+                    target_platform=platform,
+                    site=request.site,
+                ),
+                product_store=product_store,
+                matcher=matcher,
+                category_record_loader=category_record_loader,
+            )
+            return CategoryMatchBatchItem(
+                draft_id=matched.draft_id,
+                ok=True,
+                status="matched",
+                platform=matched.platform,
+                site=matched.site,
+                category_id=matched.category_id,
+                category_path=matched.category_path,
+                query=matched.query,
+                model_confidence=matched.model_confidence,
+                changed=matched.changed,
+            )
+        except CapabilityInputRequired as exc:
+            options = [
+                CategoryMatchBatchOption(value=opt.value, label=opt.label)
+                for opt in exc.options
+                if opt.value
+            ]
+            return CategoryMatchBatchItem(
+                draft_id=draft_id,
+                ok=False,
+                status="unresolved",
+                platform=platform,
+                site=request.site,
+                error_code=exc.code,
+                error=str(exc),
+                needs_confirmation=True,
+                candidate_options=options,
+            )
+        except BusinessCapabilityError as exc:
+            if exc.retryable:
+                with failure_lock:
+                    retryable_failures += 1
+            is_forbidden = exc.code in {"CATEGORY_FORBIDDEN", "CATEGORY_FORBIDDEN_NO_ALTERNATIVE"}
+            return CategoryMatchBatchItem(
+                draft_id=draft_id,
+                ok=False,
+                status="forbidden" if is_forbidden else "failed",
+                platform=platform,
+                site=request.site,
+                error_code=exc.code,
+                error=str(exc),
+            )
+        except Exception as exc:
+            with failure_lock:
+                retryable_failures += 1
+            return CategoryMatchBatchItem(
+                draft_id=draft_id,
+                ok=False,
+                status="failed",
+                platform=platform,
+                site=request.site,
+                error_code="CATEGORY_MATCH_EXECUTION_FAILED",
+                error=str(exc) or "类目匹配执行失败",
+            )
+
+    workers = min(max(1, int(max_workers or 1)), len(draft_ids))
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="category-match-drafts") as pool:
+            futures = [pool.submit(copy_context().run, _run_one, draft_id) for draft_id in draft_ids]
+            items = [future.result() for future in futures]
+    else:
+        items = [_run_one(draft_id) for draft_id in draft_ids]
+
+    matched_count = sum(1 for item in items if item.status == "matched")
+    unresolved_count = sum(1 for item in items if item.status == "unresolved")
+    forbidden_count = sum(1 for item in items if item.status == "forbidden")
+    failed_count = len(items) - matched_count - unresolved_count - forbidden_count
+    return CategoryMatchBatchResult(
+        total=len(items),
+        matched_count=matched_count,
+        unresolved_count=unresolved_count,
+        forbidden_count=forbidden_count,
+        failed_count=failed_count,
+        items=items,
+    )
 
 
 @ai_tool(
     name=CATEGORY_MATCH_TOOL,
-    description="为草稿目标市场匹配并保存平台类目；无法消歧时返回候选。",
+    description="为单个草稿目标市场匹配并保存平台类目；无法消歧时返回候选。多份草稿批量自动匹配请优先使用 category_match_batch。",
     permission="category.write",
     side_effect="write",
     approval_required=False,
@@ -326,14 +455,45 @@ def category_match(
     )
 
 
-CATEGORY_AI_CAPABILITIES = (category_match,)
+@ai_tool(
+    name=CATEGORY_MATCH_BATCH_TOOL,
+    description=(
+        "批量并发为多份草稿自动匹配并保存同一目标市场平台类目（服务端滑动窗口并发，不因单个慢尾阻塞整批）；"
+        "逐草稿返回 matched/unresolved/forbidden/failed 结果与候选选项。多份草稿自动匹配类目时优先使用本工具，"
+        "无需在脚本里分批循环调用单个 category_match。人工明确指定具体 category_id 覆盖时仍用 category_match。"
+    ),
+    permission="category.write",
+    side_effect="write",
+    approval_required=False,
+    idempotency="required",
+    idempotency_keys=("operation_key",),
+    recovery_policy="manual",
+    version="1",
+)
+def category_match_batch(
+    request: CategoryMatchBatchRequest,
+    scope: Annotated[CategoryCapabilityScope, Injected()],
+    execution: Annotated[AiExecutionContext, Injected()],
+) -> CategoryMatchBatchResult:
+    del execution
+    return match_categories_for_drafts(
+        request,
+        product_store=scope.products,
+        matcher=scope.matcher,
+    )
+
+
+CATEGORY_AI_CAPABILITIES = (category_match, category_match_batch)
 
 
 __all__ = [
     "CATEGORY_AI_CAPABILITIES",
+    "CATEGORY_MATCH_BATCH_TOOL",
     "CATEGORY_MATCH_TOOL",
     "CategoryCapabilityScope",
     "CategoryMatcher",
     "category_match",
+    "category_match_batch",
+    "match_categories_for_drafts",
     "match_category",
 ]
