@@ -267,6 +267,7 @@ Browser/CLI Provider 与后端 Canvas 适配器只调用当前桌面；API Model
 - `copy_facade.generate_copy_payload` 通过 `current_draft_id` 绑定用户选中的独立草稿。`copy_generation.save_copy_result` 将该操作上下文交给 `ProductStore.save_draft_copy_result`；Store 必须在商品归一化前取出草稿 ID，不能丢失后改为同平台最新草稿。文案仅合入指定草稿的最新内容，已删除的目标不得被重建。
 - `/api/category-precheck` 会持久化目标的预检结论，因此响应包含保存后的 `draft`、`productContext` 和索引。前端 `runCategoryPrecheck` 与类目动作同步这份草稿及其 `updatedAt`，后续保存沿用新版本；预检记录只保留检查结论，不嵌套整个保存响应。
 - `/api/save-draft` 继续拒绝真正过期的版本；不得通过省略 `updated_at` 或自动强制重试绕过并发修改保护。`tests/test_draft_save_after_actions.py` 验证同商品同平台双草稿的文案隔离、预检后继续保存以及旧版本仍被拒绝。
+- 草稿箱支持通过 `POST /api/drafts/export`（返回 `application/zip`）与 `POST /api/drafts/import`（接收 `application/zip` 二进制流，`product_routes.py` → `product_facade.py` → `services/draft_transfer_service.py`）将勾选草稿打包导出与跨账号导入。ZIP 包内含 `manifest.json`（`format="champion-erp.drafts"`、`version=1`、`product_schema_version`）与 `assets/` 原始图片二进制：按宿主商品归并并仅打包草稿与 SKU 实际引用到的本地图片（含溯源原图闭环），剥离采集日志、平台发布运行态、图片平台上传与 S3 托管交付态以及全部 UPC/条码字段，完整保留文案、类目、属性、核价、运费、物流方案与 SKU 编码；导入先完成 ZIP 路径安全、版本、结构与图片内容全量预校验，再落盘至目标账号 `data/images/<new_product_id>/` 并以新 `product_id`/`draft_id` 与固定 `in_library=False` 入库（不污染采集箱）。发布预检（`publish_validation.py` / `publish_validation_session.py`）补充校验 Yandex 草稿指定 `shipping_selection` 在当前账号有效方案中的归属（`YANDEX_SHIPPING_SELECTION_INVALID`）以及三平台卖家 SKU 与当前账号其他草稿或本地在线商品快照的重复提醒（`LOCAL_SKU_CONFLICT`）。回归见 `tests/test_draft_transfer.py`。
 
 ## 商品采集
 

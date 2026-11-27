@@ -14,7 +14,7 @@ from typing import Any
 
 from erp_web.release_guard import release_guard
 from . import http_routes
-from .http_request import safe_json_body
+from .http_request import safe_binary_body, safe_json_body
 from .services.desktop_version_policy import minimum_update
 from .services.account_request import CALLBACK_GET_PATHS, authenticated_request
 
@@ -146,6 +146,30 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def send_binary(
+        self,
+        raw: bytes,
+        *,
+        content_type: str,
+        filename: str = "",
+        extra_headers: dict[str, str] | None = None,
+        status: int = 200,
+    ) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(raw)))
+        if filename:
+            ascii_fallback = re.sub(r"[^A-Za-z0-9_.-]+", "_", filename).strip("._") or "download.bin"
+            encoded = urllib.parse.quote(filename, safe="")
+            self.send_header(
+                "Content-Disposition",
+                f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{encoded}',
+            )
+        for keyword, value in (extra_headers or {}).items():
+            self.send_header(keyword, value)
+        self.end_headers()
+        self.wfile.write(raw)
+
     def _log_json_response(self, data: Any, status: int) -> None:
         path = urllib.parse.urlsplit(getattr(self, "path", "")).path or "/"
         diagnostics = _response_diagnostics(data)
@@ -274,6 +298,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def read_body(self) -> dict[str, Any]:
         return safe_json_body(self)
+
+    def read_binary_body(
+        self,
+        *,
+        allowed_content_types: frozenset[str],
+        max_bytes: int | None = None,
+    ) -> bytes:
+        return safe_binary_body(
+            self,
+            allowed_content_types=allowed_content_types,
+            max_bytes=max_bytes,
+        )
 
     def _dispatch_business_request(self, dispatch, *, activity="业务请求") -> None:
         with release_guard.admit(activity) as allowed:

@@ -10,7 +10,7 @@ from erp_web.runtime_units.image_pool import current_image_pool, current_source_
 from erp_web.schemas.upc_capabilities import UpcAssignRequest
 from erp_web.schemas.api import ApiResponse
 from erp_web.schemas.product import Product
-from erp_web.services import product_transfer_service
+from erp_web.services import draft_transfer_service, product_transfer_service
 
 ResponseWithStatus = tuple[ApiResponse, int]
 
@@ -128,6 +128,29 @@ def import_products_payload(body: dict[str, Any]) -> ResponseWithStatus:
     ), 200
 
 
+def export_drafts_archive(body: dict[str, Any]) -> tuple[bytes, str, int, list[str]]:
+    context = get_context()
+    draft_ids = (
+        body.get("draft_ids")
+        if isinstance(body.get("draft_ids"), list)
+        else []
+    )
+    return draft_transfer_service.export_drafts_archive(
+        context.products,
+        context.paths.app_dir,
+        draft_ids,
+    )
+
+
+def import_drafts_archive(raw_zip: bytes) -> ResponseWithStatus:
+    context = get_context()
+    return draft_transfer_service.import_drafts_archive(
+        context.products,
+        context.paths.app_dir,
+        raw_zip,
+    ), 200
+
+
 def delete_draft_payload(body: dict[str, Any]) -> ResponseWithStatus:
     products = get_context().products
     draft_ids = body.get("draft_ids")
@@ -157,7 +180,9 @@ __all__ = [
     "delete_draft_payload",
     "delete_products_payload",
     "duplicate_draft_payload",
+    "export_drafts_archive",
     "export_products_payload",
+    "import_drafts_archive",
     "import_products_payload",
     "import_upcs_payload",
     "load_draft_payload",

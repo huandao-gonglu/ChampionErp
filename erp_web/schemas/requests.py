@@ -344,6 +344,8 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
         },
         required=("format", "version", "product_schema_version", "products"),
     ),
+    "/api/drafts/export": _contract(required=("draft_ids",)),
+    "/api/drafts/import": _EMPTY,
     "/api/duplicate-draft": _contract(required=("draft_id",)),
     "/api/generate-copy": _PRODUCT_OR_DRAFT,
     "/api/generate-copy-batch": _contract(required=("product_ids",)),

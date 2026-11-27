@@ -15,6 +15,17 @@ class JsonRequestHandler(Protocol):
     def send_json(self, data: Any, status: int = 200) -> None:
         ...
 
+    def send_binary(
+        self,
+        raw: bytes,
+        *,
+        content_type: str,
+        filename: str = "",
+        extra_headers: dict[str, str] | None = None,
+        status: int = 200,
+    ) -> None:
+        ...
+
     def send_json_with_keepalive(
         self,
         compute: Callable[[], tuple[Any, int]],
@@ -37,6 +48,14 @@ class JsonRequestHandler(Protocol):
         ...
 
     def read_body(self) -> dict[str, Any]:
+        ...
+
+    def read_binary_body(
+        self,
+        *,
+        allowed_content_types: frozenset[str],
+        max_bytes: int | None = None,
+    ) -> bytes:
         ...
 
     def send_response(self, code: int, message: str | None = None) -> None:

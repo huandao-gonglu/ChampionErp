@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { draftListTitle } from '@/utils/draftDisplayTitle'
 import { computed, ref, watch } from 'vue'
-import { PhMagnifyingGlass, PhX } from '@phosphor-icons/vue'
+import { PhCheckCircle, PhDownloadSimple, PhMagnifyingGlass, PhUploadSimple, PhX } from '@phosphor-icons/vue'
 import PageHeader from '@/components/layout/PageHeader.vue'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import { useAiChatStore } from '@/stores/aiChat'
@@ -20,6 +20,7 @@ const props = defineProps<{
   refreshing?: boolean
   loading: boolean
   error?: string
+  notice?: string
 }>()
 
 const emit = defineEmits<{
@@ -28,6 +29,9 @@ const emit = defineEmits<{
   duplicateDraft: [item: DraftIndexItem]
   deleteDraft: [item: DraftIndexItem]
   deleteDrafts: [items: DraftIndexItem[]]
+  exportDrafts: [draftIds: string[]]
+  importDrafts: [file: File]
+  clearNotice: []
   updateLanguage: [item: DraftIndexItem, language: string]
   updateTargets: [item: DraftIndexItem, targets: MarketplaceTargetSite[]]
 }>()
@@ -41,6 +45,9 @@ const platformFilter = ref<'all' | Marketplace>('all')
 const draftScope = ref<'unpublished' | 'publishing' | 'publish_failed' | 'published' | 'all'>('unpublished')
 const search = ref('')
 const selectedDraftIds = ref<string[]>([])
+const localError = ref('')
+const importFileInput = ref<HTMLInputElement | null>(null)
+const displayError = computed(() => localError.value || props.error || '')
 
 function draftPublishStateOf(item: DraftIndexItem): DraftPublishState {
   if (item.publishState === 'unpublished' || item.publishState === 'publishing' || item.publishState === 'publish_failed' || item.publishState === 'published') {
@@ -173,6 +180,44 @@ function confirmPendingDelete() {
   else emit('deleteDrafts', pending.items)
 }
 
+function triggerExportSelected() {
+  localError.value = ''
+  if (props.loading || !selectedCount.value) return
+  emit('exportDrafts', [...selectedDraftIds.value])
+}
+
+function triggerImportPicker() {
+  localError.value = ''
+  emit('clearNotice')
+  if (props.loading) return
+  if (importFileInput.value) {
+    importFileInput.value.value = ''
+    importFileInput.value.click()
+  }
+}
+
+function handleImportFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  localError.value = ''
+  const nameLower = String(file.name || '').toLowerCase()
+  const typeLower = String(file.type || '').toLowerCase()
+  const isZip = nameLower.endsWith('.zip')
+    || typeLower === 'application/zip'
+    || typeLower === 'application/x-zip-compressed'
+  if (!isZip) {
+    localError.value = '请选择从草稿箱导出的 ZIP 压缩包文件（.zip）。'
+    return
+  }
+  if (!file.size) {
+    localError.value = '所选 ZIP 文件为空，请重新选择。'
+    return
+  }
+  emit('importDrafts', file)
+}
+
 watch(() => props.drafts.map(draftIdOf), (draftIds) => {
   const existingIds = new Set(draftIds)
   selectedDraftIds.value = selectedDraftIds.value.filter((id) => existingIds.has(id))
@@ -248,6 +293,34 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
             已勾选：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ selectedCount }}</span> 个
           </div>
           <div class="flex flex-wrap items-center gap-2">
+            <input
+              ref="importFileInput"
+              data-testid="drafts-import-input"
+              type="file"
+              accept=".zip,application/zip,application/x-zip-compressed"
+              class="sr-only"
+              @change="handleImportFile"
+            />
+            <button
+              type="button"
+              class="btn btn-outline px-3 py-1.5 text-xs"
+              data-testid="drafts-import-button"
+              :disabled="props.loading"
+              title="从草稿箱导出的 ZIP 压缩包导入草稿（不加入采集箱）"
+              @click="triggerImportPicker"
+            >
+              <PhUploadSimple :size="14" aria-hidden="true" />导入草稿
+            </button>
+            <button
+              type="button"
+              class="btn btn-outline px-3 py-1.5 text-xs"
+              data-testid="drafts-export-button"
+              :disabled="props.loading || !selectedCount"
+              :title="selectedCount ? '将勾选草稿及关联图片打包导出为 ZIP' : '请先勾选要导出的草稿'"
+              @click="triggerExportSelected"
+            >
+              <PhDownloadSimple :size="14" aria-hidden="true" />导出选中<span v-if="selectedCount">（{{ selectedCount }}）</span>
+            </button>
             <button class="btn btn-primary px-3 py-1.5 text-xs" data-testid="drafts-ai-prepare" :disabled="props.loading || !selectedCount" @click="chatStore.prepareDrafts(selectedDraftIds)">AI 准备所选草稿（{{ selectedCount }}）</button>
             <button
               class="btn btn-outline px-3 py-1.5 text-xs text-rose-600 hover:border-rose-300 hover:bg-rose-50 dark:text-rose-200 dark:hover:border-rose-500/50 dark:hover:bg-rose-500/10"
@@ -262,8 +335,28 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
         </div>
       </div>
       <p class="muted mt-3 text-sm">AI 准备包含共用主图和 SKU 套图生成；图片有手动修改时会先确认保留或重做，原图保留。</p>
-      <div v-if="props.error" class="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200">
-        {{ props.error }}
+      <div
+        v-if="displayError"
+        role="alert"
+        class="mt-4 flex items-start justify-between gap-2 rounded-lg border border-rose-200 bg-rose-50 p-4 text-sm font-medium text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200"
+      >
+        <span class="min-w-0 break-words">{{ displayError }}</span>
+        <button v-if="localError" type="button" aria-label="关闭错误提示" class="shrink-0 rounded-md p-0.5 opacity-70 hover:opacity-100" @click="localError = ''">
+          <PhX :size="14" aria-hidden="true" />
+        </button>
+      </div>
+      <div
+        v-if="props.notice && !displayError"
+        role="status"
+        class="mt-4 flex items-center justify-between gap-2 rounded-lg border border-primary-200/80 bg-primary-50/80 px-3.5 py-2.5 text-xs font-medium text-primary-800 dark:border-primary-500/25 dark:bg-primary-500/10 dark:text-primary-200"
+      >
+        <div class="flex min-w-0 items-center gap-2">
+          <PhCheckCircle :size="15" weight="fill" class="shrink-0 text-primary-600 dark:text-primary-400" aria-hidden="true" />
+          <span>{{ props.notice }}</span>
+        </div>
+        <button type="button" aria-label="关闭通知" class="shrink-0 rounded-md p-0.5 opacity-70 hover:opacity-100" @click="emit('clearNotice')">
+          <PhX :size="13" aria-hidden="true" />
+        </button>
       </div>
 
       <div class="mt-5 overflow-visible rounded-lg border border-accent-200 dark:border-dark-700">

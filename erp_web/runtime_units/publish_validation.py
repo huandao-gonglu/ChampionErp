@@ -308,6 +308,66 @@ def _selected_price_errors(product: dict[str, Any], draft: dict[str, Any], *, se
     return []
 
 
+def _draft_already_published_sku(draft: dict[str, Any], sku_code: str) -> bool:
+    status = str(draft.get("publish_status") or "").strip().lower()
+    if status in {"published", "real_publish_success", "success"}:
+        return True
+    last_task = draft.get("last_publish_task") if isinstance(draft.get("last_publish_task"), dict) else {}
+    if sku_code and str(last_task.get("offer_id") or "").strip() == sku_code:
+        return True
+    for row in draft.get("sku_items") or []:
+        if not isinstance(row, dict):
+            continue
+        if sku_code and str(row.get("sku") or "").strip() != sku_code:
+            continue
+        pubs = row.get("publications")
+        if isinstance(pubs, dict) and any(bool(v) for v in pubs.values()):
+            return True
+    return False
+
+
+def _local_sku_conflict_warning(
+    session: PublishValidationSession,
+    platform: str,
+    draft: dict[str, Any],
+    sku_code: str,
+) -> dict[str, str] | None:
+    if not sku_code:
+        return None
+    message = session.local_sku_conflict(
+        platform,
+        sku_code,
+        exclude_draft_id=str(draft.get("draft_id") or "").strip(),
+        already_published=_draft_already_published_sku(draft, sku_code),
+    )
+    if not message:
+        return None
+    return precheck_item(
+        "LOCAL_SKU_CONFLICT",
+        "sku",
+        message,
+        "warning",
+        "前往 SKU 资料核对或修改卖家 SKU 编码，避免同店重复",
+    )
+
+
+def _draft_yandex_shipping_selection(draft: dict[str, Any]) -> dict[str, Any]:
+    site = str(draft.get("site") or draft.get("site_id") or "global").strip().lower()
+    key = f"yandex:{site}"
+    pricing = draft.get("pricing") if isinstance(draft.get("pricing"), dict) else {}
+    targets = pricing.get("targets") if isinstance(pricing.get("targets"), dict) else {}
+    target_quote = next(
+        (val for tkey, val in targets.items() if str(tkey).lower() == key and isinstance(val, dict)),
+        {},
+    )
+    selection = target_quote.get("shipping_selection")
+    if isinstance(selection, dict) and selection:
+        return selection
+    basis = target_quote.get("calculation_basis") if isinstance(target_quote.get("calculation_basis"), dict) else {}
+    basis_selection = basis.get("shipping_selection")
+    return basis_selection if isinstance(basis_selection, dict) else {}
+
+
 def validate_mercadolibre_draft(
     product: dict[str, Any],
     config: dict[str, Any],
@@ -316,7 +376,9 @@ def validate_mercadolibre_draft(
     category_definition: CategoryDefinition | None = None,
     category_currency_cache: dict[tuple[str, str], tuple[str, ...]] | None = None,
     image_stage: str = "final",
+    session: PublishValidationSession | None = None,
 ) -> dict[str, Any]:
+    session = session if session is not None else PublishValidationSession()
     raw_sites_to_sell = mercadolibre_selected_raw_sites_to_sell(product)
     product = normalize_product_fields(product)
     draft = _draft_for_selected_target(product, "mercadolibre")
@@ -503,9 +565,12 @@ def validate_mercadolibre_draft(
         errors.append(precheck_item("BRAND_MISSING", "brand", "Brand 为空", "error", "前往类目属性页确认 Brand"))
     if not str(draft.get("model") or "").strip():
         errors.append(precheck_item("MODEL_MISSING", "model", "Model 为空", "error", "前往类目属性页确认 Model"))
-    if not str(draft.get("sku") or "").strip():
+    sku = str(draft.get("sku") or "").strip()
+    if not sku:
         errors.append(precheck_item("SKU_MISSING", "sku", "SKU 为空", "error", "前往商品编辑页填写 SKU"))
-    errors.extend(_selected_price_errors(product, draft))
+    elif warning := _local_sku_conflict_warning(session, "mercadolibre", draft, sku):
+        warnings.append(warning)
+    errors.extend(_selected_price_errors(product, draft, session=session))
     # 类目级允许币种约束（迁移方案 §12 检查 5）：仅当店铺币种已 ready 且类目
     # 返回允许集时校验；读取失败或类目无允许集视为无约束，绝不反向改店铺币种。
     store_state = store_listing_currency_from_auth(
@@ -694,10 +759,22 @@ def validate_prepared_yandex_draft(
             warnings.append(precheck_item("YANDEX_GUARANTEE_PERIOD_MISSING", "guarantee_period", "尚未填写保修期限，平台可能要求补充", "warning", "按实际售后承诺填写 Yandex 保修期限"))
     except ValueError as exc:
         errors.append(precheck_item("YANDEX_GUARANTEE_PERIOD_INVALID", "guarantee_period", str(exc), "error", "检查保修时长、单位和说明"))
+    yandex_logistics_failed = False
     if str(store.get('placement_type') or '').upper() == 'FBS':
         from erp_web.services.yandex_logistics_service import draft_fulfillment_plan
         if error := session.yandex_logistics_error(draft_fulfillment_plan(draft)):
+            yandex_logistics_failed = True
             errors.append(precheck_item('YANDEX_LOGISTICS_INVALID', 'pricing', error, 'error', '在系统设置中指定 Yandex 发布仓库运输模式后重新核价'))
+    if not yandex_logistics_failed:
+        selection = _draft_yandex_shipping_selection(draft)
+        if selection_error := session.yandex_shipping_selection_error(selection):
+            errors.append(precheck_item(
+                'YANDEX_SHIPPING_SELECTION_INVALID',
+                'pricing',
+                selection_error,
+                'error',
+                '前往核价页重新选择当前账号可用的发布仓库与物流方式并应用售价',
+            ))
     auth_status, auth_next = _masked_auth_status("yandex", config)
     # “已保存，未测试”同样阻断发布：凭证或 Campaign ID 切换后必须重新
     # 通过在线授权校验，才能派生 business_id 与价格/库存能力。
@@ -777,6 +854,8 @@ def validate_prepared_yandex_draft(
         errors.append(precheck_item("BRAND_MISSING", "brand", "品牌为空", "error", "前往类目属性页确认 Brand"))
     if not sku:
         errors.append(precheck_item("SKU_MISSING", "sku", "SKU 为空", "error", "前往商品编辑页填写 SKU"))
+    elif warning := _local_sku_conflict_warning(session, "yandex", draft, sku):
+        warnings.append(warning)
     errors.extend(_selected_price_errors(product, draft, session=session))
     if not session.sku_inputs_checked and not str(draft.get("stock") or "").strip():
         errors.append(precheck_item("STOCK_MISSING", "stock", "库存缺失", "error", "前往商品编辑页填写库存"))
@@ -857,8 +936,11 @@ def validate_ozon_draft(
         errors.append(precheck_item("BRAND_MISSING", "brand", "品牌为空", "error", "前往类目属性页确认 Brand"))
     if not str(draft.get("model") or "").strip():
         errors.append(precheck_item("MODEL_MISSING", "model", "型号为空", "error", "前往类目属性页确认 Model"))
-    if not str(draft.get("sku") or "").strip():
+    sku = str(draft.get("sku") or "").strip()
+    if not sku:
         errors.append(precheck_item("SKU_MISSING", "sku", "SKU 为空", "error", "前往商品编辑页填写 SKU"))
+    elif warning := _local_sku_conflict_warning(session, "ozon", draft, sku):
+        warnings.append(warning)
     errors.extend(_selected_price_errors(product, draft, session=session))
     if not session.sku_inputs_checked and not str(draft.get("stock") or "").strip():
         errors.append(precheck_item("STOCK_MISSING", "stock", "库存缺失", "error", "前往商品编辑页填写库存"))

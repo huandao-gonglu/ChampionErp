@@ -248,4 +248,39 @@ describe('DraftBoxPanel', () => {
     await wrapper.get('[data-testid="confirm-delete-published-draft"]').trigger('click')
     expect(wrapper.emitted('deleteDraft')).toEqual([[publishedRow]])
   })
+
+  it('支持勾选导出草稿 ZIP 与导入 ZIP 校验', async () => {
+    const row = draft('draft-exp-1', 'claimed', '待导出草稿')
+    const wrapper = mount(DraftBoxPanel, {
+      props: {
+        drafts: [row],
+        platformOptions: [],
+        storeConfig: {},
+        loading: false,
+        notice: '已成功导入 1 份草稿',
+      },
+    })
+
+    expect(wrapper.text()).toContain('已成功导入 1 份草稿')
+    const exportBtn = wrapper.get('[data-testid="drafts-export-button"]')
+    expect(exportBtn.attributes('disabled')).toBeDefined()
+
+    await wrapper.get('[aria-label="勾选草稿"]').setValue(true)
+    expect(exportBtn.attributes('disabled')).toBeUndefined()
+    await exportBtn.trigger('click')
+    expect(wrapper.emitted('exportDrafts')).toEqual([[['draft-exp-1']]])
+
+    const input = wrapper.get('[data-testid="drafts-import-input"]')
+    const badFile = new File(['hello'], 'notes.txt', { type: 'text/plain' })
+    Object.defineProperty(input.element, 'files', { value: [badFile], configurable: true })
+    await input.trigger('change')
+    expect(wrapper.emitted('importDrafts')).toBeUndefined()
+    expect(wrapper.text()).toContain('请选择从草稿箱导出的 ZIP 压缩包文件')
+
+    const zipFile = new File([new Uint8Array([80, 75, 3, 4])], 'drafts.zip', { type: 'application/zip' })
+    Object.defineProperty(input.element, 'files', { value: [zipFile], configurable: true })
+    await input.trigger('change')
+    expect(wrapper.emitted('importDrafts')).toHaveLength(1)
+    expect(wrapper.emitted('importDrafts')?.[0]?.[0]).toBe(zipFile)
+  })
 })

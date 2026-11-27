@@ -1348,6 +1348,43 @@ class ProductStore:
             200,
         )
 
+    @product_mutation("product")
+    def import_draft_record(
+        self,
+        product_id: str,
+        platform: str,
+        draft_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """将已预校验的新导入草稿挂入指定宿主商品并重算初始工作流状态。"""
+        product_id = str(product_id or "").strip()
+        platform = str(platform or "").strip().lower()
+        if not product_id or platform not in PLATFORMS:
+            raise ValueError("导入草稿缺少有效的商品 ID 或平台。")
+        product = self._db.load_product_model(product_id)
+        if not product:
+            raise ValueError("导入草稿关联的宿主商品不存在。")
+        reject_retired_draft_schema_fields(draft_data)
+        draft = deepcopy(draft_data)
+        draft["product_id"] = product_id
+        draft["source_product_id"] = product_id
+        draft["platform"] = platform
+        draft["draft_id"] = str(draft.get("draft_id") or "").strip() or new_draft_id()
+        validate_draft_facts(draft)
+
+        product_for_status = deepcopy(product)
+        product_for_status.pop("publish_preview", None)
+        product_drafts = (
+            deepcopy(product_for_status.get("drafts"))
+            if isinstance(product_for_status.get("drafts"), dict)
+            else {}
+        )
+        product_drafts[platform] = draft
+        product_for_status["drafts"] = product_drafts
+        draft["status"] = self.draft_workflow_status(product_for_status, platform)
+
+        saved_draft_id = self._db.upsert_draft_model(product_id, platform, draft)
+        return self._db.load_draft_model(saved_draft_id)
+
     @product_mutation("draft")
     def update_draft_sku_selection(
         self, draft_id: str, selected_sku_ids: list[str]

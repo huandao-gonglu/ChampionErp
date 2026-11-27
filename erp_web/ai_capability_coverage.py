@@ -552,8 +552,8 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         path=path,
         business_domain="商品与草稿",
         disposition="internal_only",
-        reason="采集箱商品 JSON 文件导入导出由界面人工下载/上传文件完成，不经模型传输大体积图片数据。",
-    ) for path in ("/api/products/export", "/api/products/import")),
+        reason="采集箱商品与草稿箱文件导入导出由界面人工下载/上传文件完成，不经模型传输大体积图片数据。",
+    ) for path in ("/api/products/export", "/api/products/import", "/api/drafts/export", "/api/drafts/import")),
     AiCapabilityCoverageEntry(
         method="POST",
         path="/api/load-draft",

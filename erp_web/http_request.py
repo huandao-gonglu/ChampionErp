@@ -11,6 +11,7 @@ from erp_web.schemas.requests import RequestValidationError
 
 
 MAX_JSON_BODY_BYTES = 64 * 1024 * 1024
+MAX_BINARY_BODY_BYTES = 128 * 1024 * 1024
 _JSON_CONTENT_TYPE = "application/json"
 
 
@@ -113,7 +114,12 @@ def validate_request_metadata(handler: BaseHTTPRequestHandler) -> None:
         )
 
 
-def _content_length(handler: BaseHTTPRequestHandler) -> int:
+def _content_length(
+    handler: BaseHTTPRequestHandler,
+    *,
+    max_bytes: int | None = None,
+) -> int:
+    limit = MAX_JSON_BODY_BYTES if max_bytes is None else max_bytes
     if _header(handler, "Transfer-Encoding"):
         raise RequestValidationError(
             "不支持 Transfer-Encoding 请求体",
@@ -140,9 +146,9 @@ def _content_length(handler: BaseHTTPRequestHandler) -> int:
             "Content-Length 无效",
             error_code="INVALID_CONTENT_LENGTH",
         )
-    if length > MAX_JSON_BODY_BYTES:
+    if length > limit:
         raise RequestValidationError(
-            f"请求体不能超过 {MAX_JSON_BODY_BYTES} 字节",
+            f"请求体不能超过 {limit} 字节",
             status_code=413,
             error_code="REQUEST_BODY_TOO_LARGE",
         )
@@ -207,8 +213,42 @@ def safe_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return payload
 
 
+def safe_binary_body(
+    handler: BaseHTTPRequestHandler,
+    *,
+    allowed_content_types: frozenset[str],
+    max_bytes: int | None = None,
+) -> bytes:
+    """读取受限二进制请求体（如 ZIP 导入包），复用来源与长度边界检查。"""
+
+    validate_request_metadata(handler)
+    limit = MAX_BINARY_BODY_BYTES if max_bytes is None else max_bytes
+    length = _content_length(handler, max_bytes=limit)
+    if length <= 0:
+        raise RequestValidationError(
+            "上传文件不能为空",
+            error_code="EMPTY_REQUEST_BODY",
+        )
+    media_type = _header(handler, "Content-Type").split(";", 1)[0].strip().lower()
+    if media_type not in allowed_content_types:
+        raise RequestValidationError(
+            "不支持的上传文件类型，请上传 ZIP 压缩包",
+            status_code=415,
+            error_code="UNSUPPORTED_CONTENT_TYPE",
+        )
+    raw_bytes = handler.rfile.read(length)
+    if len(raw_bytes) != length:
+        raise RequestValidationError(
+            "请求体不完整",
+            error_code="INCOMPLETE_REQUEST_BODY",
+        )
+    return raw_bytes
+
+
 __all__ = [
+    "MAX_BINARY_BODY_BYTES",
     "MAX_JSON_BODY_BYTES",
+    "safe_binary_body",
     "safe_json_body",
     "safe_json_body_with_raw",
     "validate_request_metadata",

@@ -5,6 +5,7 @@ import {
   deleteDraft as deleteDraftApi,
   deleteProducts as deleteProductsApi,
   duplicateDraft as duplicateDraftApi,
+  exportDrafts as exportDraftsApi,
   exportProducts as exportProductsApi,
   fetchDraftsIndex,
   fetchProductsIndex,
@@ -14,6 +15,7 @@ import {
   imagePoolAction,
   imageEdit as imageEditApi,
   imageTranslate as imageTranslateApi,
+  importDrafts as importDraftsApi,
   importProducts as importProductsApi,
   loadDraft as loadDraftApi,
   loadProduct as loadProductApi,
@@ -492,6 +494,55 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
     }
   }
 
+  async function exportSelectedDrafts(draftIds: string[]) {
+    const ids = Array.from(new Set(draftIds.map((id) => String(id || '').trim()).filter(Boolean)))
+    if (!ids.length) {
+      setError('请先勾选要导出的草稿。')
+      return ''
+    }
+    loading.value = true
+    setError('')
+    try {
+      const result = await exportDraftsApi(ids)
+      const url = URL.createObjectURL(result.blob)
+      try {
+        const link = document.createElement('a')
+        link.href = url
+        link.download = result.filename
+        document.body.appendChild(link)
+        link.click()
+        link.remove()
+      } finally {
+        URL.revokeObjectURL(url)
+      }
+      const message = result.message || `已导出 ${result.count} 份草稿。`
+      addLog(`${message}（${result.filename}）`)
+      return `${message}（${result.filename}）`
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '导出草稿失败')
+      return ''
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function importDraftsFromZip(file: File) {
+    loading.value = true
+    setError('')
+    try {
+      const result = await importDraftsApi(file)
+      draftsIndex.value = result.draftsIndex
+      const message = result.message || `已成功导入 ${result.imported} 份草稿，请核对核价与 SKU 编码并重新预检。`
+      addLog(message)
+      return message
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : '导入草稿失败')
+      return ''
+    } finally {
+      loading.value = false
+    }
+  }
+
   function toggleProductSelection(productId: string, checked?: boolean) {
     const exists = selectedProductIds.value.includes(productId)
     const shouldAdd = checked ?? !exists
@@ -831,7 +882,7 @@ export function createWorkflowCatalogActions(runtime: WorkflowCatalogActionsPort
   return {
     acceptLoadedDraft,
     productsRefreshing, draftsRefreshing, refreshProductsIndex, refreshDraftsIndex, loadProduct, loadDraft, loadDraftForPricing, duplicateDraft, updateDraftTargets,
-    updateDraftLanguage, deleteDraft, deleteDrafts, deleteProduct, deleteSelectedProducts, exportSelectedProducts, importProductsFromJson, toggleProductSelection,
+    updateDraftLanguage, deleteDraft, deleteDrafts, deleteProduct, deleteSelectedProducts, exportSelectedProducts, importProductsFromJson, exportSelectedDrafts, importDraftsFromZip, toggleProductSelection,
     selectAllProducts, claimProductsToDrafts, generateCopyForSelectedProducts, enqueueSelectedProducts,
     uploadReferenceImages, clearSourceImages, saveCurrentImagePool, setMainImage, deleteImages, editImagesWithPrompt,
     saveCurrentProduct, saveCurrentDraft, assignUpc, generateCopy, generateImagePromptPack, translateImages,

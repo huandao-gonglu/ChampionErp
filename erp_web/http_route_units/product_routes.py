@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 from typing import Callable
+import urllib.parse
 
 from erp_web.schemas.requests import validate_request_payload
+from erp_web.services.draft_transfer_service import ZIP_CONTENT_TYPES
 
 from .common import JsonRequestHandler
 from ..facades import product_facade, draft_pricing_facade
@@ -103,6 +105,30 @@ def handle_import_products(handler: JsonRequestHandler) -> None:
     handler.send_json(result, status)
 
 
+def handle_export_drafts(handler: JsonRequestHandler) -> None:
+    body = validate_request_payload(handler.read_body(), endpoint=handler.path)
+    zip_bytes, filename, count, missing_ids = product_facade.export_drafts_archive(body)
+    extra_headers = {
+        "X-Export-Count": str(count),
+        "X-Export-Filename": urllib.parse.quote(filename, safe=""),
+    }
+    if missing_ids:
+        extra_headers["X-Export-Missing-Ids"] = ",".join(missing_ids)
+    handler.send_binary(
+        zip_bytes,
+        content_type="application/zip",
+        filename=filename,
+        extra_headers=extra_headers,
+    )
+
+
+def handle_import_drafts(handler: JsonRequestHandler) -> None:
+    raw_zip = handler.read_binary_body(allowed_content_types=ZIP_CONTENT_TYPES)
+    validate_request_payload({}, endpoint=handler.path)
+    result, status = product_facade.import_drafts_archive(raw_zip)
+    handler.send_json(result, status)
+
+
 def handle_delete_draft(handler: JsonRequestHandler) -> None:
     result, status = product_facade.delete_draft_payload(
         validate_request_payload(handler.read_body(), endpoint=handler.path)
@@ -125,6 +151,8 @@ POST_HANDLERS: dict[str, PostHandler] = {
     "/api/delete-products": handle_delete_products,
     "/api/products/export": handle_export_products,
     "/api/products/import": handle_import_products,
+    "/api/drafts/export": handle_export_drafts,
+    "/api/drafts/import": handle_import_drafts,
 }
 HANDLED_PATHS = frozenset(POST_HANDLERS)
 

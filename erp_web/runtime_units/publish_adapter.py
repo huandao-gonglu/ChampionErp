@@ -183,6 +183,7 @@ class MercadoLibrePublishingAdapter:
             category_definition=context.category_definition,
             category_currency_cache=context.category_currency_cache,
             image_stage=image_stage,
+            session=context.validation_session,
         )
         return _flag_definition_unavailable(context, result)
 

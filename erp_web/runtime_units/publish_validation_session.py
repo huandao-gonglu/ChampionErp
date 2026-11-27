@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 from functools import cached_property
 import json
+import sqlite3
 from typing import Any
 
 from erp_web.context import get_context
@@ -14,6 +15,12 @@ class PublishValidationSession:
     sku_inputs_checked: bool = False
     images: ImageInspectionCache = field(default_factory=ImageInspectionCache)
     logistics_errors: dict[str, str] = field(default_factory=dict)
+    _yandex_plans_cache: list[dict[str, Any]] | None = field(
+        default=None, repr=False, compare=False,
+    )
+    _platform_sku_index: dict[str, tuple[dict[str, set[str]], set[str]]] = field(
+        default_factory=dict, repr=False, compare=False,
+    )
     _yandex_ancestors_by_token: dict[str, dict[str, tuple[str, ...]]] = field(
         default_factory=dict, repr=False, compare=False,
     )
@@ -100,3 +107,98 @@ class PublishValidationSession:
             else:
                 self.logistics_errors[key] = ""
         return self.logistics_errors[key]
+
+    def yandex_shipping_selection_error(self, selection: dict[str, Any]) -> str:
+        """校验草稿指定的 Yandex 发布仓库与物流路线是否属于当前账号可用方案。"""
+        if not isinstance(selection, dict):
+            return ""
+        warehouse_id = str(selection.get("warehouse_id") or "").strip()
+        route_id = str(selection.get("route_id") or "").strip()
+        if not warehouse_id and not route_id:
+            return ""
+        if self._yandex_plans_cache is None:
+            try:
+                plans = get_context().yandex_logistics.plans()
+                self._yandex_plans_cache = list(plans) if isinstance(plans, list) else []
+            except Exception:
+                self._yandex_plans_cache = []
+        matched = any(
+            (not warehouse_id or str(plan.get("publish_warehouse_id") or "").strip() == warehouse_id)
+            and (not route_id or str(plan.get("route_id") or "").strip() == route_id)
+            for plan in self._yandex_plans_cache
+        )
+        if not matched:
+            return "草稿指定的 Yandex 发布仓库或物流方式在当前账号不可用，请重新选择或重算核价"
+        return ""
+
+    def _load_platform_sku_index(self, platform: str) -> tuple[dict[str, set[str]], set[str]]:
+        key = str(platform or "").strip().lower()
+        if key in self._platform_sku_index:
+            return self._platform_sku_index[key]
+        draft_skus: dict[str, set[str]] = {}
+        online_skus: set[str] = set()
+        try:
+            db = get_context().db
+            with db._connect() as conn:
+                rows = conn.execute(
+                    "SELECT draft_id, draft_json FROM platform_drafts WHERE platform = ?",
+                    (key,),
+                ).fetchall()
+                for row in rows:
+                    draft_id = str(row["draft_id"] or "").strip()
+                    if not draft_id:
+                        continue
+                    try:
+                        payload = json.loads(row["draft_json"] or "{}")
+                    except (TypeError, ValueError):
+                        continue
+                    if not isinstance(payload, dict):
+                        continue
+                    for item in payload.get("sku_items") or []:
+                        if not isinstance(item, dict) or item.get("selected") is False:
+                            continue
+                        code = str(item.get("sku") or "").strip()
+                        if code:
+                            draft_skus.setdefault(code, set()).add(draft_id)
+                online_rows = conn.execute(
+                    "SELECT json_extract(snapshot_json, '$.seller_sku') AS seller_sku "
+                    "FROM online_listings WHERE platform = ?",
+                    (key,),
+                ).fetchall()
+                for row in online_rows:
+                    code = str(row["seller_sku"] or "").strip()
+                    if code:
+                        online_skus.add(code)
+        except (AttributeError, RuntimeError, sqlite3.Error):
+            pass
+        result = (draft_skus, online_skus)
+        self._platform_sku_index[key] = result
+        return result
+
+    def local_sku_conflict(
+        self,
+        platform: str,
+        seller_sku: str,
+        *,
+        exclude_draft_id: str = "",
+        already_published: bool = False,
+    ) -> str:
+        """检查卖家 SKU 是否与当前账号同平台的其他草稿或在线商品重复。"""
+        code = str(seller_sku or "").strip()
+        if not code:
+            return ""
+        draft_skus, online_skus = self._load_platform_sku_index(platform)
+        other_drafts = sorted(
+            did for did in draft_skus.get(code, set())
+            if did and did != str(exclude_draft_id or "").strip()
+        )
+        reasons: list[str] = []
+        if other_drafts:
+            preview = "、".join(other_drafts[:2])
+            suffix = f" 等 {len(other_drafts)} 份草稿" if len(other_drafts) > 2 else ""
+            reasons.append(f"其他草稿（{preview}{suffix}）")
+        if not already_published and code in online_skus:
+            reasons.append("本地在线商品快照")
+        if not reasons:
+            return ""
+        return f"卖家 SKU「{code}」与当前账号的{'、'.join(reasons)}重复，请确认是否为同一商品或修改 SKU 避免冲突"

@@ -477,6 +477,7 @@ function closeTaskDetail() {
 }
 
 const libraryNotice = ref('')
+const draftsNotice = ref('')
 
 async function claimAndOpenDrafts(productIds: string[], targets: MarketplaceTargetSite[]) {
   const ok = await store.claimProductsToDrafts(productIds, targets)
@@ -493,6 +494,18 @@ async function handleImportLibraryProducts(payload: Record<string, unknown>) {
   libraryNotice.value = ''
   const message = await store.importProductsFromJson(payload)
   if (message) libraryNotice.value = message
+}
+
+async function handleExportDrafts(draftIds: string[]) {
+  draftsNotice.value = ''
+  const message = await store.exportSelectedDrafts(draftIds)
+  if (message) draftsNotice.value = message
+}
+
+async function handleImportDrafts(file: File) {
+  draftsNotice.value = ''
+  const message = await store.importDraftsFromZip(file)
+  if (message) draftsNotice.value = message
 }
 
 function warnUnsavedImages(event: BeforeUnloadEvent) {
@@ -624,12 +637,16 @@ watch(
                 :store-config="storeConfig"
                 :loading="loading"
                 :error="error"
+                :notice="draftsNotice"
                 @refresh="store.refreshDraftsIndex"
                 @update-language="store.updateDraftLanguage"
                 @edit="openDraftWorkspace"
                 @duplicate-draft="store.duplicateDraft"
                 @delete-draft="deleteDraft"
                 @delete-drafts="deleteDrafts"
+                @export-drafts="handleExportDrafts"
+                @import-drafts="handleImportDrafts"
+                @clear-notice="draftsNotice = ''"
                 @update-targets="store.updateDraftTargets"
               />
             </div>
