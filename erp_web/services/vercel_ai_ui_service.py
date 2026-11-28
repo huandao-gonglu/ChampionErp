@@ -12,7 +12,18 @@ from typing import Any, Sequence
 from uuid import uuid4
 
 from pydantic import ValidationError
-from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelRequest, ModelResponse, TextPart, ThinkingPart, ToolCallPart, ToolReturnPart, RetryPromptPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelMessagesTypeAdapter,
+    ModelRequest,
+    ModelResponse,
+    RetryPromptPart,
+    SystemPromptPart,
+    TextPart,
+    ThinkingPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter, VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.response_types import DataChunk
 from pydantic_ai.ui.vercel_ai.request_types import (
@@ -81,19 +92,25 @@ def new_event_stream(conversation_id: str) -> VercelAIEventStream:
 
 
 def _display_history(messages: Sequence[ModelMessage]) -> list[ModelMessage]:
-    """原生输出校验的重试提示只发给模型；网页和分支共用相同的消息映射。"""
+    """系统提示与原生输出校验的重试提示只发给模型；网页和分支共用相同的消息映射。"""
     visible = []
     for message in messages:
         if "image_batch_item" in (message.metadata or {}):
             continue
         if isinstance(message, ModelRequest):
-            parts = [part for part in message.parts if not (isinstance(part, RetryPromptPart) and part.tool_name is None)]
-            if len(parts) != len(message.parts):
+            has_output_retry = any(isinstance(part, RetryPromptPart) and part.tool_name is None for part in message.parts)
+            parts = [
+                part for part in message.parts
+                if not isinstance(part, SystemPromptPart)
+                and not (isinstance(part, RetryPromptPart) and part.tool_name is None)
+            ]
+            if has_output_retry:
                 previous = visible[-1] if visible else None
                 if (isinstance(previous, ModelResponse) and previous.run_id == message.run_id
                         and not (previous.metadata or {}).get("chat_final")
                         and all(isinstance(part, (TextPart, ThinkingPart)) for part in previous.parts)):
                     visible.pop()
+            if len(parts) != len(message.parts):
                 if not parts:
                     continue
                 message = replace(message, parts=parts)
@@ -394,6 +411,8 @@ class VercelAiUiService(ChatConversationService):
         visible = []
         turn = None
         for message in ui:
+            if message.role == "system":
+                continue
             metadata = dict(message.metadata or {})
             if "immediate_context" in metadata:
                 metadata.pop("immediate_context")

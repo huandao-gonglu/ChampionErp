@@ -283,4 +283,91 @@ describe('DraftBoxPanel', () => {
     expect(wrapper.emitted('importDrafts')).toHaveLength(1)
     expect(wrapper.emitted('importDrafts')?.[0]?.[0]).toBe(zipFile)
   })
+
+  it('单行展示 6 步进度（无顶部重复胶囊），支持方案A筛选、悬停 hint 展示禁售明细与点击步骤直达编辑', async () => {
+    const forbiddenRow: DraftIndexItem = {
+      ...draft('draft-forbid', 'category_forbidden', '植物营养液'),
+      progress: {
+        forbidden: true,
+        statusCode: 'category_forbidden',
+        statusLabel: '禁售类目',
+        statusTone: 'danger',
+        prepStage: 'category_forbidden',
+        completedSteps: 2,
+        totalSteps: 6,
+        alert: 'Yandex：上级类目 13793701 在禁售名单中',
+        steps: [
+          { key: 'category', short: '类', label: '类目', tab: 'category', state: 'blocked', summary: 'Yandex 禁售' },
+          { key: 'copy', short: '文', label: '文案', tab: 'text', state: 'done', summary: '标题与描述已完成' },
+          { key: 'images', short: '图', label: '图片', tab: 'images', state: 'done', summary: '图片已加工' },
+          { key: 'attributes', short: '属', label: '属性', tab: 'category', state: 'pending', summary: '未填属性' },
+          { key: 'pricing', short: '价', label: '核价', tab: 'pricing', state: 'pending', summary: '待核价' },
+          { key: 'precheck', short: '检', label: '预检', tab: 'precheck', state: 'pending', summary: '未预检' },
+        ],
+        markets: [
+          { platform: 'yandex', site: 'global', label: 'Yandex', forbidden: true, forbiddenReason: '上级类目 13793701 在禁售名单中', statusLabel: '禁售类目', tone: 'danger', summary: '上级类目 13793701 在禁售名单中' },
+          { platform: 'ozon', site: 'global', label: 'Ozon', forbidden: false, forbiddenReason: '', statusLabel: '准备中', tone: 'info', summary: '类目 ✓ · 未核价' },
+        ],
+      },
+    }
+    const readyRow: DraftIndexItem = {
+      ...draft('draft-ready', 'ready_to_publish', '便携充气泵'),
+      progress: {
+        forbidden: false,
+        statusCode: 'ready_to_publish',
+        statusLabel: '可发布',
+        statusTone: 'success',
+        prepStage: 'ready_to_publish',
+        completedSteps: 6,
+        totalSteps: 6,
+        alert: '',
+        steps: [
+          { key: 'category', short: '类', label: '类目', tab: 'category', state: 'done', summary: '已选叶子类目' },
+          { key: 'copy', short: '文', label: '文案', tab: 'text', state: 'done', summary: '文案已完成' },
+          { key: 'images', short: '图', label: '图片', tab: 'images', state: 'done', summary: '图片已就绪' },
+          { key: 'attributes', short: '属', label: '属性', tab: 'category', state: 'done', summary: '属性已填写' },
+          { key: 'pricing', short: '价', label: '核价', tab: 'pricing', state: 'done', summary: '已核价' },
+          { key: 'precheck', short: '检', label: '预检', tab: 'precheck', state: 'done', summary: '预检通过' },
+        ],
+        markets: [
+          { platform: 'ozon', site: 'global', label: 'Ozon', forbidden: false, forbiddenReason: '', statusLabel: '可发布', tone: 'success', summary: '类目 ✓ · 预检通过 ✓' },
+        ],
+      },
+    }
+
+    const wrapper = mount(DraftBoxPanel, {
+      props: {
+        drafts: [forbiddenRow, readyRow],
+        platformOptions: [],
+        storeConfig: {},
+        loading: false,
+      },
+      global: { stubs: { Teleport: true } },
+    })
+
+    // 待发布行仅展示单行 6 步胶囊，不重复渲染顶部状态胶囊
+    expect(wrapper.findAll('[data-testid="draft-progress-steps"]')).toHaveLength(2)
+    expect(wrapper.find('[data-testid="draft-status-badge"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid="draft-step-category"]')[0].text()).toBe('类!')
+    expect(wrapper.findAll('[data-testid="draft-step-category"]')[0].attributes('data-step-state')).toBe('blocked')
+
+    // 悬停状态单元格显示 hint 详情（含「禁售类目」、原因与分市场明细）
+    expect(wrapper.find('[data-testid="draft-status-hint"]').exists()).toBe(false)
+    await wrapper.findAll('[data-testid="draft-status-cell"]')[0].trigger('mouseenter')
+    const hint = wrapper.get('[data-testid="draft-status-hint"]')
+    expect(hint.text()).toContain('禁售类目')
+    expect(hint.text()).toContain('13793701')
+    expect(hint.text()).toContain('Yandex')
+    expect(hint.text()).toContain('Ozon')
+
+    // 方案 A：点击「禁售类目」二级筛选仅展示禁售草稿
+    await wrapper.get('[data-testid="draft-prep-filter-category_forbidden"]').trigger('click')
+    expect(wrapper.findAll('tbody tr')).toHaveLength(1)
+    expect(wrapper.get('tbody').text()).toContain('植物营养液')
+    expect(wrapper.get('tbody').text()).not.toContain('便携充气泵')
+
+    // 点击「价」步骤胶囊直接透传对应编辑 Tab
+    await wrapper.get('[data-testid="draft-step-pricing"]').trigger('click')
+    expect(wrapper.emitted('edit')?.[0]).toEqual([forbiddenRow, 'pricing'])
+  })
 })

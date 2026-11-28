@@ -173,7 +173,7 @@ def public_app_config(
     for model in public.get("ai_models", []):
         if model.get("api_key_env") == ai_model_config.MANAGED_KEY_SOURCE:
             model["system_managed"] = True
-            for field in ("base_url", "base_url_env", "api_key", "api_key_env", "model_env"):
+            for field in ("base_url", "api_key", "api_key_env"):
                 model.pop(field, None)
     public.pop("1688_api", None)
     # 共享汇率 API 与共享图片托管由管理员维护，不进入通用配置视图。
@@ -271,6 +271,11 @@ def merge_ai_config(app_dir: Path | str, current: dict[str, Any], incoming: dict
         merged["ai_models"] = next_models
     if isinstance(incoming.get("ai_use_case_bindings"), dict):
         merged["ai_use_case_bindings"] = ai_model_config.normalize_ai_use_case_bindings(incoming.get("ai_use_case_bindings"))
+    if isinstance(merged.get("ai_models"), list) or isinstance(merged.get("ai_use_case_bindings"), dict):
+        merged["ai_use_case_bindings"] = ai_model_config.prune_incompatible_ai_use_case_bindings(
+            merged.get("ai_models"),
+            merged.get("ai_use_case_bindings"),
+        )
     ai_model_config.validate_ai_use_case_generation_bindings(merged)
     ai_model_config.validate_ai_model_request_overrides(merged)
     return merged

@@ -6,6 +6,7 @@ from __future__ import annotations
 CategoryProvider 注册表处理；facade 不直接访问文件、网络或 SQLite。
 """
 
+from datetime import datetime, timezone
 from typing import Any
 
 from erp_web.context import get_context
@@ -237,14 +238,63 @@ def load_category_match_subject(
     return product, draft or {}, target, None
 
 
+def _persist_category_match_block(
+    draft_id: str,
+    target: Payload,
+    result: Payload,
+) -> None:
+    """将类目自动匹配产生的禁售或待人工确认结论落盘，供草稿箱直接展示。"""
+    resolved_draft_id = str(draft_id or "").strip()
+    platform = str(target.get("platform") or "").strip().lower()
+    site = str(target.get("site") or "").strip()
+    if not resolved_draft_id or not platform or not site:
+        return
+    status = str(result.get("status") or "").strip().lower()
+    failure = result.get("failure") if isinstance(result.get("failure"), dict) else {}
+    code = str(failure.get("code") or "").strip().upper()
+    reason = str(failure.get("message") or "").strip()
+    details = failure.get("details") if isinstance(failure.get("details"), dict) else {}
+    block: dict[str, Any] | None = None
+    if code in {"CATEGORY_FORBIDDEN_NO_ALTERNATIVE", "CATEGORY_FORBIDDEN"}:
+        block = {
+            "code": code,
+            "reason": reason or "最匹配的类目属于禁售范围，且无合规替代类目。",
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if isinstance(details.get("matched_category_ids"), list) and details["matched_category_ids"]:
+            block["matched_category_ids"] = [str(v).strip() for v in details["matched_category_ids"] if str(v).strip()]
+        if isinstance(details.get("matched_forbidden_ids"), list) and details["matched_forbidden_ids"]:
+            block["matched_forbidden_ids"] = [str(v).strip() for v in details["matched_forbidden_ids"] if str(v).strip()]
+    elif status == "unresolved":
+        block = {
+            "code": code or "CATEGORY_MATCH_UNRESOLVED",
+            "reason": reason or "类目匹配需要人工确认。",
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+    elif status == "completed" and bool(result.get("ok")):
+        block = {}
+    if block is None:
+        return
+    try:
+        get_context().products.save_draft_publish_state(
+            resolved_draft_id,
+            platform,
+            site,
+            {"category_block": block},
+        )
+    except Exception:
+        return
+
+
 def category_match_payload(body: Payload) -> ResponseWithStatus:
     """同步匹配一个目标站点，保留候选、证据及终检结果。"""
     product, draft, target, error = load_category_match_subject(body)
     if error is not None:
         return error
     require_model_platform(get_context().config.load_app_config(), "category.product_match")
-    result = match_category(product, draft, target)
-    return dict(result), 200
+    result = dict(match_category(product, draft, target))
+    _persist_category_match_block(str(draft.get("draft_id") or body.get("draft_id") or ""), target, result)
+    return result, 200
 
 
 def category_match_batch_payload(body: Payload) -> ResponseWithStatus:
@@ -309,10 +359,16 @@ def category_match_batch_payload(body: Payload) -> ResponseWithStatus:
         batch_results = match_categories_batch(
             [(prod, drf, tgt) for _, _, prod, drf, tgt in resolved_entries]
         )
-        for (idx, target, _, _, _), result in zip(resolved_entries, batch_results, strict=True):
+        for (idx, target, _, drf, norm_target), result in zip(resolved_entries, batch_results, strict=True):
+            result_dict = dict(result)
+            _persist_category_match_block(
+                str(drf.get("draft_id") or target.get("draft_id") or ""),
+                norm_target,
+                result_dict,
+            )
             results_by_index[idx] = {
                 "target": {key: target[key] for key in ("platform", "site")},
-                **dict(result),
+                **result_dict,
             }
 
     items = [results_by_index[idx] for idx in range(len(targets))]

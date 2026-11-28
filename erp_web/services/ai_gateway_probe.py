@@ -237,8 +237,11 @@ _PROBE_VERSIONS = {
 }
 
 
-def capability_configuration_fingerprint(model: dict[str, Any]) -> str:
-    return ai_model_config.model_configuration_fingerprint(model)
+def capability_configuration_fingerprint(
+    model: dict[str, Any],
+    capability: str = "",
+) -> str:
+    return ai_model_config.model_configuration_fingerprint(model, capability=capability)
 
 
 def build_capability_profile(
@@ -262,7 +265,7 @@ def build_capability_profile(
         "tested": True,
         "tested_at": datetime.now(timezone.utc).isoformat(),
         "probe_version": f"{capability}.v{_PROBE_VERSIONS.get(capability, 2)}",
-        "configuration_fingerprint": capability_configuration_fingerprint(model),
+        "configuration_fingerprint": capability_configuration_fingerprint(model, capability),
         "connection_type": connection_type,
         "provider_id": provider_id,
         "model": ai_model_config.model_name(model),

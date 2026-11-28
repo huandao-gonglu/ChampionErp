@@ -608,11 +608,11 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         path="/api/draft-pricing/preview",
         business_domain="定价与 UPC",
         disposition="capability",
-        capability_names=("draft_pricing_preview",),
+        capability_names=("draft_pricing_preview", "draft_pricing_preview_batch"),
     ),
     AiCapabilityCoverageEntry(
         method="POST", path="/api/draft-pricing/apply", business_domain="定价与 UPC",
-        disposition="capability", capability_names=("draft_pricing_apply",),
+        disposition="capability", capability_names=("draft_pricing_apply", "draft_pricing_apply_batch"),
     ),
     AiCapabilityCoverageEntry(
         method="POST", path="/api/draft-pricing/restore", business_domain="定价与 UPC",
@@ -631,7 +631,7 @@ AI_CAPABILITY_COVERAGE_MANIFEST: tuple[AiCapabilityCoverageEntry, ...] = (
         path="/api/category-attrs",
         business_domain="类目与属性",
         disposition="capability",
-        capability_names=("category_attributes_query",),
+        capability_names=("category_attributes_query", "category_attributes_query_batch"),
     ),
     AiCapabilityCoverageEntry(
         method="POST",

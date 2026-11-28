@@ -238,6 +238,44 @@ class DraftAttributesReadResult(BaseModel):
     next_offset: int | None = Field(default=None, description="在同一 sku_ids 范围内继续分页的位置；null 表示已读完。")
 
 
+class DraftAttributesReadBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    draft_ids: list[
+        Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]
+    ] = Field(min_length=1, max_length=100, description="待批量读取属性与商品事实的草稿 ID 列表。")
+    platform: TrimmedText = ""
+    site: TrimmedText = ""
+    scope: Literal["common", "sku"] = Field(
+        default="common",
+        description="common 读取每份草稿的商品事实（含 weight_kg/dimensions/source_attributes/updated_at）与目标公共属性；sku 额外返回该目标全部已选启用 SKU 事实与属性。",
+    )
+    max_skus_per_draft: int | None = Field(
+        default=None,
+        ge=1,
+        description="可选，单份草稿最多返回多少条 SKU；省略时返回全部已选启用 SKU。",
+    )
+
+
+class DraftAttributesReadBatchItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    draft_id: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]
+    ok: bool
+    result: DraftAttributesReadResult | None = None
+    error_code: Annotated[TrimmedText, StringConstraints(max_length=120)] = ""
+    error: Annotated[TrimmedText, StringConstraints(max_length=1000)] = ""
+
+
+class DraftAttributesReadBatchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    total: int = Field(ge=0)
+    ok_count: int = Field(ge=0)
+    error_count: int = Field(ge=0)
+    items: list[DraftAttributesReadBatchItem] = Field(default_factory=list)
+
+
 class ProductAttributesUpdateResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -278,6 +316,9 @@ class ProductImagesPrepareResult(BaseModel):
 
 
 __all__ = [
+    "DraftAttributesReadBatchItem",
+    "DraftAttributesReadBatchRequest",
+    "DraftAttributesReadBatchResult",
     "DraftAttributesReadRequest",
     "DraftAttributesReadResult",
     "DraftAttributeTarget",

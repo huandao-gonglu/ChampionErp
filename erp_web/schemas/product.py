@@ -77,6 +77,16 @@ class MercadoLibreSiteToSell(TypedDict, total=False):
     sale_terms: list[dict[str, Any]]
 
 
+class DraftCategoryBlock(TypedDict, total=False):
+    """服务端记录的类目筛查阻断或待确认事实（不替代实时禁售名单比对）。"""
+
+    code: str
+    reason: str
+    matched_category_ids: list[str]
+    matched_forbidden_ids: list[str]
+    checked_at: str
+
+
 class DraftTargetSite(TypedDict, total=False):
     platform: str
     site: str
@@ -89,6 +99,7 @@ class DraftTargetSite(TypedDict, total=False):
     attributes: dict[str, Any]
     validation_errors: list[Any]
     category_precheck: dict[str, Any]
+    category_block: DraftCategoryBlock
     publish_status: str
     status: str
     last_precheck: dict[str, Any]
@@ -131,6 +142,7 @@ class PlatformDraft(TypedDict, total=False):
     allow_gtin_exemption: bool
     shipping: dict[str, Any]
     category_precheck: dict[str, Any]
+    category_block: DraftCategoryBlock
     last_precheck: dict[str, Any]
     last_precheck_target: dict[str, Any]
     last_publish_task: dict[str, Any]
@@ -178,6 +190,7 @@ class Product(TypedDict, total=False):
 
 __all__ = [
     "PRODUCT_SCHEMA_VERSION",
+    "DraftCategoryBlock",
     "DraftTargetSite",
     "MercadoLibreSiteToSell",
     "PlatformDraft",

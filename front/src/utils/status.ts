@@ -12,8 +12,11 @@ export function workflowStatusLabel(status: string): string {
     images_ready: '图片完成',
     priced: '已核价',
     category_ready: '类目完成',
+    category_forbidden: '禁售类目',
+    preparing: '准备中',
+    needs_confirmation: '待确认',
     ready_to_publish: '可发布',
-    not_ready: '未通过',
+    not_ready: '预检未通过',
     published: '已发布',
     partial: '部分发布',
     publish_failed: '发布失败',
@@ -33,7 +36,7 @@ export function statusBadgeClass(status: string): string {
   if (['active', 'running', 'retrying', 'queued', 'publishing', 'pending_confirmation', 'claimed', 'collected', 'partial'].includes(status)) {
     return 'badge-info'
   }
-  if (['blocked', 'failed', 'publish_failed', 'error', 'real_publish_failed', 'not_ready', 'interrupted', 'outcome_unknown', 'needs_attention'].includes(status)) {
+  if (['blocked', 'failed', 'publish_failed', 'error', 'real_publish_failed', 'not_ready', 'interrupted', 'outcome_unknown', 'needs_attention', 'category_forbidden'].includes(status)) {
     return 'badge-danger'
   }
   return 'badge-muted'

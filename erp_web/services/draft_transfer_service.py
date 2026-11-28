@@ -103,6 +103,7 @@ _DRAFT_SERVER_PUBLISH_DEFAULTS: dict[str, Any] = {
     "status": "",
     "publish_status": "",
     "category_precheck": {},
+    "category_block": {},
     "last_precheck": {},
     "last_precheck_target": {},
     "last_publish_task": {},

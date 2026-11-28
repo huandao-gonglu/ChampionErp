@@ -64,6 +64,31 @@ def test_pricing_missing_size_discloses_tools_without_page_or_target(tmp_path, v
     assert {CONFIRM, "draft_package_estimates_preview", "product_read"} <= seen[2]
 
 
+def test_package_tools_stay_visible_across_followup_user_reply_without_oscillating(tmp_path):
+    """缺尺寸草稿激活包装工具后，后续用户回复新消息（如回答其他缺口）不得撤回包装工具导致缓存震荡。"""
+    app, draft_id = seed_draft()
+    seen: list[set[str]] = []
+
+    async def model(messages, info):
+        names = {tool.name for tool in info.function_tools}
+        seen.append(names)
+        if len(seen) == 1:
+            yield {0: DeltaToolCall(name="search_tools", json_args='{"queries":["draft_pricing_preview"]}', tool_call_id="find")}
+        elif len(seen) == 2:
+            yield {0: DeltaToolCall(name="draft_pricing_preview", json_args=json.dumps({"draft_id": draft_id}), tool_call_id="price")}
+        elif len(seen) == 3:
+            yield "请先确认其他商品库存。"
+        else:
+            yield "已收到库存回复，继续处理包装估算。"
+
+    ui = service(tmp_path, FunctionModel(stream_function=model), build_global_chat_toolset(app))
+    asyncio.run(ui.prepare_run(body("核价", message_id="m1")).stream(lambda _: None))
+    asyncio.run(ui.prepare_run(body("100", message_id="m2")).stream(lambda _: None))
+    assert len(seen) == 4
+    assert {CONFIRM, "draft_package_estimates_preview", "product_read"} <= seen[2]
+    assert {CONFIRM, "draft_package_estimates_preview", "product_read"} <= seen[3]
+
+
 def proposal(app, draft_id):
     product = app.db.load_product_model(app.products.draft_record(draft_id)["product_id"])
     return product, {

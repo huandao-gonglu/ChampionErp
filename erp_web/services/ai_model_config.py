@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from typing import Any
 
 from erp_shared.desktop import LOCAL_MODEL_FIELDS, local_configuration_fingerprint
@@ -264,11 +263,8 @@ def default_ai_models() -> list[dict[str, Any]]:
             "provider_id": ai_provider_catalog.PROVIDER_ID_OPENAI,
             "api_style": API_STYLE_OPENAI_COMPATIBLE,
             "base_url": "https://api.deepseek.com",
-            "base_url_env": "DEEPSEEK_BASE_URL",
             "api_key": "",
-            "api_key_env": "DEEPSEEK_API_KEY",
             "model": "deepseek-chat",
-            "model_env": "DEEPSEEK_MODEL",
             "capabilities": [CAP_CHAT, CAP_JSON],
             "enabled": True,
         },
@@ -279,11 +275,8 @@ def default_ai_models() -> list[dict[str, Any]]:
             "provider_id": ai_provider_catalog.PROVIDER_ID_OPENAI,
             "api_style": "openai_compatible",
             "base_url": "https://api.openai.com/v1",
-            "base_url_env": "OPENAI_BASE_URL",
             "api_key": "",
-            "api_key_env": "OPENAI_API_KEY",
             "model": "gpt-image-1",
-            "model_env": "OPENAI_IMAGE_MODEL",
             "capabilities": [CAP_IMAGE_GENERATE, CAP_IMAGE_EDIT],
             "quality": "medium",
             "enabled": True,
@@ -295,8 +288,8 @@ MANAGED_KEY_SOURCE = "ERP_ACCOUNT_NEWAPI"
 
 
 SYSTEM_CONNECTION_FIELDS = (
-    "id", "connection_type", "provider_id", "api_style", "base_url", "base_url_env",
-    "api_key", "api_key_env", "model", "model_env",
+    "id", "connection_type", "provider_id", "api_style", "base_url",
+    "api_key", "api_key_env", "model",
 )
 
 
@@ -362,11 +355,8 @@ def fixed_canvas_model(
         "provider": "Gemini Canvas",
         "api_style": API_STYLE_OPENAI_COMPATIBLE,
         "base_url": "",
-        "base_url_env": "",
         "api_key": "",
-        "api_key_env": "",
         "model": str(existing.get("model") or "").strip(),
-        "model_env": "",
         "browser_provider": "gemini",
         "local_connection_id": local_id,
         "local_config_fingerprint": fingerprint,
@@ -444,34 +434,27 @@ def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
         else provider_id
     )
     base_url = str(raw.get("base_url") or "").strip()
-    base_url_env = str(raw.get("base_url_env") or "").strip()
     api_key = str(raw.get("api_key") or "").strip()
-    api_key_env = str(raw.get("api_key_env") or "").strip()
+    is_managed_system = str(raw.get("api_key_env") or "").strip() == MANAGED_KEY_SOURCE
     model_name_value = str(raw.get("model") or "").strip()
-    model_env = str(raw.get("model_env") or "").strip()
     if (
         connection_type == CONNECTION_TYPE_API
         and not base_url
-        and not base_url_env
         and provider_spec is not None
     ):
         base_url = provider_spec.default_base_url
     if connection_type == CONNECTION_TYPE_CLI:
         provider = str(raw.get("provider") or AI_CLI_TOOL_LABELS.get(cli_tool) or "本地 CLI").strip()
         base_url = ""
-        base_url_env = ""
         api_key = ""
-        api_key_env = ""
+        is_managed_system = False
         model_name_value = str(raw.get("model") or "").strip()
-        model_env = ""
     if connection_type == CONNECTION_TYPE_BROWSER:
         provider = str(raw.get("provider") or "浏览器 AI").strip()
         base_url = ""
-        base_url_env = ""
         api_key = ""
-        api_key_env = ""
+        is_managed_system = False
         model_name_value = str(raw.get("model") or "").strip()
-        model_env = ""
     normalized: dict[str, Any] = {
         "id": model_id,
         "name": str(raw.get("name") or model_id).strip(),
@@ -486,14 +469,13 @@ def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
             ),
         ),
         "base_url": base_url,
-        "base_url_env": base_url_env,
         "api_key": api_key,
-        "api_key_env": api_key_env,
         "model": model_name_value,
-        "model_env": model_env,
         "capabilities": capabilities,
         "enabled": bool(raw.get("enabled", True)),
     }
+    if is_managed_system:
+        normalized["api_key_env"] = MANAGED_KEY_SOURCE
     if connection_type == CONNECTION_TYPE_API:
         normalized["provider_id"] = provider_id
         thinking_enabled = raw.get("thinking_enabled")
@@ -553,13 +535,13 @@ def normalize_ai_model(value: Any, index: int = 0) -> dict[str, Any]:
         normalized["extra"] = extra
     profiles = normalized.get("capability_profiles")
     if isinstance(profiles, dict) and profiles and not normalized.get("canvas_managed"):
-        fingerprint = model_configuration_fingerprint(normalized)
         stale_capabilities = {
             capability
             for capability, profile in profiles.items()
             if isinstance(profile, dict)
             and str(profile.get("configuration_fingerprint") or "").strip()
-            and profile.get("configuration_fingerprint") != fingerprint
+            and profile.get("configuration_fingerprint")
+            != model_configuration_fingerprint(normalized, capability=capability)
         }
         if stale_capabilities:
             normalized["capability_profiles"] = {
@@ -657,35 +639,15 @@ def model_api_key(model: dict[str, Any]) -> str:
         if not system or not all(model.get(field) == system[field] for field in SYSTEM_CONNECTION_FIELDS):
             raise SystemModelError("系统模型连接与当前账号不匹配。")
         return context.model_key()
-    api_key = str(model.get("api_key") or "").strip()
-    if api_key:
-        return api_key
-    env_name = str(model.get("api_key_env") or "").strip()
-    return _personal_environment(env_name)
+    return str(model.get("api_key") or "").strip()
 
 
 def model_base_url(model: dict[str, Any]) -> str:
-    explicit_base_url = str(model.get("base_url") or "").strip()
-    if explicit_base_url:
-        return explicit_base_url
-    env_name = str(model.get("base_url_env") or "").strip()
-    return _personal_environment(env_name)
+    return str(model.get("base_url") or "").strip()
 
 
 def model_name(model: dict[str, Any]) -> str:
-    explicit_model = str(model.get("model") or "").strip()
-    if explicit_model:
-        return explicit_model
-    env_name = str(model.get("model_env") or "").strip()
-    return _personal_environment(env_name)
-
-
-def _personal_environment(env_name: str) -> str:
-    from erp_web.context import peek_context
-    context = peek_context()
-    if env_name in {"NEWAPI_SERVICE_SECRET", "ERP_SERVICE_SECRET"} or (context is not None and not context.allow_environment_credentials):
-        return ""
-    return os.getenv(env_name, "").strip() if env_name else ""
+    return str(model.get("model") or "").strip()
 
 
 def model_connection_type(model: dict[str, Any]) -> str:
@@ -701,10 +663,18 @@ def model_cli_command(model: dict[str, Any]) -> str:
     return command or default_cli_command(model_cli_tool(model))
 
 
-def model_configuration_fingerprint(model: dict[str, Any]) -> str:
-    """生成不包含认证信息与 capability 声明的稳定连接指纹。"""
+def model_configuration_fingerprint(
+    model: dict[str, Any],
+    *,
+    capability: str = "",
+) -> str:
+    """生成不包含认证信息与 capability 声明的稳定连接指纹。
+
+    ``extra.web_search_request_mode`` 仅影响 ``web_search`` 能力，不令其他能力失效。
+    """
 
     connection_type = model_connection_type(model)
+    capability_key = str(capability or "").strip().lower()
     payload: dict[str, Any] = {
         "connection_type": connection_type,
         "model": model_name(model),
@@ -715,14 +685,21 @@ def model_configuration_fingerprint(model: dict[str, Any]) -> str:
     if connection_type == CONNECTION_TYPE_API:
         if isinstance(model.get("thinking_enabled"), bool):
             payload["thinking_enabled"] = model["thinking_enabled"]
+        raw_extra = model.get("extra") if isinstance(model.get("extra"), dict) else {}
+        if capability_key == CAP_WEB_SEARCH:
+            fingerprint_extra = dict(raw_extra)
+        else:
+            fingerprint_extra = {
+                key: value
+                for key, value in raw_extra.items()
+                if key != "web_search_request_mode"
+            }
         payload.update(
             {
                 "provider_id": str(model.get("provider_id") or "").strip(),
                 "api_style": normalize_api_style(model.get("api_style")),
                 "base_url": model_base_url(model),
-                "extra": model.get("extra")
-                if isinstance(model.get("extra"), dict)
-                else {},
+                "extra": fingerprint_extra,
             }
         )
     elif connection_type == CONNECTION_TYPE_CLI:
@@ -853,6 +830,36 @@ def resolve_ai_model(
     raise RuntimeError(f"没有可用 AI 模型满足能力要求：{_format_capability_names(required)}")
 
 
+def prune_incompatible_ai_use_case_bindings(
+    models: list[dict[str, Any]] | Any,
+    bindings: dict[str, dict[str, Any]] | Any,
+) -> dict[str, dict[str, Any]]:
+    """移除已删除、停用或能力不再满足要求的功能绑定，使其回到自动匹配。"""
+
+    normalized_models = normalize_ai_models(models)
+    models_by_id = {
+        str(model.get("id") or ""): model
+        for model in normalized_models
+        if str(model.get("id") or "")
+    }
+    pruned: dict[str, dict[str, Any]] = {}
+    for use_case_id, raw_binding in normalize_ai_use_case_bindings(bindings).items():
+        binding = dict(raw_binding)
+        model_id = str(binding.get("model_id") or "").strip()
+        if model_id:
+            model = models_by_id.get(model_id)
+            required = ai_use_case_required_capabilities(use_case_id)
+            if (
+                model is None
+                or not model.get("enabled", True)
+                or (required and missing_model_capabilities(model, required))
+            ):
+                binding.pop("model_id", None)
+        if binding:
+            pruned[use_case_id] = binding
+    return pruned
+
+
 def validate_ai_use_case_generation_bindings(
     app_config: dict[str, Any] | None,
 ) -> None:
@@ -865,7 +872,12 @@ def validate_ai_use_case_generation_bindings(
         generation = binding.get("generation")
         if not isinstance(generation, dict) or not generation:
             continue
-        model = resolve_ai_model(config, use_case_id)
+        try:
+            model = resolve_ai_model(config, use_case_id)
+        except RuntimeError:
+            if not str(binding.get("model_id") or "").strip():
+                continue
+            raise
         try:
             ai_generation_settings.validate_generation_settings_for_model(
                 model,
@@ -937,7 +949,7 @@ def public_ai_config(app_config: dict[str, Any] | None) -> dict[str, Any]:
         public["api_key_masked"] = mask_secret(key)
         if managed:
             public["system_managed"] = True
-            for field in ("base_url", "base_url_env", "api_key_env", "model_env"):
+            for field in ("base_url", "api_key_env"):
                 public.pop(field, None)
         public.pop("api_key", None)
         models.append(public)
@@ -947,7 +959,9 @@ def public_ai_config(app_config: dict[str, Any] | None) -> dict[str, Any]:
     )
     return {
         "ai_models": models,
-        "ai_use_case_bindings": normalize_ai_use_case_bindings(config.get("ai_use_case_bindings")),
+        "ai_use_case_bindings": prune_incompatible_ai_use_case_bindings(
+            normalized, config.get("ai_use_case_bindings")
+        ),
         "ai_use_cases": list(AI_USE_CASES.values()),
         "connection_types": list(AI_CONNECTION_TYPES),
         "browser_modes": list(AI_BROWSER_MODES),

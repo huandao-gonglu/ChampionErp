@@ -5,7 +5,7 @@ from dataclasses import replace
 from functools import lru_cache
 
 from pydantic_ai import RunContext
-from pydantic_ai.messages import ToolReturnPart, UserPromptPart
+from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from pydantic_ai.tools import ToolDefinition
 
 from erp_web.product_model.sku_model import PACKAGE_FIELDS, positive_measurement
@@ -45,10 +45,18 @@ def prepare_chat_tools(products: ProductStore):
         draft_ids = support.target_draft_ids or (
             (page["draft_id"],) if page.get("draft_id") else tuple(page.get("selected_draft_ids") or ())
         )
-        # 用户也可以在文字中指定其他草稿。按实际业务回执定位，覆盖脚本内调用。
-        observed = []
+        # 一旦本会话内曾暴露或调用过包装估算工具，后续跨用户回复或写入尺寸后单调保持可见，
+        # 避免顶层 function_tools 反复增删导致前缀缓存连续击穿。
+        if getattr(support, "_package_tools_disclosed", False):
+            return [replace(tool, defer_loading=False) if tool.name in PACKAGE_TOOLS else tool for tool in tools]
+        # 用户也可以在文字中指定其他草稿。跨整个会话扫描实际业务回执（不因用户回答 request_user_input 截断）。
+        observed: list[str] = []
+        already_used = False
         for message in reversed(ctx.messages):
             for part in iter_message_parts(message):
+                if isinstance(part, (ToolCallPart, ToolReturnPart)) and part.tool_name in PACKAGE_TOOLS:
+                    already_used = True
+                    break
                 if not isinstance(part, ToolReturnPart) or not isinstance(part.content, dict):
                     continue
                 if part.tool_name == "draft_read":
@@ -59,10 +67,22 @@ def prepare_chat_tools(products: ProductStore):
                     error = part.content.get("error") or {}
                     if error.get("code") == "PRICING_INPUT_INVALID" and (draft_id := (error.get("details") or {}).get("draft_id")):
                         observed.append(draft_id)
-            if any(isinstance(part, UserPromptPart) for part in message.parts):
+                elif part.tool_name == "draft_pricing_preview_batch":
+                    for item in part.content.get("items") or ():
+                        if (
+                            isinstance(item, dict)
+                            and item.get("error_code") == "PRICING_INPUT_INVALID"
+                            and (draft_id := item.get("draft_id"))
+                        ):
+                            observed.append(draft_id)
+            if already_used or len(observed) >= 50:
                 break
+        if already_used:
+            support._package_tools_disclosed = True
+            return [replace(tool, defer_loading=False) if tool.name in PACKAGE_TOOLS else tool for tool in tools]
         draft_ids = tuple(dict.fromkeys((*observed, *draft_ids)))
         if draft_ids and await to_thread(missing_size, ctx.run_id, ctx.run_step, draft_ids):
+            support._package_tools_disclosed = True
             return [replace(tool, defer_loading=False) if tool.name in PACKAGE_TOOLS else tool for tool in tools]
         return tools
 

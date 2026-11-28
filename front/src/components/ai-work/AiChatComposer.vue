@@ -20,11 +20,14 @@ const props = withDefaults(defineProps<{
   conversationId?: string
   /** 非空时锁定普通发送（例如存在未解决的全局任务），并展示原因。 */
   sendDisabledReason?: string
+  /** 全页居中布局下省去通栏顶分隔线，减少视觉切分。 */
+  borderless?: boolean
 }>(), {
   queuedMessages: () => [],
   statusNotice: '',
   sendDisabledReason: '',
   conversationId: '',
+  borderless: false,
 })
 
 const emit = defineEmits<{
@@ -191,7 +194,8 @@ function onKeydown(event: KeyboardEvent) {
 
 <template>
   <form
-    class="ai-chat-composer shrink-0 border-t border-slate-200 bg-white pt-4 dark:border-dark-700 dark:bg-dark-900"
+    class="ai-chat-composer shrink-0 bg-white dark:bg-dark-900"
+    :class="borderless ? 'pt-1' : 'border-t border-slate-200/80 pt-2.5 dark:border-dark-800'"
     data-testid="ai-chat-composer"
     @submit.prevent="canSend && emit('send')"
     @keydown="onComposerKeydown"
@@ -231,10 +235,10 @@ function onKeydown(event: KeyboardEvent) {
           </button>
         </div>
       </div>
-      <div class="ai-chat-composer-surface rounded-2xl border border-slate-200 bg-white px-3 pb-2.5 pt-2 shadow-sm transition focus-within:border-primary-300 focus-within:ring-2 focus-within:ring-primary-200/60 dark:border-dark-600 dark:bg-dark-800 dark:focus-within:border-primary-500/60 dark:focus-within:ring-primary-500/15">
-        <div v-if="chatStore.images.attachments.length" class="flex flex-wrap gap-2">
+      <div class="ai-chat-composer-surface rounded-xl border border-slate-200 bg-slate-50/70 px-3 pb-2 pt-1.5 shadow-sm transition focus-within:border-primary-400 focus-within:bg-white focus-within:ring-2 focus-within:ring-primary-200/50 dark:border-dark-700 dark:bg-dark-800/90 dark:focus-within:border-primary-500/60 dark:focus-within:ring-primary-500/15">
+        <div v-if="chatStore.images.attachments.length" class="mb-1.5 flex flex-wrap gap-2">
           <div v-for="(item, index) in chatStore.images.attachments" :key="index" class="relative">
-            <img :src="item.part.url" :alt="item.part.filename || '待发送图片'" class="h-16 w-16 rounded-md object-contain" />
+            <img :src="item.part.url" :alt="item.part.filename || '待发送图片'" class="h-14 w-14 rounded-md object-contain" />
             <button type="button" :aria-label="`移除第 ${index + 1} 张图片`" class="absolute right-0 top-0 rounded bg-slate-800 px-1.5 text-white" @click="chatStore.images.attachments.splice(index, 1)">×</button>
           </div>
         </div>
@@ -245,7 +249,8 @@ function onKeydown(event: KeyboardEvent) {
         <textarea
           id="ai-chat-input"
           :value="modelValue"
-          class="min-h-20 w-full resize-y bg-transparent px-1 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:text-white dark:placeholder:text-accent-400"
+          rows="2"
+          class="min-h-11 max-h-48 w-full resize-y bg-transparent px-1 py-1 text-sm leading-5 text-slate-900 outline-none placeholder:text-slate-400 disabled:cursor-not-allowed disabled:opacity-60 dark:text-white dark:placeholder:text-accent-400"
           placeholder="输入问题或描述要处理的事情"
           data-testid="ai-chat-input"
           @paste="onPaste"
@@ -259,20 +264,20 @@ function onKeydown(event: KeyboardEvent) {
             <AiApprovalModeSelect />
             <button
               type="button"
-              class="flex size-9 shrink-0 items-center justify-center rounded-xl text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/70 disabled:cursor-not-allowed disabled:opacity-50 dark:text-accent-300 dark:hover:bg-dark-700 dark:hover:text-white"
+              class="flex size-8 shrink-0 items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-200/70 hover:text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/70 disabled:cursor-not-allowed disabled:opacity-50 dark:text-accent-300 dark:hover:bg-dark-700 dark:hover:text-white"
               aria-label="添加图片"
               :title="chatStore.images.blocked || '添加图片，也可将图片粘贴到输入框'"
               data-testid="ai-chat-add-file"
               :disabled="Boolean(chatStore.images.blocked) || chatStore.images.reading"
               @click="picker?.click()"
             >
-              <PhPlus :size="24" weight="regular" />
+              <PhPlus :size="19" weight="regular" />
             </button>
             <WorkspaceHint label="读取背景" :content="pageContext.hint">
               <template #trigger="{ attrs }">
                 <button
                   type="button"
-                  class="flex size-9 shrink-0 items-center justify-center rounded-xl transition hover:bg-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/70 dark:hover:bg-dark-700"
+                  class="flex size-8 shrink-0 items-center justify-center rounded-lg transition hover:bg-slate-200/70 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-400/70 dark:hover:bg-dark-700"
                   :class="pageContext.enabled ? 'text-primary-600 dark:text-primary-300' : 'text-slate-400 dark:text-accent-400'"
                   aria-label="读取背景"
                   :aria-pressed="pageContext.enabled"
@@ -280,16 +285,19 @@ function onKeydown(event: KeyboardEvent) {
                   data-testid="ai-chat-background-toggle"
                   @click="pageContext.toggle"
                 >
-                  <PhEye v-if="pageContext.enabled" :size="22" aria-hidden="true" />
-                  <PhEyeSlash v-else :size="22" aria-hidden="true" />
+                  <PhEye v-if="pageContext.enabled" :size="19" aria-hidden="true" />
+                  <PhEyeSlash v-else :size="19" aria-hidden="true" />
                 </button>
               </template>
             </WorkspaceHint>
           </div>
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-1.5">
+            <span class="mr-1 hidden text-[11px] text-slate-400 dark:text-accent-500 sm:inline">
+              ai也会犯错，重要内容请仔细核对
+            </span>
             <button
               type="submit"
-              class="btn btn-primary px-3 py-1.5 text-xs"
+              class="btn btn-primary rounded-lg px-3 py-1 text-xs"
               :disabled="!canSend"
               data-testid="ai-chat-send"
             >
@@ -298,7 +306,7 @@ function onKeydown(event: KeyboardEvent) {
             <button
               v-if="busy"
               type="button"
-              class="btn btn-outline px-3 py-1.5 text-xs"
+              class="btn btn-outline rounded-lg px-3 py-1 text-xs"
               data-testid="ai-chat-stop"
               :disabled="stopping"
               :aria-label="stopping ? '正在停止' : stopArmed ? '再次按 Esc 停止当前操作' : '停止当前操作'"
@@ -314,13 +322,10 @@ function onKeydown(event: KeyboardEvent) {
     <p
       v-if="blockedReason"
       role="status"
-      class="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30"
+      class="mt-1.5 rounded-lg bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/30"
       data-testid="ai-chat-send-blocked"
     >
       {{ blockedReason }}
-    </p>
-    <p class="mt-2 text-xs text-slate-400">
-      ai也会犯错，重要内容请仔细核对
     </p>
   </form>
 </template>

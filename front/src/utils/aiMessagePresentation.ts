@@ -1,5 +1,6 @@
 import type { UIMessage } from 'ai'
-import type { AiTurnTiming, AiUiPart, BusinessWriteReceipt, ManualAiAction, PendingToolCall } from '@/types/aiWork'
+import type { AiTurnTiming, AiUiPart, BusinessWriteReceipt, CodeProgressSnapshot, ManualAiAction, PendingToolCall } from '@/types/aiWork'
+import { describeAiTool, describeRunCodeAction } from './aiToolLabels'
 
 export interface MessageGroup {
   id: string
@@ -17,6 +18,7 @@ export function groupAiMessages(messages: UIMessage[]): MessageGroup[] {
   let boundaryId = ''
   let timing: AiTurnTiming | undefined
   for (const message of messages) {
+    if (message.role === 'system') continue
     const metadata = message.metadata as {
       ai_turn?: AiTurnTiming
       manual_ai_action?: ManualAiAction
@@ -308,4 +310,112 @@ export function presentAssistantParts(
   }
   attention.push(...receiptActions, ...fatalReceiptAlerts)
   return { live, timeline, process, attention, response, hasActiveTool }
+}
+
+/** 返回单个工具条目的可读业务名称（屏蔽 run_code 技术外壳）。 */
+export function describeToolPartLabel(
+  part: AiUiPart,
+  codeProgress?: CodeProgressSnapshot,
+  writeReceipts?: BusinessWriteReceipt[],
+): string {
+  const rawName = aiToolName(part)
+  const tool = part as ToolPartView
+  if (rawName === 'run_code') {
+    return describeRunCodeAction(tool.input, codeProgress, writeReceipts, tool.toolCallId)
+  }
+  return describeAiTool(rawName)
+}
+
+/** 构造完成态折叠过程头的语义摘要（参考 Claude.ai / Codex）。 */
+export function summarizeCompletedProcess(
+  entries: DisplayPart[],
+  writeReceipts: BusinessWriteReceipt[] = [],
+  duration = '',
+): string {
+  const tools = entries.filter(entry => isAiToolPart(entry.part))
+  if (!tools.length) {
+    return duration ? `用时 ${duration}` : '处理过程'
+  }
+  const meaningfulTools = tools.filter(entry => aiToolStatus(entry.part, entry.pendingKind, false) !== 'script_error')
+  const counted = meaningfulTools.length || tools.length
+  const genericLabels = new Set(['核对与整理数据', '处理业务', '处理操作'])
+  const specificLabels: string[] = []
+  const fallbackLabels: string[] = []
+  for (const entry of (meaningfulTools.length ? meaningfulTools : tools)) {
+    const label = describeToolPartLabel(entry.part, undefined, writeReceipts)
+    if (!label) continue
+    if (genericLabels.has(label)) {
+      if (!fallbackLabels.includes(label)) fallbackLabels.push(label)
+    } else if (!specificLabels.includes(label)) {
+      specificLabels.push(label)
+    }
+  }
+  const labels = specificLabels.length ? specificLabels : fallbackLabels
+  const shown = labels.slice(0, 2).join('、')
+  const parts = [`已处理 ${counted} 步`]
+  if (shown) parts.push(shown)
+  if (duration) parts.push(duration)
+  return parts.join(' · ')
+}
+
+/**
+ * 按“旁白 + 触发的工具”逻辑阶段拆分运行中时间线，
+ * 避免长任务折叠时把一句过渡说明与它触发的工具硬拆开。
+ */
+export function splitLiveTimeline(entries: DisplayPart[]): { earlier: DisplayPart[]; recent: DisplayPart[]; earlierToolCount: number } {
+  const keepTail = 3
+  if (entries.length <= keepTail + 2) {
+    return { earlier: [], recent: entries, earlierToolCount: 0 }
+  }
+  // 将连续的“旁白文本 + 紧随其后的工具”划为同一阶段，其余条目按自然边界分组。
+  const stages: DisplayPart[][] = []
+  let current: DisplayPart[] = []
+  let currentHasTool = false
+  for (const entry of entries) {
+    const isTool = isAiToolPart(entry.part)
+    if (!isTool && current.length && currentHasTool) {
+      stages.push(current)
+      current = [entry]
+      currentHasTool = false
+      continue
+    }
+    if (isTool && current.length && !currentHasTool) {
+      current.push(entry)
+      currentHasTool = true
+      continue
+    }
+    if (isTool && currentHasTool) {
+      stages.push(current)
+      current = [entry]
+      currentHasTool = true
+      continue
+    }
+    current.push(entry)
+  }
+  if (current.length) stages.push(current)
+
+  const maxCutoff = entries.length - keepTail
+  const earlier: DisplayPart[] = []
+  let earlierToolCount = 0
+  for (const stage of stages) {
+    if (earlier.length + stage.length > maxCutoff) break
+    const foldable = stage.every(entry => {
+      if (!isAiToolPart(entry.part)) return true
+      if (aiToolName(entry.part) === 'request_user_input' || fatalModelErrorInfo(entry.part)) return false
+      const st = aiToolStatus(entry.part, entry.pendingKind, true)
+      return st === 'completed' || st === 'script_error'
+    })
+    if (!foldable) break
+    earlier.push(...stage)
+    earlierToolCount += stage.filter(entry => isAiToolPart(entry.part)).length
+  }
+
+  if (earlier.length < 3 && earlierToolCount < 3) {
+    return { earlier: [], recent: entries, earlierToolCount: 0 }
+  }
+  return {
+    earlier,
+    recent: entries.slice(earlier.length),
+    earlierToolCount: earlierToolCount || earlier.length,
+  }
 }

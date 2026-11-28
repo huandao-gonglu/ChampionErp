@@ -234,6 +234,7 @@ def batch_generate_copy_for_products(
                     "status": draft.get("status") or "copy_ready",
                     "title": draft.get("title") or "",
                     "description_length": len(str(draft.get("description") or "")),
+                    "updated_at": str(draft.get("updated_at") or "").strip(),
                     "warning": "",
                 }
             )

@@ -47,26 +47,41 @@ def match_tool_queries(
             continue
         terms = set(re.findall(r"[a-z0-9]+|[\u3400-\u9fff]+", query.lower()))
         ascii_terms = {term for term in terms if term.isascii()}
+        query_hits: list[tuple[str, int, int, bool]] = []
         for tool_name, name_words, desc_words, desc_text in indexed:
-            score = 0
+            base_score = 0
+            strong_hit = False
             for term in terms:
                 if not term.isascii():
                     if term in desc_text:
-                        score += 4
+                        base_score += 4
+                        strong_hit = True
                     else:
                         bigram_hits = sum(1 for bigram in _cjk_bigrams(term) if bigram in desc_text)
                         if bigram_hits:
-                            score += min(bigram_hits * 2, 6)
+                            base_score += min(bigram_hits * 2, 6)
+                            strong_hit = True
                 elif term in name_words:
-                    score += 4
+                    base_score += 4
+                    strong_hit = True
                 elif term in desc_words:
-                    score += 1
-            if name_words and name_words <= ascii_terms:
-                score += 8
-            if score:
-                if score > best_scores.get(tool_name, 0):
-                    best_scores[tool_name] = score
-                total_scores[tool_name] = total_scores.get(tool_name, 0) + score
+                    base_score += 1
+            if base_score:
+                rank_score = base_score + (8 if (name_words and name_words <= ascii_terms) else 0)
+                query_hits.append((tool_name, base_score, rank_score, strong_hit))
+        if not query_hits:
+            continue
+        if any(strong for _, _, _, strong in query_hits):
+            query_hits = [hit for hit in query_hits if hit[3]]
+        max_base = max(base for _, base, _, _ in query_hits)
+        # 存在强命中时剔除纯 1 分说明词及低于本查询最高基分 2/3 的弱匹配，避免通用词/凑数词污染上下文。
+        min_base = (max_base * 2 + 2) // 3
+        for tool_name, base_score, rank_score, _strong in query_hits:
+            if base_score < min_base:
+                continue
+            if rank_score > best_scores.get(tool_name, 0):
+                best_scores[tool_name] = rank_score
+            total_scores[tool_name] = total_scores.get(tool_name, 0) + rank_score
     exact_set = set(exact)
     scored = [name for name in best_scores if name not in exact_set]
     scored.sort(key=lambda name: (-best_scores[name], -total_scores[name], name))

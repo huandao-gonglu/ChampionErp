@@ -170,7 +170,7 @@ watch(busy, value => { if (value) dragging.value = '' })
         <article v-for="id in region.ids" :key="id" :data-image-id="id" class="min-w-0 rounded-xl border bg-white p-2 dark:bg-dark-900" :class="selected.includes(id) ? 'border-primary-500 ring-2 ring-primary-200 dark:ring-primary-700' : 'border-slate-200 dark:border-dark-700'" @dragover.prevent @drop.prevent="region.id === 'common' && drop(id)">
           <div class="relative">
             <button type="button" class="block aspect-square w-full overflow-hidden rounded-lg bg-slate-50 focus-visible:ring-2 focus-visible:ring-primary-500 dark:bg-dark-800" :disabled="!byId.has(id)" :aria-label="`放大图片 ${name(id)}`" @click="preview = byId.get(id) || null">
-              <img v-if="byId.has(id)" :src="imageUrl(byId.get(id)!)" :alt="name(id)" :draggable="false" class="h-full w-full object-contain" />
+              <img v-if="byId.has(id)" :src="imageUrl(byId.get(id)!)" referrerpolicy="no-referrer" :alt="name(id)" :draggable="false" class="h-full w-full object-contain" />
               <span v-else class="text-sm text-rose-600">图片缺失</span>
             </button>
             <input type="checkbox" class="absolute left-2 top-2 h-5 w-5 rounded border-slate-300 accent-primary-600" :aria-label="`选择处理图片 ${id}`" :disabled="region.id === 'sku' && !byId.has(id)" :checked="selected.includes(id)" @change="toggle(id, ($event.target as HTMLInputElement).checked)" />
@@ -189,7 +189,7 @@ watch(busy, value => { if (value) dragging.value = '' })
     <footer class="muted flex justify-between gap-4"><span>共 {{ currentIds.length }} 张图片（已去重）</span><span>点击图片可放大查看</span></footer>
     <input ref="input" type="file" accept="image/*" multiple class="hidden" @change="files" />
   </section>
-  <WorkspaceDialog :open="Boolean(preview)" title="图片预览" @close="preview = null"><img v-if="preview" :src="imageUrl(preview)" alt="图片完整预览" class="mx-auto max-h-[70dvh] max-w-full object-contain" /></WorkspaceDialog>
+  <WorkspaceDialog :open="Boolean(preview)" title="图片预览" @close="preview = null"><img v-if="preview" :src="imageUrl(preview)" referrerpolicy="no-referrer" alt="图片完整预览" class="mx-auto max-h-[70dvh] max-w-full object-contain" /></WorkspaceDialog>
   <WorkspaceDialog :open="previewOpen" title="发布图片预览" @close="previewOpen = false"><DraftSkuImagePreview :draft="draft" :images="productContext.imagePool" :assignments="assignments" /></WorkspaceDialog>
   <DraftImageSetDialog ref="imageSetDialog" :open="imageSetOpen" :draft="draft" :images="productContext.imagePool" :reference-ids="commonIds.length ? commonIds : currentIds" :controller="controller" :loading="loading" :skus="assignments" @close="imageSetOpen = false" />
   <WorkspaceDialog :open="Boolean(dialog)" :title="dialog === 'edit' ? 'AI 修改' : dialog === 'translate' ? '翻译图片' : dialog === 'remove' ? `移出 ${targets.length} 张共用主图？` : '添加共用图片'" :close-disabled="busy" @close="dialog = null">
@@ -198,12 +198,12 @@ watch(busy, value => { if (value) dragging.value = '' })
         <button class="btn btn-outline" type="button" :disabled="busy" @click="input?.click()">上传新图片</button>
         <p class="muted">或从商品素材中选择，添加到本草稿共用区。</p>
         <div class="grid max-h-80 grid-cols-3 gap-3 overflow-y-auto sm:grid-cols-5">
-          <label v-for="image in available" :key="image.id" class="relative cursor-pointer rounded-lg border p-1 dark:border-dark-700"><img :src="imageUrl(image)" alt="可添加图片" class="aspect-square w-full object-contain" /><input v-model="additions" type="checkbox" :value="image.id" :aria-label="`添加共用图片 ${image.id}`" class="absolute left-2 top-2 h-5 w-5" /></label>
+          <label v-for="image in available" :key="image.id" class="relative cursor-pointer rounded-lg border p-1 dark:border-dark-700"><img :src="imageUrl(image)" referrerpolicy="no-referrer" alt="可添加图片" class="aspect-square w-full object-contain" /><input v-model="additions" type="checkbox" :value="image.id" :aria-label="`添加共用图片 ${image.id}`" class="absolute left-2 top-2 h-5 w-5" /></label>
         </div>
       </template>
       <template v-else>
         <p v-if="dialog !== 'remove'" class="muted">已选 {{ targets.length }} 张 · 使用当前显示的图片</p>
-        <div class="flex max-h-48 flex-wrap gap-3 overflow-y-auto"><img v-for="id in targets" :key="id" :src="byId.has(id) ? imageUrl(byId.get(id)!) : ''" :alt="name(id)" class="h-20 w-20 rounded-lg object-contain" /></div>
+        <div class="flex max-h-48 flex-wrap gap-3 overflow-y-auto"><img v-for="id in targets" :key="id" :src="byId.has(id) ? imageUrl(byId.get(id)!) : ''" referrerpolicy="no-referrer" :alt="name(id)" class="h-20 w-20 rounded-lg object-contain" /></div>
         <template v-if="dialog === 'remove'"><p>将从本草稿全部 SKU 的共用图中移出。</p><p class="muted">图片文件和独立的 SKU 图片关联保留，可撤销。</p></template>
         <template v-else><p v-if="imageReason" role="status" class="muted">{{ imageReason }}</p><label v-if="dialog === 'edit'" class="block text-sm font-medium">修改要求<textarea v-model="prompt" class="input mt-2" rows="5" placeholder="例如：修正标题文字，保留每张图各自的商品颜色和版式。" /></label><p v-else>翻译为 {{ draft.language }}。</p><p class="muted">处理成功后自动使用新图，可撤销。失败的图片继续使用当前图。</p></template>
       </template>

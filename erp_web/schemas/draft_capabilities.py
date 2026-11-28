@@ -70,6 +70,10 @@ class DraftPublishReadiness(BaseModel):
 
     workflow_status: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     publish_status: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    forbidden: bool = False
+    prep_stage: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    completed_steps: int = Field(default=0, ge=0)
+    total_steps: int = Field(default=6, ge=0)
     precheck_passed: bool = False
     image_count: int = Field(default=0, ge=0)
     attribute_count: int = Field(default=0, ge=0)

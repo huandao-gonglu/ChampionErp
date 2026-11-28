@@ -643,7 +643,9 @@ def test_normalize_ai_model_does_not_inherit_positional_defaults() -> None:
     assert models[0]["provider_id"] == ""
     assert models[0]["base_url"] == ""
     assert models[0]["model"] == ""
-    assert models[0]["model_env"] == ""
+    assert "model_env" not in models[0]
+    assert "api_key_env" not in models[0]
+    assert "base_url_env" not in models[0]
     assert models[1]["id"] == "custom_image"
     assert models[1]["provider"] == ""
     assert models[1]["provider_id"] == ""
@@ -740,6 +742,103 @@ def test_normalize_ai_model_invalidates_versioned_proof_after_connection_change(
     assert "capability_profiles" not in changed
 
 
+def test_normalize_ai_model_strips_personal_env_fields_and_scopes_web_search_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "env-secret")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://env.example.invalid/v1")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "env-model")
+
+    base = ai_model_config.normalize_ai_model(
+        {
+            "id": "scoped_model",
+            "connection_type": "api",
+            "provider_id": "openai",
+            "base_url": "https://models.example.invalid/v1",
+            "base_url_env": "DEEPSEEK_BASE_URL",
+            "api_key": "",
+            "api_key_env": "DEEPSEEK_API_KEY",
+            "model": "gpt-test",
+            "model_env": "DEEPSEEK_MODEL",
+            "capabilities": ["chat", "tool_calling", "web_search"],
+            "extra": {"web_search_request_mode": "web_search_options"},
+        }
+    )
+    assert "api_key_env" not in base
+    assert "base_url_env" not in base
+    assert "model_env" not in base
+    assert ai_model_config.model_api_key(base) == ""
+    assert ai_model_config.model_base_url(base) == "https://models.example.invalid/v1"
+    assert ai_model_config.model_name(base) == "gpt-test"
+
+    with_profiles = {
+        **base,
+        "capability_profiles": {
+            cap: {
+                "version": 2,
+                "tested": True,
+                "configuration_fingerprint": ai_model_config.model_configuration_fingerprint(
+                    base, capability=cap
+                ),
+            }
+            for cap in ("chat", "tool_calling", "web_search")
+        },
+    }
+    # 修改 api_key 不清空能力
+    rotated_key = ai_model_config.normalize_ai_model({**with_profiles, "api_key": "new-key"})
+    assert rotated_key["capabilities"] == ["chat", "tool_calling", "web_search"]
+    # 修改 web_search_request_mode 只清空 web_search，不影响 chat / tool_calling
+    changed_search = ai_model_config.normalize_ai_model({**with_profiles, "extra": {}})
+    assert changed_search["capabilities"] == ["chat", "tool_calling"]
+    assert set(changed_search["capability_profiles"]) == {"chat", "tool_calling"}
+
+
+def test_merge_ai_config_prunes_incompatible_bindings_back_to_auto(app_dir: Path) -> None:
+    current = {
+        "ai_models": [
+            {
+                "id": "backup_chat",
+                "name": "备用模型",
+                "connection_type": "api",
+                "provider_id": "openai",
+                "base_url": "https://api.example.invalid/v1",
+                "api_key": "backup-key",
+                "model": "backup-model",
+                "capabilities": ["chat", "tool_calling"],
+                "enabled": True,
+            },
+            {
+                "id": "primary_chat",
+                "name": "deepseepTokenShop",
+                "connection_type": "api",
+                "provider_id": "openai",
+                "base_url": "https://api.example.invalid/v1",
+                "api_key": "primary-key",
+                "model": "gpt-6.2-sol",
+                "capabilities": ["chat", "tool_calling"],
+                "enabled": True,
+            },
+        ],
+        "ai_use_case_bindings": {
+            "global.chat": {"model_id": "primary_chat"},
+        },
+    }
+    # 修改 primary_chat 后仅重测 chat 并保存，global.chat 绑定应自动清空回到自动匹配
+    merged = config_service.merge_ai_config(
+        app_dir,
+        current,
+        {
+            "ai_models": [
+                current["ai_models"][0],
+                {**current["ai_models"][1], "capabilities": ["chat"]},
+            ],
+        },
+    )
+    assert "global.chat" not in merged["ai_use_case_bindings"]
+    resolved = ai_model_config.resolve_ai_model(merged, "global.chat")
+    assert resolved["id"] == "backup_chat"
+
+
 def test_app_config_rejects_ai_protocol_fields_in_extra_request_body() -> None:
     with pytest.raises(ValueError, match="不得覆盖 Pydantic 请求协议字段"):
         app_config.normalize_app_config(
@@ -826,9 +925,9 @@ def test_normalize_cli_model_does_not_inherit_default_api_model_name() -> None:
     assert model["connection_type"] == "cli"
     assert model["provider"] == "Codex CLI"
     assert model["model"] == ""
-    assert model["model_env"] == ""
+    assert "model_env" not in model
     assert model["base_url"] == ""
-    assert model["api_key_env"] == ""
+    assert "api_key_env" not in model
     assert model["capabilities"] == ["chat", "json", "web_search"]
 
 
@@ -858,10 +957,10 @@ def test_normalize_browser_model_does_not_inherit_default_api_fields() -> None:
     assert model["browser_profile"] == "default"
     assert model["browser_port"] == "9444"
     assert model["model"] == ""
-    assert model["model_env"] == ""
+    assert "model_env" not in model
     assert model["base_url"] == ""
     assert model["api_key"] == ""
-    assert model["api_key_env"] == ""
+    assert "api_key_env" not in model
     assert model["capabilities"] == ["chat", "json", "web_search", "image_generate"]
     assert browser_ai_runtime.browser_ai_profile_dir("/tmp/champion", model) == Path(
         "/tmp/champion/browser_profile/ai/chatgpt/default"

@@ -319,8 +319,10 @@ def _ai_browse_result(
     result: CategoryBrowseResult,
     *,
     navigation_calls_used: int,
+    total_calls_used: int | None = None,
 ) -> dict[str, Any]:
     used = max(0, min(_MAX_NAVIGATION_CALLS, int(navigation_calls_used)))
+    effective_used = max(used, min(_MAX_NAVIGATION_CALLS, int(total_calls_used))) if total_calls_used is not None else used
     nodes, total_node_count, truncated = _ai_browse_nodes(result)
     return {
         "parent_ids": [
@@ -332,8 +334,8 @@ def _ai_browse_result(
         "total_node_count": total_node_count,
         "truncated": truncated,
         "navigation_calls_used": used,
-        "navigation_calls_remaining": _MAX_NAVIGATION_CALLS - used,
-        "must_finalize": used >= _MAX_NAVIGATION_CALLS,
+        "navigation_calls_remaining": max(0, _MAX_NAVIGATION_CALLS - effective_used),
+        "must_finalize": effective_used >= _MAX_NAVIGATION_CALLS,
     }
 
 
@@ -343,6 +345,7 @@ def _build_keyword_search_components(
     ledger: CategoryCandidateLedger,
     platform: str,
     site: str,
+    calls_used: list[int] | None = None,
 ):
     language = category_search_language(platform, site)
     batch_search = CategoryKeywordBatchSearch(
@@ -376,6 +379,8 @@ def _build_keyword_search_components(
         context: AiExecutionContext,
     ) -> dict[str, Any]:
         validate_match_search(arguments)
+        if calls_used is not None:
+            calls_used[0] += 1
         return batch_search.execute(
             {
                 "keywords": _collect_keywords(arguments),
@@ -391,6 +396,7 @@ def _build_navigation_components(
     *,
     navigator: CategoryNavigator,
     ledger: CategoryCandidateLedger,
+    calls_used: list[int] | None = None,
 ):
     roots = navigator.root_categories()
     root_options, _, _ = _ai_browse_nodes(roots)
@@ -438,9 +444,12 @@ def _build_navigation_components(
             if node.get("level") == "branch"
             and str(node.get("node_id") or "").strip()
         )
+        if calls_used is not None:
+            calls_used[0] += 1
         return _ai_browse_result(
             result,
             navigation_calls_used=ledger.navigation_count,
+            total_calls_used=calls_used[0] if calls_used is not None else None,
         )
 
     return root_options, browse_executor
@@ -460,9 +469,11 @@ def build_category_match_toolset(
 
     if is_navigator and is_searcher:
         ledger.retrieval_mode = "hybrid"
+        calls_used = [0]
         root_options, browse_executor = _build_navigation_components(
             navigator=searcher,
             ledger=ledger,
+            calls_used=calls_used,
         )
         search_defs, execute_match_search, validate_match_search = (
             _build_keyword_search_components(
@@ -470,6 +481,7 @@ def build_category_match_toolset(
                 ledger=ledger,
                 platform=platform,
                 site=site,
+                calls_used=calls_used,
             )
         )
         toolset = AiToolSet.bind(

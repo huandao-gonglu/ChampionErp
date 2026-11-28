@@ -25,7 +25,10 @@ from erp_web.marketplace_registry import marketplace_site
 from erp_web.product_model import (
     PLATFORMS,
     apply_created_image_refs_to_draft,
+    build_forbidden_categories_map,
+    compute_draft_progress,
     default_product_model,
+    draft_progress_facts_from_raw,
     mercadolibre_sales_condition_basis,
     normalize_draft_target_site,
     normalize_draft_image_refs,
@@ -390,6 +393,7 @@ _DRAFT_SERVER_OWNED_PUBLISH_FIELDS = (
     "status",
     "publish_status",
     "category_precheck",
+    "category_block",
     "last_precheck",
     "last_precheck_target",
     "last_publish_task",
@@ -399,6 +403,7 @@ _SERVER_OWNED_PUBLISH_FIELD_DEFAULTS: dict[str, Any] = {
     "status": "",
     "publish_status": "",
     "category_precheck": {},
+    "category_block": {},
     "last_precheck": {},
     "last_precheck_target": {},
     "last_publish_task": {},
@@ -596,9 +601,18 @@ def _changed_publish_content_targets(
 class ProductStore:
     """Product/draft CRUD + index + workflow status over ``ErpDatabase``."""
 
-    def __init__(self, db: ErpDatabase, *, image_draft_guard: Callable[[str], None] | None = None) -> None:
+    def __init__(
+        self,
+        db: ErpDatabase,
+        *,
+        image_draft_guard: Callable[[str], None] | None = None,
+        forbidden_categories_loader: Callable[[], dict[str, Any]] | None = None,
+        category_ancestors_loader: Callable[[str, str], tuple[str, ...]] | None = None,
+    ) -> None:
         self._db = db
         self._image_draft_guard = image_draft_guard
+        self._forbidden_categories_loader = forbidden_categories_loader
+        self._category_ancestors_loader = category_ancestors_loader
 
     def mutation_scope(self, arguments):
         keys = set()
@@ -929,19 +943,68 @@ class ProductStore:
     def load_product_list_rows(self) -> list[dict[str, Any]]:
         return self.sanitize_products_index(self._db.list_product_records(list_only=True))
 
+    def _forbidden_categories_map(self) -> dict[str, str] | None:
+        if self._forbidden_categories_loader is None:
+            return None
+        try:
+            return build_forbidden_categories_map(self._forbidden_categories_loader())
+        except Exception:
+            return None
+
+    def _enrich_draft_row(
+        self,
+        item: dict[str, Any],
+        *,
+        forbidden_map: dict[str, str] | None,
+    ) -> dict[str, Any]:
+        record = dict(item)
+        record["main_image"] = _display_image_ref(
+            str(record.get("main_image") or "")
+        )
+        facts = record.pop("_progress_facts", None)
+        processed_count = int(record.pop("_processed_image_count", 0) or 0)
+        if not isinstance(facts, dict):
+            raw = record.get("raw") if isinstance(record.get("raw"), dict) else {}
+            facts = draft_progress_facts_from_raw(
+                raw,
+                primary_platform=str(record.get("platform") or ""),
+                primary_site=str(record.get("site") or ""),
+                processed_image_count=processed_count,
+            )
+        progress = compute_draft_progress(
+            facts,
+            publish_state=str(record.get("publish_state") or "unpublished"),
+            display_status=str(record.get("status") or ""),
+            forbidden_categories=forbidden_map,
+            ancestor_ids_loader=self._category_ancestors_loader,
+        )
+        record["progress"] = progress
+        if progress.get("forbidden") and record.get("publish_state") not in {"publishing", "published"}:
+            record["status"] = "category_forbidden"
+        return record
+
     def load_drafts_index(self, scope: str = "active") -> list[dict[str, Any]]:
-        return self.sanitize_products_index(self._db.list_draft_records(scope=scope))
+        forbidden_map = self._forbidden_categories_map()
+        return [
+            self._enrich_draft_row(item, forbidden_map=forbidden_map)
+            for item in self._db.list_draft_records(scope=scope)
+            if isinstance(item, dict)
+        ]
 
     def load_draft_list_rows(self, scope: str = "active") -> list[dict[str, Any]]:
-        return self.sanitize_products_index(self._db.list_draft_rows(scope))
+        forbidden_map = self._forbidden_categories_map()
+        return [
+            self._enrich_draft_row(item, forbidden_map=forbidden_map)
+            for item in self._db.list_draft_rows(scope)
+            if isinstance(item, dict)
+        ]
 
     def iter_drafts_index(self, scope: str = "active") -> Iterator[dict[str, Any]]:
         """流式读取完整草稿集合；供需要精确 total/count 的服务使用。"""
-
+        forbidden_map = self._forbidden_categories_map()
         for item in self._db.iter_draft_records(scope=scope):
-            sanitized = self.sanitize_products_index([item])
-            if sanitized:
-                yield sanitized[0]
+            if isinstance(item, dict):
+                yield self._enrich_draft_row(item, forbidden_map=forbidden_map)
 
     def delete_products_from_index(self, product_ids: list[Any]) -> dict[str, Any]:
         ids = _normalize_delete_ids(
@@ -1748,6 +1811,13 @@ class ProductStore:
                 )
             )
             target_identity = _draft_target_identity(target)
+            previous_category_id = str(persisted_target.get("category_id") or "").strip() if isinstance(persisted_target, dict) else ""
+            next_category_id = str(target.get("category_id") or "").strip()
+            target_category_block = (
+                {}
+                if next_category_id and next_category_id != previous_category_id
+                else deepcopy(target.get("category_block") if isinstance(target.get("category_block"), dict) else {})
+            )
             merged["target_sites"][index] = {
                 **target,
                 "validation_errors": _trusted_pending_attribute_review_errors(
@@ -1762,6 +1832,7 @@ class ProductStore:
                     ),
                 ),
                 "category_precheck": {},
+                "category_block": target_category_block,
                 "last_precheck": {},
                 "last_precheck_target": {},
                 # 已发布事实不因编辑草稿被抹掉，只令旧预检缓存失效。
@@ -1774,6 +1845,12 @@ class ProductStore:
                 # 远端商品身份是已发生的发布事实，不随草稿内容变化失效。
                 "last_publish_task": deepcopy(previous_publish_task),
             }
+        if merged.get("target_sites") and isinstance(merged["target_sites"][0], dict):
+            merged["category_block"] = deepcopy(
+                merged["target_sites"][0].get("category_block")
+                if isinstance(merged["target_sites"][0].get("category_block"), dict)
+                else {}
+            )
         if changed_publish_targets:
             target_published_flags = [
                 str(item.get("status") or "").strip().lower() in published_states
@@ -1881,8 +1958,8 @@ class ProductStore:
         if target is None:
             raise ValueError("目标已不存在，请重新读取草稿。")
         allowed = {"category_id", "category_path", "description_category_id", "attributes",
-                   "validation_errors", "status", "category_precheck", "last_precheck",
-                   "last_precheck_target", "last_publish_task", "publish_status"}
+                   "validation_errors", "status", "category_precheck", "category_block",
+                   "last_precheck", "last_precheck_target", "last_publish_task", "publish_status"}
         for field in allowed:
             if field not in updates or updates[field] == before.get(field):
                 continue
@@ -1892,6 +1969,10 @@ class ProductStore:
             target[field] = deepcopy(updates[field])
             if (draft.get("platform"), draft.get("site")) == (platform, site):
                 draft[field] = deepcopy(updates[field])
+        if str(target.get("category_id") or "").strip() and "category_block" not in updates:
+            target["category_block"] = {}
+            if (draft.get("platform"), draft.get("site")) == (platform, site):
+                draft["category_block"] = {}
         self._db.upsert_draft_model(draft["product_id"], draft["platform"], draft)
         return self._db.load_draft_model(draft_id)
 

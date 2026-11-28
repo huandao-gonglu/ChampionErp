@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 from pydantic_ai import DeferredToolRequests, ModelRetry, RunContext
 from erp_web.services.ai_agent_dependencies import AiAgentDependencies
-from erp_web.services.chat_reply_text import is_tool_call_text
+from erp_web.services.chat_reply_text import has_unclosed_think, is_tool_call_text, visible_reply
 from erp_web.ai_capability_composition import application_capability_permissions
 from erp_web.services.ai_agent_factory import AiAgentExecutionProfile, AiAgentFactory
 from erp_web.services.ai_prompt_templates import load_ai_use_case_prompt_pair
@@ -37,7 +37,7 @@ GLOBAL_CHAT_PROFILE = AiAgentExecutionProfile(
     max_model_requests=80,
     max_tool_calls=240,
     max_tool_output_bytes=256 * 1024,
-    retries=2,
+    retries=3,
     result_version="global_chat.v2",
     allow_write=True,
     python_tools=True,
@@ -51,14 +51,14 @@ NATIVE_INSTRUCTIONS = """缺少用户资料或需要选择时调用 request_user
 用户要求添加采集链接时用 collection_links_add 提交原链接或完整分享文案，按回执区分新增和重复；仅用户要求采集才执行采集工具。
 缺字段先查同域详情与分页，搜索为空不等于不存在；仅确需关联且有可信依据时跨域读。
 一段 run_code 完成连续统计、差异、保存与回执核对，复用本轮 REPL 数据，不按属性反复读整批 SKU。按用户指定规则核对所有已填/未填值，旧值非正确答案；编码提取只保留匹配本体。
-Python 仅支持部分标准库；计数用 len/sum/min/max，不写 next(生成器)；末行分支外返回字典/列表及回执，不用 json.dumps；TypedDict 声明真实类型。检查 ok=false，异常先核回执，取消即停，不重放成功或未知写；单次 draft_changes_apply 失败不保存，多次写非事务。多草稿优先用服务端批量工具（category_match_batch、copy_generate_batch、draft_sku_variants_check_batch、product_publish_validate_batch）；脚本内 asyncio.gather(*tasks) 单次并发 ≤8（无关键字参数、async def 内 try/except、不混大批次无关工具）；跨回合或恢复后重读。不访问宿主文件/DB/环境/外网；审批和后台任务在脚本外调用。
+Python 仅支持部分标准库；计数用 len/sum/min/max，不写 next(生成器)；末行分支外返回字典/列表及回执，不用 json.dumps；TypedDict 声明真实类型。检查 ok=false，异常先核回执，取消即停，不重放成功或未知写；单次 draft_changes_apply 失败不保存，多次写非事务。多草稿优先用批量工具（draft_attributes_read_batch(scope=sku)、category_match_batch、category_attributes_query_batch(scope=writable)、copy_generate_batch、draft_sku_variants_check_batch、draft_pricing_preview_batch、draft_pricing_apply_batch、product_publish_validate_batch），写属性直接用 draft_changes_apply 省去反复搜工具；脚本内 asyncio.gather(*tasks) 并发 ≤8（无关键字参数、async def 内 try/except）；不同草稿可并发，同草稿写须串行沿用回执 updated_at；跨回合或恢复后重读。禁访问宿主文件/DB/环境/外网；审批和后台任务在脚本外调用。
 在线批改先固定 SKU/操作/仓库并按 next_page 读齐，用 online_products_changes_apply 同操作合批，超限分批核对；单项用 online_products_change。统计以 total/accepted_count/failed_count 为准，警告用 Python 去重计数。恢复按实际回执：终态不 close，旧任务结束后读新版本，版本过期先重读，已入队不主动轮询。
-完整准备含文案（copy_generate/copy_generate_batch）、类目（category_match/category_match_batch）、主图、SKU 套图、公共/差异属性、库存、包装估算（draft_package_estimates_preview/confirm）、核价及预检（product_publish_validate/product_publish_validate_batch）；仅处理选定目标，发布须明确要求。
-先读 draft_read.image_preparation，需套图时同轮直接调 draft_images_prepare(decision="auto")（图片工具不在 run_code 中调用）；generated/kept 复用，needs_confirmation 问保留/重做（默认保留，传最新 fingerprint），要求桌面时提示“在桌面继续”。queued 后并行准备文案、类目和属性，缺毛重只阻塞相关核价并集中补问；独立工作后同轮 draft_images_wait 核对原批次，仅全批采用算完成，失败/未知保留原图不自动重做。有效售价可复用，依据变化再核价。资料和图齐备后用 product_publish_prepare 准备水印/上传，IMAGE_NOT_PREPARED/IMAGE_PUBLIC_URL_STALE/IMAGE_DELIVERY_STALE 只修交付不重绘；缺选图请用户选择。
+完整准备先做类目匹配与禁售筛查（无类目用 category_match(_batch)，内置禁售检查；已有类目先确认非禁售）；status=forbidden 立即移出后续全流程（不做文案/图片/属性/包装/核价），unresolved/failed 暂不生图填属性；合规草稿推进主图、SKU 套图、文案（copy_generate(_batch)）、公共/差异属性、库存、包装估算、核价（多草稿用 draft_pricing_preview_batch/apply_batch）及预检（product_publish_validate(_batch)）；仅处理选定目标，发布须明确要求。
+通过类目筛查的合规草稿（未排除图片时）先读 draft_read.image_preparation，需套图时同轮直接调 draft_images_prepare(decision="auto")（图片工具不在 run_code 中调用）；generated/kept 复用，needs_confirmation 问保留/重做（默认保留，传最新 fingerprint），要求桌面时提示“在桌面继续”。queued 后并行准备文案、属性与包装，缺毛重只阻塞相关核价并集中补问；独立工作后同轮 draft_images_wait 核对原批次，仅全批采用算完成，失败/未知保留原图不自动重做。有效售价可复用，依据变化再核价。资料和图齐备后用 product_publish_prepare 准备水印/上传，IMAGE_NOT_PREPARED/IMAGE_PUBLIC_URL_STALE/IMAGE_DELIVERY_STALE 只修交付不重绘；缺选图请用户选择。
 商品共用事实可复用，平台类目/售价/币种/销售目标按站点处理；来源引用须来自真实用户消息或已保存事实。发布/删除遵循服务端审批模式，模型不得代批或将准备当作发布授权。product_publish_request 返回 job_id 即结束提交，不轮询不重发；Deferred 暂停时领域 Job 继续，恢复按回执汇报。窄任务只调对应能力，自动类目匹配直接调自动/批量能力；保留草稿全部 targets 并按逐项回执核对覆盖。
-公共属性先 draft_attributes_read(scope=common) 一次取事实、类目及已填值；仅 SKU 属性/包装用 scope=sku 按 next_offset 读齐。正确类目保留；category_attributes_query 并行按 has_more 读齐，只写 write_scope，不写 excluded_attributes；小字典空 query，大字典关键词，独立候选合批。仅定义有品牌字典才查真实 ID，优先无品牌候选，不伪造；Yandex 品牌取草稿/商品 vendor，不猜精确值。
-SKU 拆 options 原文按单位优先填尺码/件数/尺寸等结构化字段，外语自定义值禁中文原文；商品长不取包装长，套装件数非每包销售数；互斥值不写公共属性，不靠编码/序号造差异。整组差异保存后或确认无可写项时用 draft_sku_variants_check（多草稿用 draft_sku_variants_check_batch）核对组合，分开报保存数、重复组与缺口；Yandex 公共字段可区分时传 yandex_variant_field_ids 实时核对，settings_guidance 须说明类目、中俄原名、后台入口、添加保存和已有组合影响，保存后带原 ID 重查；不据历史预检推断当前结果。
-公共属性用 product_attributes_update，单 SKU 用 draft_sku_attributes_update，多 SKU 用 draft_changes_apply（差异在 Python 计算，保留有效旧值）；商品事实（成本/包装 cm·kg/条码/规格/供应商库存/电池液体）只用 product_sku_facts_update（先 product_read 取 updated_at 与 SKU ID，省略项保留，不猜事实）。同一依赖重复失败时停止换类目或复合工具重试，先完成独立目标并按真实回执报告。"""
+公共属性先 draft_attributes_read(scope=common) 一次取事实与已填值；SKU/包装用 scope=sku 按 next_offset 读齐。正确类目保留；单类目用 category_attributes_query 按 has_more 读齐，多类目用 category_attributes_query_batch 一次取紧凑可写字段，只写 write_scope，不写 excluded_attributes；小字典用内联 options，大字典（has_more_values=true）用 category_attribute_values_query 按关键词查。仅定义有品牌字典才查真实 ID，优先无品牌，不伪造；Yandex 品牌取草稿/商品 vendor。
+SKU 按单位拆分 options 优先填尺码/件数/尺寸等结构化字段（勿把尺码/件数塞进颜色名，外语拼接留空格），外语自定义值禁中文；商品长非包装长，套装件数非每包件数；互斥值不写公共属性，不靠序号造差异。整组保存后或确认无可写项时用 draft_sku_variants_check(_batch) 核对，分报保存数、重复组与缺口；Yandex 公共字段可区分时传 yandex_variant_field_ids 核对，settings_guidance 说明类目、中俄原名、后台入口、添加保存和已有组合影响，保存后带原 ID 重查；不据历史预检推断。
+公共属性用 product_attributes_update，单 SKU 用 draft_sku_attributes_update，多 SKU 用 draft_changes_apply（保留有效旧值）；商品事实（成本/包装 cm·kg/条码/规格/供应商库存/电池液体）用 product_sku_facts_update（复用 draft_attributes_read(_batch) 返回的 product.updated_at 与 SKU ID）。缺毛重但 product.weight_kg 或来源有明确重量（含 1688 克数误填 kg 如 20/680/1900/8000）时自主换算 kg 写入，不反问已有重量；批量估尺寸每品只抽查 1–2 张最可能含尺寸表详情图。同依赖重复失败停试，按回执汇报。"""
 
 
 GLOBAL_RESPONSE_INSTRUCTIONS = """全局回答规则，适用于查询、执行、解释、分析和错误反馈：
@@ -72,10 +72,35 @@ GLOBAL_RESPONSE_INSTRUCTIONS = """全局回答规则，适用于查询、执行�
 """
 
 
+def _is_user_input_only_deferred(requests: DeferredToolRequests) -> bool:
+    """仅等待用户回答 request_user_input 时，用户回复开启新的人类交互回合，不沿用上一回合额度残余。"""
+    return (
+        not requests.approvals
+        and bool(requests.calls)
+        and all(call.tool_name == "request_user_input" for call in requests.calls)
+    )
+
+
+_LAST_CHANCE_SUMMARY_PROMPT = (
+    "这是最后一次回复机会：严禁输出任何工具调用标记（如 <｜DSML｜...>）或 <think> 标签，也不要继续调用工具。"
+    "请直接用清晰中文正文，基于已有回执汇总已完成、跳过、失败及需要用户补充确认的清单，不要重放已完成的写操作。"
+)
+
+
 def validate_chat_output(ctx: RunContext[AiAgentDependencies], output: Any):
-    if isinstance(output, str) and is_tool_call_text(output):
-        raise ModelRetry("刚才返回的是工具调用标记，未执行。已有回执足以回答时，请直接给用户结论；"
-                         "仍缺数据时通过原生工具调用补查，不要重放已完成的操作。")
+    if isinstance(output, str):
+        last_chance = ctx.max_retries > 0 and ctx.retry + 1 >= ctx.max_retries
+        if is_tool_call_text(output):
+            if last_chance:
+                raise ModelRetry(_LAST_CHANCE_SUMMARY_PROMPT)
+            raise ModelRetry("刚才返回的是工具调用标记，未执行。已有回执足以回答时，请直接给用户结论；"
+                             "仍缺数据时通过原生工具调用补查，不要重放已完成的操作。")
+        if has_unclosed_think(output) or (output.strip() and not visible_reply(output)):
+            if last_chance:
+                raise ModelRetry(_LAST_CHANCE_SUMMARY_PROMPT)
+            raise ModelRetry("刚才的回复包含未闭合的 <think> 标签或缺少可见正文，用户无法看到答复。"
+                             "请不要在正文中输出 <think> 标签：如任务未完成请继续通过原生工具调用推进，"
+                             "否则直接用清晰正文给出结论，不要重放已完成的写操作。")
     return validate_online_completion(ctx, output)
 
 
@@ -149,6 +174,11 @@ class GlobalAgentChatService:
             )
         if pending:
             support.resume_deferred(pending[0])
+        resumed_usage = (
+            None
+            if pending and _is_user_input_only_deferred(pending[0])
+            else (pending[2] if pending else None)
+        )
         async with self.factory.open_stream_run(
             profile=GLOBAL_CHAT_PROFILE,
             instructions=self.instructions(),
@@ -157,7 +187,7 @@ class GlobalAgentChatService:
             conversation_id=conversation_id,
             message_history=messages,
             deferred_tool_results=pending[1] if pending else None,
-            usage=pending[2] if pending else None,
+            usage=resumed_usage,
             run_support=support,
             actor_id=GLOBAL_CHAT_ACTOR_ID,
             tenant_id=GLOBAL_CHAT_TENANT_ID,

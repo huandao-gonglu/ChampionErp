@@ -495,7 +495,12 @@ class AppContext:
                 if self._products is None:
                     from erp_web.stores.product_store import ProductStore
 
-                    self._products = ProductStore(self.db, image_draft_guard=lambda draft_id: self.image_batches.assert_draft_idle(draft_id))
+                    self._products = ProductStore(
+                        self.db,
+                        image_draft_guard=lambda draft_id: self.image_batches.assert_draft_idle(draft_id),
+                        forbidden_categories_loader=lambda: self.config.forbidden_categories(),
+                        category_ancestors_loader=lambda platform, category_id: self.category_catalog.cached_category_ancestor_ids(platform, category_id),
+                    )
         return self._products
 
     @property

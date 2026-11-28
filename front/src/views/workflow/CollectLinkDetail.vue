@@ -234,7 +234,7 @@ function eventDotClass(status: CollectBatchStatus) {
             title="点击查看商品主图"
             class="shrink-0 overflow-hidden rounded-xl border border-accent-200/80 transition hover:opacity-90 dark:border-dark-600"
           >
-            <img :src="row.image" alt="采集商品" class="size-16 object-cover" />
+            <img :src="row.image" referrerpolicy="no-referrer" alt="采集商品" class="size-16 object-cover" />
           </a>
           <div class="min-w-0 flex-1">
             <h3 class="break-words text-sm font-semibold leading-snug text-accent-950 dark:text-white">{{ row.title || hostname(row.url) }}</h3>

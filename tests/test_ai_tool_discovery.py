@@ -216,3 +216,33 @@ def test_discovery_does_not_execute_approval_tool_and_resume_does_not_repeat_wri
     asyncio.run(ui.prepare_run(request, approval_token="test-token").stream(lambda _: None))
     assert executed == [{"draft_id": "d1"}]
     assert ui.call_store.pending(CONVERSATION) is None
+    # 动态工具发现注入的 SystemPromptPart 仅发给模型，不作为 system 消息泄露到前端对话流。
+    dumped_messages = ui.dump_ui_messages(CONVERSATION)["messages"]
+    assert all(msg["role"] != "system" for msg in dumped_messages)
+    dumped_text = json.dumps(dumped_messages, ensure_ascii=False)
+    assert "New direct-only tools have been discovered" not in dumped_text
+    assert "New functions are now available" not in dumped_text
+
+
+def test_tool_discovery_filters_low_score_description_noise():
+    toolset = build_global_chat_toolset(get_context())
+    corpus = [
+        ToolDefinition(name=binding.definition.name, description=binding.definition.description)
+        for binding in toolset.bindings.values()
+    ]
+    pricing = match_tool_queries(None, ["draft pricing"], corpus)
+    assert set(pricing) == {
+        "draft_pricing_preview",
+        "draft_pricing_preview_batch",
+        "draft_pricing_apply",
+        "draft_pricing_apply_batch",
+    }
+    exact_mix = match_tool_queries(
+        None,
+        ["draft_read", "category_match_batch", "draft pricing preview"],
+        corpus,
+    )
+    assert exact_mix == ["draft_read", "category_match_batch", "draft_pricing_preview"]
+    attrs = match_tool_queries(None, ["category attributes query 属性定义"], corpus)
+    assert {"category_attributes_query", "category_attribute_values_query"} <= set(attrs)
+    assert not ({"research_hot_products_search", "online_products_change", "order_fulfillment_read"} & set(attrs))

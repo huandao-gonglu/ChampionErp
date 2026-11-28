@@ -205,4 +205,46 @@
   .badge-muted {
     @apply inline-flex items-center rounded-full bg-accent-100 px-2.5 py-1 text-xs font-semibold text-accent-600 ring-1 ring-accent-200 dark:bg-dark-800 dark:text-accent-300 dark:ring-dark-600;
   }
+
+  .ai-shimmer-text {
+    color: rgb(51 65 85);
+    background-image: linear-gradient(
+      90deg,
+      rgb(100 116 139) 0%,
+      rgb(15 23 42) 45%,
+      rgb(100 116 139) 90%
+    );
+    background-size: 220% 100%;
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: ai-shimmer-sweep 2.1s linear infinite;
+  }
+
+  :root.dark .ai-shimmer-text {
+    color: rgb(228 228 231);
+    background-image: linear-gradient(
+      90deg,
+      rgb(161 161 170) 0%,
+      rgb(250 250 250) 45%,
+      rgb(161 161 170) 90%
+    );
+  }
+}
+
+@keyframes ai-shimmer-sweep {
+  0% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -120% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-shimmer-text {
+    animation: none;
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+  }
 }

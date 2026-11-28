@@ -42,7 +42,7 @@ function choose(assetId: string) {
 <template>
   <div class="space-y-2">
     <div class="flex items-center gap-3">
-      <img v-if="current" :src="current.previewUrl || current.url || current.path" :alt="label" class="size-14 rounded-lg border object-contain" />
+      <img v-if="current" :src="current.previewUrl || current.url || current.path" referrerpolicy="no-referrer" :alt="label" class="size-14 rounded-lg border object-contain" />
       <div class="space-y-1">
         <p class="text-xs" :class="modelValue && !current ? 'text-red-600' : 'text-slate-500'">{{ modelValue && !current ? '关联图片已移出图片池，请重新选择' : inherited ? '使用商品默认图' : current ? '已选择图片' : '未单独指定，使用公共发布图片' }}</p>
         <button ref="trigger" type="button" class="btn btn-outline !px-3 !py-1.5 text-xs" :disabled="disabled" :aria-label="`选择${label}`" @click="show">从图片池选图</button>
@@ -56,7 +56,7 @@ function choose(assetId: string) {
           <p v-if="!images.length" class="py-6 text-sm text-slate-500">图片池为空，请先在图片页上传图片。</p>
           <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <button v-for="image in images" :key="image.id" type="button" class="overflow-hidden rounded-xl border-2 p-2 text-left" :class="image.id === modelValue ? 'border-primary-500' : 'border-slate-200 dark:border-dark-700'" :aria-label="`使用图片 ${image.id}`" :aria-pressed="image.id === modelValue" :disabled="disabled" @click="choose(image.id)">
-              <img :src="image.previewUrl || image.url || image.path" :alt="image.id" class="aspect-square w-full object-contain" />
+              <img :src="image.previewUrl || image.url || image.path" referrerpolicy="no-referrer" :alt="image.id" class="aspect-square w-full object-contain" />
               <span class="mt-2 block truncate text-xs">{{ image.origin === 'ai_generated' ? '处理后的图片' : image.origin === 'local_upload' ? '上传图片' : '商品图片' }}<template v-if="image.width && image.height"> · {{ image.width }}×{{ image.height }}</template></span>
             </button>
           </div>

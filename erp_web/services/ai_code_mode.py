@@ -1,13 +1,21 @@
 """通用 Python 工具编排；执行与嵌套调用均由官方 CodeMode 负责。"""
 
 from dataclasses import dataclass, field, replace
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 import time
 from typing import Any
 
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai import RunContext, UserError
-from pydantic_ai.messages import CapabilityEvent, ModelMessage, ToolCallPart, ToolReturnPart, ToolReturn
+from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.messages import (
+    CapabilityEvent,
+    ModelMessage,
+    SystemPromptPart,
+    ToolCallPart,
+    ToolReturn,
+    ToolReturnPart,
+)
 from pydantic_core import to_jsonable_python
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import AbstractToolset
@@ -32,6 +40,17 @@ def iter_message_parts(message: ModelMessage):
                 yield ToolReturnPart(**nested) if isinstance(nested, dict) else nested
 
 
+_DIRECT_ONLY_DISCOVERY_PREFIX = (
+    "New direct-only tools have been discovered. They are NOT available inside `run_code` "
+    "and must be called directly as top-level tool calls"
+)
+_DIRECT_AND_PYTHON_SEARCH_NOTE = (
+    " Note: only discovered tools listed in the `run_code` available-functions catalog are callable "
+    "inside `run_code`; approval-required, persistent-job, or direct-only tools must be called "
+    "directly as top-level tool calls."
+)
+
+
 class DirectAndPythonToolset(CodeModeToolset[AiAgentDependencies]):
     """只调整工具可见性，调用与沙箱仍完全由官方 Toolset 执行。"""
 
@@ -40,6 +59,15 @@ class DirectAndPythonToolset(CodeModeToolset[AiAgentDependencies]):
         if not direct:
             return {}
         python = await super().get_tools(ctx)
+        if "search_tools" in python and "search_tools" in direct and self.tool_selector != "all":
+            base_desc = direct["search_tools"].tool_def.description or ""
+            python["search_tools"] = replace(
+                python["search_tools"],
+                tool_def=replace(
+                    python["search_tools"].tool_def,
+                    description=f"{base_desc}{_DIRECT_AND_PYTHON_SEARCH_NOTE}",
+                ),
+            )
         return {**direct, **python}
 
 
@@ -52,6 +80,26 @@ class DirectAndPythonCodeMode(CodeMode[AiAgentDependencies]):
             max_tool_calls=self.max_tool_calls, resource_limits=self.resource_limits, capability=self,
             dynamic_catalog=self.dynamic_catalog,
         )
+
+    def _announce_newly_discovered(self, ctx: RunContext[AiAgentDependencies], names: Sequence[str]) -> None:
+        # Harness 0.34.0 在 dynamic_catalog=True 且 tools 为子集时，会把非沙箱工具（如审批、
+        # 后台长任务、direct_only）一并广播为“可在 run_code 内调用”，误导模型在脚本里反复重试。
+        # 按 self.tools 拆分公告；上游按 tool_selector 过滤后再移除此覆写。
+        if not isinstance(self.tools, Sequence) or isinstance(self.tools, str):
+            super()._announce_newly_discovered(ctx, names)
+            return
+        fresh = [name for name in names if name not in self._announced_tools]
+        if not fresh:
+            return
+        allowed = set(self.tools)
+        sandbox_fresh = [name for name in fresh if name in allowed]
+        direct_only_fresh = [name for name in fresh if name not in allowed]
+        if sandbox_fresh:
+            super()._announce_newly_discovered(ctx, sandbox_fresh)
+        if direct_only_fresh:
+            self._announced_tools.update(direct_only_fresh)
+            listing = ", ".join(f"`{name}`" for name in direct_only_fresh)
+            ctx.enqueue(SystemPromptPart(content=f"{_DIRECT_ONLY_DISCOVERY_PREFIX}: {listing}."))
 
 
 class PythonOutputLimits(ToolOutputLimits[AiAgentDependencies]):
@@ -173,12 +221,34 @@ class PythonToolBudget(AbstractCapability[AiAgentDependencies]):
     ) -> Any:
         # Core 在模型响应边界检查额度，CodeMode 的脚本内部调用没有该边界。
         # 继续使用原生已完成计数和 UsageLimits，不另存预算或执行计划。
-        ctx.usage_limits.check_before_tool_call(replace(
-            ctx.usage, tool_calls=ctx.usage.tool_calls + self._in_flight + 1,
-        ))
-        self._in_flight += 1
         call_id = str(call.tool_call_id or "")
         is_nested = "__" in call_id and call.tool_name != "run_code"
+        try:
+            ctx.usage_limits.check_before_tool_call(replace(
+                ctx.usage, tool_calls=ctx.usage.tool_calls + self._in_flight + 1,
+            ))
+        except UsageLimitExceeded as exc:
+            if not is_nested:
+                raise
+            # 嵌套调用在 asyncio.gather 内直接抛异常回传 Monty 0.0.23 会触发 Rust 调度器卡死
+            # 并丢失同批已完成写回执；改为返回结构化超额错误，让已完成任务正常收敛。
+            limit = ctx.usage_limits.tool_calls_limit
+            return ToolReturn(
+                return_value={
+                    "ok": False,
+                    "error": {
+                        "code": "TOOL_BUDGET_EXHAUSTED",
+                        "message": (
+                            f"本轮工具调用额度已达上限（{limit} 次），停止发起新的工具调用；"
+                            "请保留并汇总已完成回执后结束本轮。"
+                        )
+                        if limit is not None
+                        else str(exc),
+                        "retryable": False,
+                    },
+                }
+            )
+        self._in_flight += 1
         parent_id = call_id.rsplit("__", 1)[0] if is_nested else ""
         if is_nested:
             state = self._progress.setdefault(

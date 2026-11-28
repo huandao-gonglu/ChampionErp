@@ -26,7 +26,7 @@ const rows = computed(() => sku.value ? skuPublishImages(props.draft, sku.value,
         <p v-if="!rows.length" role="alert" class="mt-2 text-sm text-rose-600">尚无明确的图片选择，请设置 SKU 主图或加入公共图集后再预检。</p>
         <div class="mt-3 grid max-h-[26rem] grid-cols-3 gap-3 overflow-auto">
           <div v-for="(row, index) in rows" :key="row.assetId" :data-preview-image-id="row.assetId">
-            <button v-if="row.image" type="button" class="block w-full rounded-lg border focus-visible:ring-4 focus-visible:ring-primary-500 dark:border-dark-700" :aria-label="`预览 SKU 发布图片 ${index + 1}`" @click="preview = row.image"><img :src="imageUrl(row.image)" :alt="`发布图片 ${index + 1}`" class="aspect-square w-full object-contain" /></button>
+            <button v-if="row.image" type="button" class="block w-full rounded-lg border focus-visible:ring-4 focus-visible:ring-primary-500 dark:border-dark-700" :aria-label="`预览 SKU 发布图片 ${index + 1}`" @click="preview = row.image"><img :src="imageUrl(row.image)" referrerpolicy="no-referrer" :alt="`发布图片 ${index + 1}`" class="aspect-square w-full object-contain" /></button>
             <p v-else class="text-sm text-rose-600">公共素材缺失，请重新选图</p>
             <p class="mt-1 text-xs">{{ index + 1 }} · {{ index === 0 ? '主图' : '附图' }}</p>
           </div>
@@ -34,5 +34,5 @@ const rows = computed(() => sku.value ? skuPublishImages(props.draft, sku.value,
       </template>
     </template>
   </section>
-  <WorkspaceDialog :open="Boolean(preview)" title="SKU 发布图片预览" @close="preview = null"><img v-if="preview" :src="imageUrl(preview)" alt="SKU 发布图片完整预览" class="mx-auto max-h-[70dvh] max-w-full object-contain" /></WorkspaceDialog>
+  <WorkspaceDialog :open="Boolean(preview)" title="SKU 发布图片预览" @close="preview = null"><img v-if="preview" :src="imageUrl(preview)" referrerpolicy="no-referrer" alt="SKU 发布图片完整预览" class="mx-auto max-h-[70dvh] max-w-full object-contain" /></WorkspaceDialog>
 </template>

@@ -526,4 +526,30 @@ describe('AiWorkView 对话与历史', () => {
     expect(wrapper.find('[data-testid="ai-chat-input"]').exists()).toBe(true)
     expect(mocks.fetchConversations).toHaveBeenCalledWith(100, 'chats')
   })
+
+  it('左侧栏支持搜索过滤与一键收起/展开，收起后仍保留返回工作台与新对话入口', async () => {
+    mocks.fetchConversations.mockResolvedValue({
+      ok: true,
+      conversations: [
+        { conversation_id: GLOBAL_CHAT_ID, title: '批量处理勾选草稿', created_at: '2026-11-28T08:00:00+08:00', updated_at: '2026-11-28T09:00:00+08:00' },
+        { conversation_id: 'conversation-1', title: '订单采购对账', created_at: '2026-11-27T08:00:00+08:00', updated_at: '2026-11-27T09:00:00+08:00' },
+      ],
+    })
+    const { mountNow } = setupView()
+    const wrapper = mountNow()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="ai-work-sidebar"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="ai-work-search"]').setValue('采购')
+    expect(wrapper.find('[data-testid="ai-work-conversation-conversation-1"]').exists()).toBe(true)
+    expect(wrapper.find(`[data-testid="ai-work-conversation-${GLOBAL_CHAT_ID}"]`).exists()).toBe(false)
+
+    await wrapper.get('[data-testid="ai-work-sidebar-toggle"]').trigger('click')
+    expect(wrapper.find('[data-testid="ai-work-sidebar"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ai-work-back"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="ai-work-new-chat"]').exists()).toBe(true)
+
+    await wrapper.get('[data-testid="ai-work-sidebar-toggle"]').trigger('click')
+    expect(wrapper.find('[data-testid="ai-work-sidebar"]').exists()).toBe(true)
+  })
 })

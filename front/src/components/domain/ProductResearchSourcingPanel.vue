@@ -50,7 +50,7 @@ async function importProduct() {
     <div class="mt-4 max-h-96 space-y-3 overflow-auto">
       <label v-for="supplier in sourcing.items || []" :key="supplier.product_id" class="block rounded-lg border border-accent-200 p-3 dark:border-dark-700">
         <div class="flex gap-2"><input v-model="selectedId" type="radio" :value="supplier.product_id" :disabled="busy" @change="confirmed = false" /><span class="text-sm font-semibold">{{ supplier.title }}</span></div>
-        <img v-if="supplier.image_url" :src="supplier.image_url" :alt="supplier.title" loading="lazy" class="mt-2 h-20 w-20 rounded object-contain" />
+        <img v-if="supplier.image_url" :src="supplier.image_url" referrerpolicy="no-referrer" :alt="supplier.title" loading="lazy" class="mt-2 h-20 w-20 rounded object-contain" />
         <p class="mt-2 text-sm">¥ {{ supplier.price_cny ?? '暂无' }} · 起订 {{ supplier.min_order_quantity ?? '暂无' }} 件</p>
         <p class="muted">{{ supplier.store_name || '店铺未提供' }} · 服务分 {{ supplier.service_score ?? '暂无' }}</p>
         <p class="muted">近 30 天销量 {{ supplier.monthly_sales ?? '暂无' }} · 复购率 {{ supplier.repurchase_rate ?? '暂无' }}%</p>

@@ -38,6 +38,9 @@ const toolLabels: Record<string, string> = {
   order_fulfillment_services: '查询物流服务',
   order_fulfillment_update: '处理物流履约',
   online_products_read: '查询在线商品',
+  online_products_attributes: '查看在线商品属性',
+  online_products_job_read: '查看在线商品任务',
+  online_products_refresh_detail: '刷新在线商品详情',
   online_products_refresh_status: '查看商品同步进度',
   online_products_close: '结束待核对操作',
   online_products_change: '修改在线商品',
@@ -53,13 +56,16 @@ const toolLabels: Record<string, string> = {
   product_delete: '删除商品',
   product_profile_patch: '修改商品信息',
   category_match: '匹配商品类目',
+  category_match_batch: '批量匹配商品类目',
   category_search: '搜索类目',
   category_attributes_query: '查询类目属性',
+  category_attributes_query_batch: '批量查询类目属性',
   category_attribute_values_query: '查询属性选项',
   category_precheck: '检查类目信息',
   draft_prepare_for_market: '准备平台草稿',
   product_publish_prepare: '准备商品发布',
   product_publish_validate: '检查发布条件',
+  product_publish_validate_batch: '批量检查发布条件',
   product_publish_request: '发布商品',
   drafts_query: '查询草稿',
   draft_read: '查看草稿',
@@ -67,8 +73,10 @@ const toolLabels: Record<string, string> = {
   draft_delete: '删除草稿',
   draft_duplicate: '复制草稿',
   draft_attributes_read: '查看草稿属性',
+  draft_attributes_read_batch: '批量查看草稿属性',
   draft_sku_attributes_update: '更新规格属性',
   draft_sku_variants_check: '核对规格差异',
+  draft_sku_variants_check_batch: '批量核对规格差异',
   draft_sku_selection_update: '选择商品规格',
   draft_package_estimates_preview: '比较尺寸区间运费',
   draft_package_estimates_confirm: '确认包装尺寸估算',
@@ -97,7 +105,9 @@ const toolLabels: Record<string, string> = {
   upc_assign: '分配商品条码',
   upc_import: '导入商品条码',
   draft_pricing_preview: '预览核价结果',
+  draft_pricing_preview_batch: '批量预览核价结果',
   draft_pricing_apply: '应用核价结果',
+  draft_pricing_apply_batch: '批量应用核价结果',
   store_auth_checklist: '查看店铺授权要求',
   store_auth_check: '检查店铺授权',
   source_collect: '采集商品',
@@ -112,6 +122,70 @@ const toolLabels: Record<string, string> = {
   research_run_status_query: '查看选品进度',
   inspect_source_facts: '查看货源资料',
 }
+
+const WRITE_TOOL_NAMES = new Set([
+  'user_agents_update',
+  'orders_sync',
+  'order_notification_update',
+  'order_source_select',
+  'order_purchase_record',
+  'order_purchase_cancel',
+  'order_purchase_sync',
+  'order_address_note_update',
+  'order_buyer_chat_send',
+  'order_alibaba_create',
+  'order_alibaba_pay',
+  'order_receiving_warehouse_update',
+  'order_fulfillment_update',
+  'online_products_close',
+  'online_products_change',
+  'online_products_changes_apply',
+  'online_products_sync',
+  'online_products_retry',
+  'product_attributes_update',
+  'product_images_prepare',
+  'product_save',
+  'product_delete',
+  'product_profile_patch',
+  'category_match',
+  'category_match_batch',
+  'draft_prepare_for_market',
+  'product_publish_prepare',
+  'product_publish_request',
+  'draft_save',
+  'draft_delete',
+  'draft_duplicate',
+  'draft_sku_attributes_update',
+  'draft_sku_selection_update',
+  'draft_package_estimates_confirm',
+  'draft_package_estimates_apply',
+  'product_sku_facts_update',
+  'draft_changes_apply',
+  'copy_generate',
+  'copy_generate_batch',
+  'image_prompts_generate',
+  'image_pool_upload',
+  'image_pool_save',
+  'image_pool_action',
+  'image_pool_sync_generated',
+  'chat_images_save_to_product',
+  'image_translate',
+  'image_edit',
+  'draft_images_prepare',
+  'upc_assign',
+  'upc_import',
+  'draft_pricing_apply',
+  'draft_pricing_apply_batch',
+  'source_collect',
+  'collection_links_add',
+  'collect_batch',
+  'collect_from_browser_tab',
+  'collect_1688',
+  'collect_1688_clean',
+  'claim_products',
+])
+
+export type AiToolCategory = 'read' | 'write' | 'compute'
 
 /** 将内部操作标识转换为用户可读的业务名称。 */
 export function describeAiTool(name: string): string {
@@ -135,16 +209,13 @@ function extractCodeToolNames(input: unknown): string[] {
   return found
 }
 
-/**
- * 为 run_code 生成可读的业务动作标题（仅展示用途，不反解析业务结果）。
- * 优先复用服务端实时进度或写回执中的真实子工具名，其次匹配脚本中调用的已登记业务函数。
- */
-export function describeRunCodeAction(
+/** 提取 run_code 关联的真实子工具名（优先实时进度、其次写回执、最后脚本静态调用）。 */
+export function extractRunCodeToolNames(
   input: unknown,
   progress?: CodeProgressSnapshot,
   writeReceipts?: BusinessWriteReceipt[],
   toolCallId?: string,
-): string {
+): string[] {
   const names: string[] = []
   const seen = new Set<string>()
   const pushName = (name: string) => {
@@ -164,6 +235,36 @@ export function describeRunCodeAction(
   if (!names.length) {
     for (const name of extractCodeToolNames(input)) pushName(name)
   }
+  return names
+}
+
+/** 区分只读探索、业务写入与纯计算核对，用于读写视觉分层。 */
+export function classifyAiToolCategory(
+  toolName: string,
+  input?: unknown,
+  progress?: CodeProgressSnapshot,
+  writeReceipts?: BusinessWriteReceipt[],
+  toolCallId?: string,
+): AiToolCategory {
+  if (toolName === 'run_code') {
+    const subTools = extractRunCodeToolNames(input, progress, writeReceipts, toolCallId)
+    if (!subTools.length) return 'compute'
+    return subTools.some(name => WRITE_TOOL_NAMES.has(name)) ? 'write' : 'read'
+  }
+  return WRITE_TOOL_NAMES.has(toolName) ? 'write' : 'read'
+}
+
+/**
+ * 为 run_code 生成去技术化的业务动作标题（仅展示用途，不反解析业务结果）。
+ * 直接展示真实业务动作名，不再暴露“批量处理 ·”前缀。
+ */
+export function describeRunCodeAction(
+  input: unknown,
+  progress?: CodeProgressSnapshot,
+  writeReceipts?: BusinessWriteReceipt[],
+  toolCallId?: string,
+): string {
+  const names = extractRunCodeToolNames(input, progress, writeReceipts, toolCallId)
   const labels: string[] = []
   for (const name of names) {
     const label = toolLabels[name]
@@ -171,10 +272,28 @@ export function describeRunCodeAction(
   }
   if (!labels.length) {
     const code = input && typeof input === 'object' ? (input as { code?: unknown }).code : undefined
-    return typeof code === 'string' && code.trim() ? '整理与计算数据' : toolLabels.run_code
+    return typeof code === 'string' && code.trim() ? '核对与整理数据' : toolLabels.run_code
   }
   const shown = labels.slice(0, 2).join('、')
-  return labels.length > 2 ? `批量处理 · ${shown}等 ${labels.length} 项` : `批量处理 · ${shown}`
+  return labels.length > 2 ? `${shown}等 ${labels.length} 项` : shown
+}
+
+/** 生成进行中步骤的统一自然动词文案，消除“执行中 / 处理中 / 正在准备”并存的割裂感。 */
+export function formatActiveToolLabel(label: string): string {
+  const clean = label.trim()
+  if (!clean) return '正在处理'
+  if (clean.startsWith('正在')) return clean
+  return `正在${clean}`
+}
+
+/** 将瞬态 data-code-progress 格式化为紧凑的单行计数进度（如 11/20 · 1 项异常）。 */
+export function formatCodeProgressCompact(progress?: CodeProgressSnapshot): string {
+  if (!progress || progress.started <= 0) return ''
+  const failSuffix = progress.failed > 0 ? ` · ${progress.failed} 项异常` : ''
+  if (progress.active === 0) {
+    return `${progress.completed}/${progress.started}${failSuffix} · 整理结果`
+  }
+  return `${progress.completed}/${progress.started}${failSuffix}`
 }
 
 /** 将瞬态 data-code-progress 格式化为可读的子步骤实时进度。 */

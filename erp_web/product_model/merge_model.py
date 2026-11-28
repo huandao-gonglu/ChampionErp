@@ -142,6 +142,45 @@ def validate_platform_draft_root_fields(
         )
 
 
+def _normalize_category_block(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    code = str(value.get("code") or "").strip().upper()
+    reason = str(value.get("reason") or "").strip()
+    if not code and not reason:
+        return {}
+    matched_category_ids = [
+        str(item).strip()
+        for item in (
+            value.get("matched_category_ids")
+            if isinstance(value.get("matched_category_ids"), list)
+            else []
+        )
+        if str(item).strip()
+    ]
+    matched_forbidden_ids = [
+        str(item).strip()
+        for item in (
+            value.get("matched_forbidden_ids")
+            if isinstance(value.get("matched_forbidden_ids"), list)
+            else []
+        )
+        if str(item).strip()
+    ]
+    checked_at = str(value.get("checked_at") or "").strip()
+    result: dict[str, Any] = {
+        "code": code,
+        "reason": reason,
+    }
+    if matched_category_ids:
+        result["matched_category_ids"] = list(dict.fromkeys(matched_category_ids))
+    if matched_forbidden_ids:
+        result["matched_forbidden_ids"] = list(dict.fromkeys(matched_forbidden_ids))
+    if checked_at:
+        result["checked_at"] = checked_at
+    return result
+
+
 def _target_text(
     raw: dict[str, Any],
     field: str,
@@ -271,6 +310,11 @@ def normalize_draft_target_site(
             else raw.get("categoryPrecheck")
             if isinstance(raw.get("categoryPrecheck"), dict)
             else {}
+        ),
+        "category_block": _normalize_category_block(
+            raw.get("category_block")
+            if isinstance(raw.get("category_block"), dict)
+            else raw.get("categoryBlock")
         ),
         "publish_status": str(
             raw_publish_status or ""
@@ -747,6 +791,13 @@ def _merge_platform_draft(product: dict[str, Any], platform: str) -> dict[str, A
             if isinstance(current.get(alias), dict)
             else {}
         )
+    current["category_block"] = _normalize_category_block(
+        current.get("category_block")
+        if isinstance(current.get("category_block"), dict)
+        else current.get("categoryBlock")
+        if isinstance(current.get("categoryBlock"), dict)
+        else primary_target.get("category_block")
+    )
     for field in ("last_precheck", "category_precheck"):
         current[field] = normalize_precheck(current[field])
     # target_sites[] 是平台类目内容的唯一事实来源。根类目字段只是首个

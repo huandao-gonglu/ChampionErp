@@ -19,7 +19,8 @@ class LogisticsFixture:
     def plans(self):
         return deepcopy(self.current)
 
-    def pricing_plans(self):
+    def pricing_plans(self, *, force_refresh: bool = False):
+        del force_refresh
         return self.plans()
 
     def configuration_fingerprint(self):

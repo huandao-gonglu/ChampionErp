@@ -109,8 +109,9 @@ def normalize_app_config(config: dict[str, Any]) -> dict[str, Any]:
     ai_models = ai_model_config.normalize_ai_models(
         raw_ai_models if has_canonical_ai_models else defaults["ai_models"]
     )
-    ai_use_case_bindings = ai_model_config.normalize_ai_use_case_bindings(
-        incoming.get("ai_use_case_bindings")
+    ai_use_case_bindings = ai_model_config.prune_incompatible_ai_use_case_bindings(
+        ai_models,
+        incoming.get("ai_use_case_bindings"),
     )
     # 旧持久化路径继续可读，但不进入当前配置，也不再作为提示词来源。
     raw_pricing = (

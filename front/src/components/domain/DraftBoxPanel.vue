@@ -8,9 +8,9 @@ import { useAiChatStore } from '@/stores/aiChat'
 import { useAiPageContext } from '@/composables/useAiPageContext'
 import DraftLanguageSelect from '@/components/domain/DraftLanguageSelect.vue'
 import DraftMarketSelect from '@/components/domain/DraftMarketSelect.vue'
+import DraftStatusCell from '@/components/domain/DraftStatusCell.vue'
 import { formatDateTime } from '@/utils/format'
-import { statusBadgeClass, workflowStatusLabel } from '@/utils/status'
-import type { DraftIndexItem, DraftPublishState, Marketplace, MarketplaceOption, MarketplaceTargetSite, UnknownRecord } from '@/types/workflow'
+import type { DraftIndexItem, DraftPrepStage, DraftProgressTab, DraftPublishState, Marketplace, MarketplaceOption, MarketplaceTargetSite, UnknownRecord } from '@/types/workflow'
 
 const props = defineProps<{
   drafts: DraftIndexItem[]
@@ -25,7 +25,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   refresh: []
-  edit: [item: DraftIndexItem]
+  edit: [item: DraftIndexItem, tab?: DraftProgressTab]
   duplicateDraft: [item: DraftIndexItem]
   deleteDraft: [item: DraftIndexItem]
   deleteDrafts: [items: DraftIndexItem[]]
@@ -38,11 +38,14 @@ const emit = defineEmits<{
 
 const PUBLISHED_STATUSES = new Set(['published', 'real_publish_success', 'success', 'imported'])
 const PUBLISHING_STATUSES = new Set(['pending', 'queued', 'running', 'retrying', 'publishing', 'pending_confirmation'])
-const FAILED_STATUSES = new Set(['failed', 'publish_failed', 'real_publish_failed', 'not_ready', 'interrupted', 'outcome_unknown', 'needs_attention', 'partial'])
+const FAILED_STATUSES = new Set(['failed', 'publish_failed', 'real_publish_failed', 'interrupted', 'outcome_unknown', 'needs_attention', 'partial'])
+
+type PrepFilterKey = 'all' | 'category_forbidden' | 'ready_to_publish' | 'preparing' | 'needs_confirmation' | 'not_ready' | 'pending'
 
 const chatStore = useAiChatStore()
 const platformFilter = ref<'all' | Marketplace>('all')
 const draftScope = ref<'unpublished' | 'publishing' | 'publish_failed' | 'published' | 'all'>('unpublished')
+const prepFilter = ref<PrepFilterKey>('all')
 const search = ref('')
 const selectedDraftIds = ref<string[]>([])
 const localError = ref('')
@@ -59,6 +62,20 @@ function draftPublishStateOf(item: DraftIndexItem): DraftPublishState {
   if (FAILED_STATUSES.has(status) || FAILED_STATUSES.has(publishStatus)) return 'publish_failed'
   if (PUBLISHED_STATUSES.has(status) || PUBLISHED_STATUSES.has(publishStatus)) return 'published'
   return 'unpublished'
+}
+
+function draftPrepStageOf(item: DraftIndexItem): DraftPrepStage {
+  if (item.progress?.forbidden && draftPublishStateOf(item) !== 'publishing' && draftPublishStateOf(item) !== 'published') {
+    return 'category_forbidden'
+  }
+  if (item.progress?.prepStage) return item.progress.prepStage
+  const status = String(item.status || '').trim().toLowerCase()
+  if (status === 'category_forbidden') return 'category_forbidden'
+  if (status === 'not_ready') return 'not_ready'
+  if (status === 'ready_to_publish') return 'ready_to_publish'
+  if (status === 'needs_confirmation') return 'needs_confirmation'
+  if (status === 'preparing' || status === 'category_ready' || status === 'copy_ready' || status === 'images_ready' || status === 'priced') return 'preparing'
+  return 'pending'
 }
 
 const allDraftRows = computed(() => {
@@ -96,13 +113,47 @@ const scopeCounts = computed(() => {
   }
 })
 
+const unpublishedRows = computed(() => allDraftRows.value.filter((row) => draftPublishStateOf(row) === 'unpublished'))
+
+const prepCounts = computed(() => {
+  const counts: Record<PrepFilterKey, number> = {
+    all: unpublishedRows.value.length,
+    category_forbidden: 0,
+    ready_to_publish: 0,
+    preparing: 0,
+    needs_confirmation: 0,
+    not_ready: 0,
+    pending: 0,
+  }
+  for (const row of unpublishedRows.value) {
+    const stage = draftPrepStageOf(row)
+    if (stage in counts) counts[stage as PrepFilterKey] += 1
+  }
+  return counts
+})
+
+const prepFilterOptions = computed<Array<{ key: PrepFilterKey; label: string; count: number; danger?: boolean }>>(() => [
+  { key: 'all', label: '全部待发布', count: prepCounts.value.all },
+  { key: 'category_forbidden', label: '禁售类目', count: prepCounts.value.category_forbidden, danger: true },
+  { key: 'ready_to_publish', label: '可发布', count: prepCounts.value.ready_to_publish },
+  { key: 'preparing', label: '准备中', count: prepCounts.value.preparing },
+  { key: 'needs_confirmation', label: '待确认', count: prepCounts.value.needs_confirmation },
+  { key: 'not_ready', label: '预检未通过', count: prepCounts.value.not_ready, danger: true },
+  { key: 'pending', label: '待准备', count: prepCounts.value.pending },
+])
+
 const draftRows = computed(() => allDraftRows.value.filter((row) => {
   if (draftScope.value === 'all') return true
-  return draftPublishStateOf(row) === draftScope.value
+  if (draftPublishStateOf(row) !== draftScope.value) return false
+  if (draftScope.value === 'unpublished' && prepFilter.value !== 'all') {
+    return draftPrepStageOf(row) === prepFilter.value
+  }
+  return true
 }))
 
 const selectedDrafts = computed(() => props.drafts.filter((item) => selectedDraftIds.value.includes(draftIdOf(item))))
 const selectedCount = computed(() => selectedDrafts.value.length)
+const selectedForbiddenCount = computed(() => selectedDrafts.value.filter((item) => draftPrepStageOf(item) === 'category_forbidden').length)
 const deletableSelectedDrafts = computed(() => selectedDrafts.value.filter((item) => draftPublishStateOf(item) !== 'publishing'))
 const blockedPublishingSelectedCount = computed(() => selectedDrafts.value.length - deletableSelectedDrafts.value.length)
 const pendingDeleteConfirmation = ref<{ mode: 'single'; item: DraftIndexItem } | { mode: 'batch'; items: DraftIndexItem[]; skippedPublishingCount: number } | null>(null)
@@ -276,7 +327,40 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
             全部草稿 <span class="draft-tab-badge tabular-nums">{{ scopeCounts.all }}</span>
           </button>
         </nav>
+        <div class="hidden items-center gap-2.5 text-[11px] text-accent-500 dark:text-accent-400 xl:flex">
+          <span class="inline-flex items-center gap-1"><span class="size-2 rounded-full bg-emerald-500" />已完成</span>
+          <span class="inline-flex items-center gap-1"><span class="size-2 rounded-full bg-rose-500" />禁售/报错</span>
+          <span class="inline-flex items-center gap-1"><span class="size-2 rounded-full bg-amber-500" />待确认</span>
+          <span class="inline-flex items-center gap-1"><span class="size-2 rounded-full bg-sky-500" />仅原图/部分</span>
+          <span class="inline-flex items-center gap-1"><span class="size-2 rounded-full bg-accent-300 dark:bg-dark-600" />未做</span>
+        </div>
       </div>
+
+      <div
+        v-if="draftScope === 'unpublished'"
+        class="mb-3 flex flex-wrap items-center gap-1.5"
+        role="group"
+        aria-label="按准备阶段筛选待发布草稿"
+        data-testid="draft-prep-filters"
+      >
+        <button
+          v-for="opt in prepFilterOptions"
+          :key="opt.key"
+          type="button"
+          :data-testid="`draft-prep-filter-${opt.key}`"
+          class="draft-prep-chip"
+          :class="{
+            'draft-prep-chip--danger': opt.danger,
+            'draft-prep-chip--danger-nonzero': opt.danger && opt.count > 0 && prepFilter !== opt.key,
+          }"
+          :aria-pressed="prepFilter === opt.key"
+          @click="prepFilter = opt.key"
+        >
+          <span>{{ opt.label }}</span>
+          <span class="tabular-nums opacity-80">{{ opt.count }}</span>
+        </button>
+      </div>
+
       <div class="rounded-lg border border-accent-200 bg-accent-50 p-3 dark:border-dark-700 dark:bg-dark-950/70">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="text-sm text-accent-500 dark:text-accent-400">
@@ -291,6 +375,7 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
             已发布：<span class="font-semibold text-emerald-600 dark:text-emerald-300">{{ scopeCounts.published }}</span>
             <span class="mx-2 text-accent-300 dark:text-dark-600">/</span>
             已勾选：<span class="font-semibold text-accent-800 dark:text-accent-100">{{ selectedCount }}</span> 个
+            <span v-if="selectedForbiddenCount" class="ml-1 text-xs font-semibold text-rose-600 dark:text-rose-300">（含 {{ selectedForbiddenCount }} 个禁售类目）</span>
           </div>
           <div class="flex flex-wrap items-center gap-2">
             <input
@@ -364,11 +449,11 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
           <colgroup>
             <col class="w-10" />
             <col />
-            <col class="w-[150px]" />
-            <col class="w-[88px]" />
-            <col class="w-[150px]" />
-            <col class="w-[88px]" />
-            <col class="w-[14%]" />
+            <col class="w-[144px]" />
+            <col class="w-[84px]" />
+            <col class="w-[144px]" />
+            <col class="w-[196px]" />
+            <col class="w-[12%]" />
             <col class="w-[176px]" />
           </colgroup>
           <thead class="border-b border-accent-200 bg-accent-50 text-xs text-accent-500 dark:border-dark-700 dark:bg-dark-950/70 dark:text-accent-400">
@@ -378,7 +463,7 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
               <th class="p-2">创建时间</th>
               <th class="p-2">语言</th>
               <th class="p-2">市场</th>
-              <th class="p-2">状态</th>
+              <th class="p-2">状态与进度</th>
               <th class="p-2">来源</th>
               <th class="p-2">操作</th>
             </tr>
@@ -388,7 +473,7 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
               <td class="p-2"><input class="size-4 rounded border-accent-300 text-primary-600" type="checkbox" aria-label="勾选草稿" :checked="selectedDraftIds.includes(draftIdOf(row))" :disabled="props.loading || !draftIdOf(row)" @change="toggleDraftSelection(row, ($event.target as HTMLInputElement).checked)" /></td>
               <td class="min-w-0 p-2">
                 <div class="flex items-center gap-2">
-                  <img v-if="row.mainImage" loading="lazy" decoding="async" :src="row.mainImage" class="size-8 shrink-0 rounded-md object-cover" />
+                  <img v-if="row.mainImage" loading="lazy" decoding="async" referrerpolicy="no-referrer" :src="row.mainImage" class="size-8 shrink-0 rounded-md object-cover" />
                   <div v-else class="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent-100 text-[9px] font-bold text-accent-500 dark:bg-dark-800 dark:text-accent-300">无图</div>
                   <div class="min-w-0">
                     <div class="truncate font-semibold text-accent-950 dark:text-white">{{ draftListTitle(row) || '-' }}</div>
@@ -416,7 +501,14 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
                   @update-targets="emit('updateTargets', row, $event)"
                 />
               </td>
-              <td class="min-w-0 p-2"><span class="inline-flex max-w-full truncate" :class="statusBadgeClass(row.status)" :title="workflowStatusLabel(row.status)">{{ workflowStatusLabel(row.status) }}</span></td>
+              <td class="min-w-0 p-2">
+                <DraftStatusCell
+                  :item="row"
+                  :publish-state="draftPublishStateOf(row)"
+                  :disabled="props.loading || !draftIdOf(row)"
+                  @open-step="emit('edit', row, $event)"
+                />
+              </td>
               <td class="min-w-0 p-2">
                 <div class="truncate font-mono text-xs text-accent-600 dark:text-accent-300" :title="`${row.sourceProductId || row.productId || '-'} · ${row.sourcePlatform || '-'} · ${row.sourceUrl || '-'}`">{{ row.sourceProductId || row.productId || '-' }} · {{ row.sourcePlatform || '-' }} · {{ row.sourceUrl || '-' }}</div>
               </td>
@@ -492,5 +584,17 @@ watch(() => props.drafts.map(draftIdOf), (draftIds) => {
 }
 .draft-filter-tab[aria-pressed='true'] .draft-tab-badge {
   @apply bg-primary-100 text-primary-800 dark:bg-primary-500/25 dark:text-primary-200;
+}
+.draft-prep-chip {
+  @apply inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-accent-200 bg-white px-2.5 py-1 text-xs font-medium text-accent-600 transition hover:border-accent-300 hover:text-accent-900 dark:border-dark-700 dark:bg-dark-900 dark:text-accent-300 dark:hover:border-dark-600 dark:hover:text-white;
+}
+.draft-prep-chip[aria-pressed='true'] {
+  @apply border-primary-300 bg-primary-50 font-semibold text-primary-700 dark:border-primary-500/40 dark:bg-primary-500/15 dark:text-primary-200;
+}
+.draft-prep-chip--danger[aria-pressed='true'] {
+  @apply border-rose-300 bg-rose-50 font-semibold text-rose-700 dark:border-rose-500/40 dark:bg-rose-500/15 dark:text-rose-200;
+}
+.draft-prep-chip--danger-nonzero {
+  @apply border-rose-200 text-rose-600 dark:border-rose-500/30 dark:text-rose-300;
 }
 </style>

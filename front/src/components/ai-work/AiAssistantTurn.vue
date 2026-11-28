@@ -2,9 +2,27 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { PhCaretRight, PhCheck, PhCopy, PhGitBranch } from '@phosphor-icons/vue'
 import type { AiTurnTiming, AiUiPart, BusinessWriteReceipt, CodeProgressSnapshot, PendingToolCall } from '@/types/aiWork'
-import { aiToolStatus, isAiToolPart, presentAssistantParts, type DisplayPart, type ToolPartView } from '@/utils/aiMessagePresentation'
+import {
+  aiToolName,
+  aiToolStatus,
+  fatalModelErrorInfo,
+  isAiToolPart,
+  presentAssistantParts,
+  splitLiveTimeline,
+  summarizeCompletedProcess,
+  type DisplayPart,
+  type ToolPartView,
+} from '@/utils/aiMessagePresentation'
 import { visibleAssistantText } from '@/utils/aiThinkingPresentation'
+import {
+  computeWindowCharsPerSecond,
+  DEER_ACTIVITY_WINDOW_MS,
+  measureTurnActivity,
+  resolveDeerMotion,
+  type ActivitySample,
+} from '@/utils/aiDeerMotion'
 import AiMessagePart from './AiMessagePart.vue'
+import AiRunningDeer from './AiRunningDeer.vue'
 
 const props = defineProps<{
   parts: AiUiPart[]
@@ -65,32 +83,40 @@ function entryCodeProgress(entry: DisplayPart): CodeProgressSnapshot | undefined
   const callId = (entry.part as ToolPartView).toolCallId
   return callId ? props.codeProgress[callId] : undefined
 }
-const liveToolSummary = computed(() => {
+const liveStepBadge = computed(() => {
   if (waitingForUser.value) return ''
   const tools = timeline.value.filter(entry => isAiToolPart(entry.part))
   if (tools.length < 2) return ''
   const done = tools.filter(entry => !['preparing', 'waiting', 'running', 'approval', 'input'].includes(aiToolStatus(entry.part, entry.pendingKind, true))).length
-  return done < tools.length ? `第 ${Math.min(done + 1, tools.length)}/${tools.length} 步` : `已完成 ${done} 步`
+  return `${Math.min(done + 1, tools.length)}/${tools.length}`
 })
-const liveSplit = computed(() => {
-  const entries = timeline.value
-  const keepTail = 3
-  if (entries.length <= keepTail + 2) {
-    return { earlier: [] as DisplayPart[], recent: entries }
-  }
-  let cutoff = 0
-  const maxCutoff = entries.length - keepTail
-  while (cutoff < maxCutoff) {
-    const entry = entries[cutoff]
-    if (isAiToolPart(entry.part)) {
-      const st = aiToolStatus(entry.part, entry.pendingKind, true)
-      if (st !== 'completed' && st !== 'script_error') break
-    }
-    cutoff += 1
-  }
-  if (cutoff < 3) return { earlier: [] as DisplayPart[], recent: entries }
-  return { earlier: entries.slice(0, cutoff), recent: entries.slice(cutoff) }
+const liveSplit = computed(() => splitLiveTimeline(timeline.value))
+const liveLastToolIndex = computed(() => {
+  let last = -1
+  timeline.value.forEach((entry, index) => {
+    if (isAiToolPart(entry.part)) last = index
+  })
+  return last
 })
+function isStandaloneLiveCard(entry: DisplayPart): boolean {
+  if (!isAiToolPart(entry.part)) return false
+  return aiToolName(entry.part) === 'request_user_input' || Boolean(fatalModelErrorInfo(entry.part))
+}
+function isLiveProcessEntry(entry: DisplayPart, recentIndex: number): boolean {
+  if (isStandaloneLiveCard(entry)) return false
+  if (isAiToolPart(entry.part)) return true
+  const timelineIndex = liveSplit.value.earlier.length + recentIndex
+  if (entry.part.type === 'text') return timelineIndex < liveLastToolIndex.value
+  return entry.part.type !== 'file' && entry.part.type !== 'source-url' && entry.part.type !== 'source-document'
+}
+function liveEntryWrapperClass(entry: DisplayPart, recentIndex: number): string {
+  if (!isLiveProcessEntry(entry, recentIndex)) {
+    return recentIndex > 0 || liveSplit.value.earlier.length ? 'pt-2' : ''
+  }
+  const rail = 'border-l-2 border-slate-200/80 pl-3 dark:border-dark-700/80'
+  if (entry.part.type === 'text') return `${rail} pt-1.5 pb-0.5`
+  return `${rail} py-0.5`
+}
 const startedAt = computed(() => Date.parse(props.timing?.started_at ?? ''))
 const finishedAt = computed(() => Date.parse(props.timing?.finished_at ?? ''))
 const duration = computed(() => {
@@ -102,15 +128,13 @@ const duration = computed(() => {
     ? `${minutes}分钟 ${seconds % 60}秒`
     : `${seconds}秒`
 })
-const processLabel = computed(() => {
-  if (waitingForUser.value) {
-    if (hasPendingInput.value && hasPendingApproval.value) return '等待你回复与确认'
-    return hasPendingInput.value ? '等待你回复' : '等待你确认'
-  }
-  return duration.value
-    ? (display.value.live ? `已处理 ${duration.value}` : `用时 ${duration.value}`)
-    : (display.value.live ? '正在处理…' : '处理过程')
+const waitingForUserLabel = computed(() => {
+  if (hasPendingInput.value && hasPendingApproval.value) return '等待你回复与确认'
+  return hasPendingInput.value ? '等待你回复' : '等待你确认'
 })
+const completedProcessSummary = computed(() => (
+  summarizeCompletedProcess(process.value, props.writeReceipts, duration.value)
+))
 const finishedTime = computed(() => Number.isFinite(finishedAt.value)
   ? new Date(finishedAt.value).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
   : '')
@@ -134,33 +158,78 @@ async function copyResponse() {
   } catch { copyError.value = true }
 }
 onBeforeUnmount(() => { clearInterval(timer); clearTimeout(copyTimer) })
-const showProgress = computed(() => {
-  if (!props.active || display.value.hasActiveTool) return false
-  const latest = display.value.timeline.at(-1)?.part
-  // 推理正文不进入聊天视图，只有可见的流式正文可以替代进度提示。
-  return !latest || !(latest.type === 'text' && 'state' in latest && latest.state === 'streaming'
-    && visibleAssistantText(latest.text, true).trim())
+const activity = computed(() => measureTurnActivity(props.parts, props.codeProgress))
+const liveStatusText = computed(() => {
+  if (waitingForUser.value) return waitingForUserLabel.value
+  if (display.value.hasActiveTool) return '正在执行…'
+  if (activity.value.streamingVisibleText) return '正在回复…'
+  return '正在思考…'
+})
+const activitySamples = ref<ActivitySample[]>([])
+const lastActivityAt = ref(Date.now())
+const lastToolTickAt = ref(0)
+let previousCharCount = activity.value.charCount
+let previousProgressCount = activity.value.progressCount
+watch(() => display.value.live, () => {
+  const current = Date.now()
+  activitySamples.value = []
+  lastActivityAt.value = current
+  lastToolTickAt.value = 0
+  previousCharCount = activity.value.charCount
+  previousProgressCount = activity.value.progressCount
+})
+watch(activity, next => {
+  if (!display.value.live) {
+    previousCharCount = next.charCount
+    previousProgressCount = next.progressCount
+    return
+  }
+  const current = Date.now()
+  const deltaChars = Math.max(0, next.charCount - previousCharCount)
+  const deltaProgress = next.progressCount - previousProgressCount
+  previousCharCount = next.charCount
+  previousProgressCount = next.progressCount
+  if (deltaChars > 0 || deltaProgress !== 0) {
+    lastActivityAt.value = current
+    if (deltaProgress > 0) lastToolTickAt.value = current
+    const cutoff = current - DEER_ACTIVITY_WINDOW_MS
+    const kept = activitySamples.value.filter(sample => sample.at >= cutoff)
+    if (deltaChars > 0) kept.push({ at: current, chars: deltaChars })
+    activitySamples.value = kept
+  }
+})
+const deerMotion = computed(() => {
+  const current = Math.max(now.value, lastActivityAt.value)
+  const charsPerSecond = computeWindowCharsPerSecond(activitySamples.value, current)
+  const silentMs = Math.max(0, current - lastActivityAt.value)
+  const recentToolTick = lastToolTickAt.value > 0 && current - lastToolTickAt.value <= 2500
+  return resolveDeerMotion({
+    live: display.value.live,
+    waitingForUser: waitingForUser.value,
+    hasActiveTool: display.value.hasActiveTool,
+    hasExternalWork: hasExternalWork.value,
+    streamingVisibleText: activity.value.streamingVisibleText,
+    charsPerSecond,
+    silentMs,
+    recentToolTick,
+  })
 })
 </script>
 
 <template>
-  <div class="space-y-3" data-testid="ai-assistant-turn">
-    <div v-if="display.live" class="space-y-1" data-testid="ai-turn-timeline">
-      <div class="mb-3 flex items-center justify-between gap-2 border-b border-slate-200 pb-3 text-xs text-slate-500 dark:border-dark-700 dark:text-accent-300">
-        <p data-testid="ai-turn-timing" aria-live="off">{{ processLabel }}</p>
-        <span v-if="liveToolSummary" class="shrink-0 tabular-nums text-slate-400 dark:text-accent-400" data-testid="ai-turn-step-count">{{ liveToolSummary }}</span>
-      </div>
+  <div class="space-y-2.5" data-testid="ai-assistant-turn">
+    <div v-if="display.live" data-testid="ai-turn-timeline">
       <details
         v-if="liveSplit.earlier.length"
-        class="group/earlier min-w-0 pb-1"
+        class="group/earlier min-w-0 border-l-2 border-slate-200/80 pb-1 pl-3 dark:border-dark-700/80"
         data-testid="ai-turn-earlier-steps"
         @toggle="toggleEarlier"
       >
-        <summary class="flex cursor-pointer list-none items-center gap-1.5 py-1 text-xs text-slate-400 hover:text-slate-600 focus-visible:outline-primary-500 dark:text-accent-400 dark:hover:text-accent-200 [&::-webkit-details-marker]:hidden">
-          已完成 {{ liveSplit.earlier.length }} 个前置步骤
-          <PhCaretRight :size="12" class="shrink-0 transition-transform group-open/earlier:rotate-90" aria-hidden="true" />
+        <summary class="flex cursor-pointer list-none items-center gap-1.5 py-0.5 text-xs text-slate-400 hover:text-slate-600 focus-visible:outline-primary-500 dark:text-accent-500 dark:hover:text-accent-300 [&::-webkit-details-marker]:hidden">
+          已完成 {{ liveSplit.earlierToolCount }} 个前置步骤
+          <PhCaretRight :size="11" class="shrink-0 transition-transform group-open/earlier:rotate-90" aria-hidden="true" />
         </summary>
-        <div v-if="earlierOpen" class="mt-1 space-y-1 border-l border-slate-200 pl-3 dark:border-dark-700">
+        <div v-if="earlierOpen" class="mt-1 space-y-1">
           <AiMessagePart
             v-for="entry in liveSplit.earlier"
             :key="entry.key"
@@ -170,24 +239,49 @@ const showProgress = computed(() => {
             :code-progress="entryCodeProgress(entry)"
             :write-receipts="writeReceipts"
             :active="display.live"
+            variant="process"
           />
         </div>
       </details>
-      <AiMessagePart
-        v-for="entry in liveSplit.recent"
+      <div
+        v-for="(entry, recentIndex) in liveSplit.recent"
         :key="entry.key"
-        :part="entry.part"
-        :pending-kind="entry.pendingKind"
-        :progress="entry.progress"
-        :code-progress="entryCodeProgress(entry)"
-        :write-receipts="writeReceipts"
-        :step-elapsed-seconds="stepElapsedSeconds(entry.key)"
-        :active="display.live"
-      />
-      <p v-if="showProgress" role="status" class="flex items-center gap-2 py-1 text-xs text-slate-500 dark:text-accent-300" data-testid="ai-turn-progress">
-        <span class="size-1.5 shrink-0 rounded-full bg-primary-500 motion-safe:animate-pulse" aria-hidden="true" />
-        正在处理…
-      </p>
+        :class="liveEntryWrapperClass(entry, recentIndex)"
+      >
+        <AiMessagePart
+          :part="entry.part"
+          :pending-kind="entry.pendingKind"
+          :progress="entry.progress"
+          :code-progress="entryCodeProgress(entry)"
+          :write-receipts="writeReceipts"
+          :step-elapsed-seconds="stepElapsedSeconds(entry.key)"
+          :active="display.live"
+          :variant="isLiveProcessEntry(entry, recentIndex) ? 'process' : 'default'"
+        />
+      </div>
+      <div
+        role="status"
+        class="flex min-w-0 items-center gap-2 pt-1.5 text-xs text-slate-500 dark:text-accent-400"
+        data-testid="ai-turn-progress"
+      >
+        <AiRunningDeer :gait="deerMotion.gait" :pace="deerMotion.pace" size="sm" />
+        <span
+          class="min-w-0 truncate"
+          :class="waitingForUser ? 'font-medium text-amber-700 dark:text-amber-300' : 'ai-shimmer-text font-medium'"
+          data-testid="ai-turn-status"
+        >{{ liveStatusText }}</span>
+        <span
+          v-if="!waitingForUser && duration"
+          class="shrink-0 tabular-nums text-slate-400 dark:text-accent-500"
+          data-testid="ai-turn-timing"
+          aria-live="off"
+        >· {{ duration }}</span>
+        <span
+          v-if="liveStepBadge"
+          class="ml-auto shrink-0 tabular-nums text-[11px] text-slate-400 dark:text-accent-500"
+          data-testid="ai-turn-step-count"
+        >{{ liveStepBadge }}</span>
+      </div>
     </div>
     <template v-else>
       <details
@@ -196,11 +290,11 @@ const showProgress = computed(() => {
         data-testid="ai-turn-process"
         @toggle="toggleProcess"
       >
-        <summary class="flex cursor-pointer list-none items-center gap-1.5 border-b border-slate-200 pb-3 text-xs text-slate-500 focus-visible:outline-primary-500 dark:border-dark-700 dark:text-accent-300 [&::-webkit-details-marker]:hidden">
-          {{ processLabel }}
-          <PhCaretRight :size="12" class="shrink-0 transition-transform group-open/process:rotate-90" aria-hidden="true" />
+        <summary class="flex min-w-0 cursor-pointer list-none items-center gap-1.5 py-0.5 text-xs text-slate-500 transition-colors hover:text-slate-700 focus-visible:outline-primary-500 dark:text-accent-400 dark:hover:text-accent-200 [&::-webkit-details-marker]:hidden">
+          <span class="min-w-0 truncate">{{ completedProcessSummary }}</span>
+          <PhCaretRight :size="12" class="shrink-0 text-slate-400 transition-transform group-open/process:rotate-90 dark:text-accent-500" aria-hidden="true" />
         </summary>
-        <div v-if="processOpen" class="mt-2 space-y-1">
+        <div v-if="processOpen" class="mt-1.5 space-y-1 border-l-2 border-slate-200/80 pl-3 dark:border-dark-700/80">
           <AiMessagePart
             v-for="entry in process"
             :key="entry.key"
@@ -208,10 +302,11 @@ const showProgress = computed(() => {
             :pending-kind="entry.pendingKind"
             :write-receipts="writeReceipts"
             :active="active"
+            variant="process"
           />
         </div>
       </details>
-      <p v-else-if="duration" class="border-b border-slate-200 pb-3 text-xs text-slate-500 dark:border-dark-700 dark:text-accent-300" data-testid="ai-turn-timing">{{ processLabel }}</p>
+      <p v-else-if="duration" class="text-xs text-slate-400 dark:text-accent-500" data-testid="ai-turn-timing">用时 {{ duration }}</p>
 
       <div v-if="display.attention.length" class="space-y-2" data-testid="ai-turn-attention">
         <AiMessagePart

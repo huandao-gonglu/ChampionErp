@@ -1015,6 +1015,14 @@ export interface BackendMercadoLibreSiteToSell {
   sale_terms?: Array<Record<string, unknown>>
 }
 
+export interface BackendDraftCategoryBlock {
+  code?: string
+  reason?: string
+  matched_category_ids?: Array<string>
+  matched_forbidden_ids?: Array<string>
+  checked_at?: string
+}
+
 export interface BackendDraftTargetSite {
   platform?: string
   site?: string
@@ -1027,6 +1035,7 @@ export interface BackendDraftTargetSite {
   attributes?: Record<string, unknown>
   validation_errors?: Array<unknown>
   category_precheck?: Record<string, unknown>
+  category_block?: BackendDraftCategoryBlock
   publish_status?: string
   status?: string
   last_precheck?: Record<string, unknown>
@@ -1068,6 +1077,7 @@ export interface BackendPlatformDraft {
   allow_gtin_exemption?: boolean
   shipping?: Record<string, unknown>
   category_precheck?: Record<string, unknown>
+  category_block?: BackendDraftCategoryBlock
   last_precheck?: Record<string, unknown>
   last_precheck_target?: Record<string, unknown>
   last_publish_task?: Record<string, unknown>

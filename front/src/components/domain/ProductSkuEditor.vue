@@ -297,7 +297,7 @@ function add() {
                   :aria-label="`预览 ${row.name} 的图片`"
                   @click="preview = { url: skuImageUrl(row), name: row.name }"
                 >
-                  <img :key="skuImageUrl(row)" :src="skuImageUrl(row)" :alt="`${row.name} 的图片`" loading="lazy" class="size-full object-contain" @error="failedImages.add(skuImageUrl(row))" />
+                  <img :key="skuImageUrl(row)" :src="skuImageUrl(row)" referrerpolicy="no-referrer" :alt="`${row.name} 的图片`" loading="lazy" class="size-full object-contain" @error="failedImages.add(skuImageUrl(row))" />
                 </button>
                 <span
                   v-else
@@ -421,7 +421,7 @@ function add() {
   </section>
 
   <WorkspaceDialog :open="Boolean(preview)" title="SKU 图片预览" @close="preview = null">
-    <img v-if="preview" :src="preview.url" :alt="`${preview.name} 的图片完整预览`" class="mx-auto max-h-[70dvh] max-w-full object-contain" />
+    <img v-if="preview" :src="preview.url" referrerpolicy="no-referrer" :alt="`${preview.name} 的图片完整预览`" class="mx-auto max-h-[70dvh] max-w-full object-contain" />
   </WorkspaceDialog>
 </template>
 

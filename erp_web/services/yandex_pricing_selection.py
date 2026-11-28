@@ -57,10 +57,18 @@ def unify_yandex_warehouse(session, items, results):
                         'total_cny': str(sum(costs[key] for costs in costs_by_quote)) if all(key in costs for costs in costs_by_quote) else None}
                        for key in sorted({key for costs in costs_by_quote for key in costs})],
     }
-    session.shipping.yandex_plans = [plan for plan in session.shipping.yandex_plans if plan['publish_warehouse_id'] == warehouse]
-    changed = [(index, targets) for index, targets, quotes in entries
-               if any(quote.get('calculation_basis', {}).get('shipping_evidence', {}).get('fulfillment_plan', {}).get('publish_warehouse_id') != warehouse for quote in quotes)]
-    recalculated = session.calculate_many([{**items[index]['input'], 'targets': targets} for index, targets in changed])
+    original_plans = session.shipping.yandex_plans
+    session.shipping.yandex_plans = [plan for plan in original_plans if plan['publish_warehouse_id'] == warehouse]
+    try:
+        changed = [(index, targets) for index, targets, quotes in entries
+                   if any(quote.get('calculation_basis', {}).get('shipping_evidence', {}).get('fulfillment_plan', {}).get('publish_warehouse_id') != warehouse for quote in quotes)]
+        recalculated = (
+            session.calculate_many([{**items[index]['input'], 'targets': targets} for index, targets in changed])
+            if changed
+            else []
+        )
+    finally:
+        session.shipping.yandex_plans = original_plans
     for (index, _), replacement in zip(changed, recalculated, strict=True):
         result = results[index]
         replacements = iter(replacement.get('results', []))

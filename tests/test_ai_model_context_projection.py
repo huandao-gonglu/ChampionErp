@@ -210,3 +210,52 @@ def test_projection_preserves_native_request_metadata_and_current_results():
 
     asyncio.run(project_model_request(_Ctx({"current"}), request_context=context, handler=handler))
     assert context.messages[-1].parts[0].content == "x" * 9000
+
+
+def test_request_user_input_answer_preserves_prior_tool_returns_for_prefix_cache():
+    """用户回答 request_user_input 属于同一任务中途续跑，不得改写前面大回执导致前缀缓存击穿。"""
+    from pydantic_ai.models import ModelRequestContext, ModelRequestParameters
+    from pydantic_ai.models.function import FunctionModel
+
+    large_return = {"ok": True, "summary": "x" * 6000}
+    messages = [
+        ModelRequest(parts=[UserPromptPart("处理选中的 20 个草稿")]),
+        ModelResponse(parts=[ToolCallPart("run_code", {"code": "1"}, tool_call_id="rc1")]),
+        ModelRequest(parts=[ToolReturnPart("run_code", large_return, tool_call_id="rc1")]),
+        ModelResponse(parts=[ToolCallPart("request_user_input", {"question": "库存多少？"}, tool_call_id="ask1")]),
+        ModelRequest(parts=[ToolReturnPart("request_user_input", {"answer": "10"}, tool_call_id="ask1")]),
+        ModelRequest(parts=[UserPromptPart("10")]),
+    ]
+    context = ModelRequestContext(
+        model=FunctionModel(lambda *_: ModelResponse(parts=[TextPart("已按 10 写入")])),
+        messages=messages,
+        model_settings=None,
+        model_request_parameters=ModelRequestParameters(),
+    )
+
+    async def handler_resume(projected):
+        ret = next(p for m in projected.messages for p in m.parts if isinstance(p, ToolReturnPart) and p.tool_call_id == "rc1")
+        assert ret.content == large_return
+        return ModelResponse(parts=[TextPart("已按 10 写入")])
+
+    asyncio.run(project_model_request(_Ctx({"run_code"}), request_context=context, handler=handler_resume))
+
+    # 开启全新用户任务回合时，旧回合的大回执仍按原规则折叠为 history_preview。
+    new_turn_messages = [
+        *messages,
+        ModelResponse(parts=[TextPart("已完成。")]),
+        ModelRequest(parts=[UserPromptPart("再帮我查一下订单")]),
+    ]
+    context_new = ModelRequestContext(
+        model=FunctionModel(lambda *_: ModelResponse(parts=[TextPart("好的")])),
+        messages=new_turn_messages,
+        model_settings=None,
+        model_request_parameters=ModelRequestParameters(),
+    )
+
+    async def handler_new_turn(projected):
+        ret = next(p for m in projected.messages for p in m.parts if isinstance(p, ToolReturnPart) and p.tool_call_id == "rc1")
+        assert isinstance(ret.content, dict) and ret.content.get("history_preview") is True
+        return ModelResponse(parts=[TextPart("好的")])
+
+    asyncio.run(project_model_request(_Ctx({"run_code"}), request_context=context_new, handler=handler_new_turn))

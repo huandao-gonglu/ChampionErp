@@ -533,7 +533,7 @@ function confirmDeleteAction() {
                     title="点击查看商品主图"
                     class="shrink-0 overflow-hidden rounded-xl border border-accent-200/80 bg-accent-50 transition hover:opacity-90 dark:border-dark-600 dark:bg-dark-800"
                   >
-                    <img :src="item.mainImage" loading="lazy" decoding="async" :alt="item.title || '商品主图'" class="size-12 object-cover" />
+                    <img :src="item.mainImage" loading="lazy" decoding="async" referrerpolicy="no-referrer" :alt="item.title || '商品主图'" class="size-12 object-cover" />
                   </a>
                   <div v-else class="grid size-12 shrink-0 place-items-center rounded-xl border border-accent-200/80 bg-accent-100/70 text-accent-400 dark:border-dark-700 dark:bg-dark-800">
                     <PhImage :size="18" aria-hidden="true" />

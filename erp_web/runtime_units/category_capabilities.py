@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import threading
 from typing import Annotated, Any
 
@@ -14,7 +15,10 @@ from erp_web.context import get_context
 from erp_web.product_model import apply_category_selection
 from erp_web.runtime_units.category_store import fetch_category_record
 from erp_web.runtime_units.draft_publish_context import draft_for_publish_target
-from erp_web.services.forbidden_category_service import forbidden_category_issue
+from erp_web.services.forbidden_category_service import (
+    forbidden_category_issue,
+    forbidden_category_match,
+)
 from erp_web.runtime_units.market_capability_support import (
     CategoryRecordLoader,
     MarketPrepareStore,
@@ -79,6 +83,41 @@ def _category_candidate_option(
     )
 
 
+def _save_category_block(
+    product_store: MarketPrepareStore,
+    draft_id: str,
+    platform: str,
+    site: str,
+    block: dict[str, Any],
+) -> None:
+    writer = getattr(product_store, "save_draft_publish_state", None)
+    if not callable(writer):
+        return
+    try:
+        writer(draft_id, platform, site, {"category_block": block})
+    except Exception:
+        return
+
+
+def _build_category_block(
+    code: str,
+    reason: str,
+    *,
+    matched_category_ids: list[str] | None = None,
+    matched_forbidden_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "code": text(code).upper(),
+        "reason": text(reason),
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if matched_category_ids:
+        payload["matched_category_ids"] = list(dict.fromkeys(text(v) for v in matched_category_ids if text(v)))
+    if matched_forbidden_ids:
+        payload["matched_forbidden_ids"] = list(dict.fromkeys(text(v) for v in matched_forbidden_ids if text(v)))
+    return payload
+
+
 def match_category(
     request: CategoryMatchRequest,
     *,
@@ -127,10 +166,28 @@ def match_category(
         )
         if status == "unresolved":
             failure_code = text(failure.get("code"))
+            failure_details = (
+                dict(failure.get("details"))
+                if isinstance(failure.get("details"), Mapping)
+                else {}
+            )
             if failure_code == "CATEGORY_FORBIDDEN_NO_ALTERNATIVE":
+                reason_text = text(failure.get("message")) or "最匹配的类目属于禁售范围，且无合规替代类目。"
+                _save_category_block(
+                    product_store,
+                    request.draft_id,
+                    platform,
+                    text(target.get("site")),
+                    _build_category_block(
+                        failure_code,
+                        reason_text,
+                        matched_category_ids=list(failure_details.get("matched_category_ids") or []),
+                        matched_forbidden_ids=list(failure_details.get("matched_forbidden_ids") or []),
+                    ),
+                )
                 raise BusinessCapabilityError(
                     failure_code,
-                    text(failure.get("message")) or "最匹配的类目属于禁售范围，且无合规替代类目。",
+                    reason_text,
                     retryable=False,
                 )
             candidate_options: list[CapabilityInputOption] = []
@@ -140,9 +197,20 @@ def match_category(
                 option = _category_candidate_option(candidate)
                 if option is not None:
                     candidate_options.append(option)
+            unresolved_reason = text(failure.get("message")) or "类目匹配需要人工确认。"
+            _save_category_block(
+                product_store,
+                request.draft_id,
+                platform,
+                text(target.get("site")),
+                _build_category_block(
+                    failure_code or "CATEGORY_MATCH_UNRESOLVED",
+                    unresolved_reason,
+                ),
+            )
             raise CapabilityInputRequired(
                 failure_code or "CATEGORY_MATCH_UNRESOLVED",
-                text(failure.get("message")) or "类目匹配需要人工确认。",
+                unresolved_reason,
                 key="category_id",
                 label="平台类目",
                 reason=text(failure.get("message")) or "请选择一个候选类目。",
@@ -152,6 +220,14 @@ def match_category(
         if status != "completed" or not bool(match_result.get("ok")):
             code = text(failure.get("code")) or "CATEGORY_MATCH_FAILED"
             message = text(failure.get("message")) or "类目匹配失败。"
+            if code == "CATEGORY_FORBIDDEN":
+                _save_category_block(
+                    product_store,
+                    request.draft_id,
+                    platform,
+                    text(target.get("site")),
+                    _build_category_block(code, message),
+                )
             if code == "INPUT_INVALID":
                 raise CapabilityInputRequired(
                     code,
@@ -214,6 +290,21 @@ def match_category(
         if issue := forbidden_category_issue(
             platform, selected_category_id, categories, ancestor_ids=ancestors,
         ):
+            match = forbidden_category_match(
+                platform, selected_category_id, categories, ancestor_ids=ancestors,
+            )
+            _save_category_block(
+                product_store,
+                request.draft_id,
+                platform,
+                text(target.get("site")),
+                _build_category_block(
+                    "CATEGORY_FORBIDDEN",
+                    str(issue["message"]),
+                    matched_category_ids=[selected_category_id],
+                    matched_forbidden_ids=[str(match["matched_category_id"])] if match and match.get("matched_category_id") else [],
+                ),
+            )
             raise BusinessCapabilityError("CATEGORY_FORBIDDEN", str(issue["message"]), retryable=False)
     projected = product_with_target(product, platform, target_draft)
     updated_product = apply_category_selection(projected, platform, record)
@@ -225,6 +316,7 @@ def match_category(
                 record.get("description_category_id")
             ),
             "category_path": category_path(record),
+            "category_block": {},
         }
     )
     invalidated = invalidate_target_publish_preparation(
@@ -295,6 +387,7 @@ def match_category(
         query=query,
         model_confidence=confidence,
         changed=changed,
+        updated_at=text(saved.get("updated_at")),
     )
 
 
@@ -308,7 +401,8 @@ class CategoryCapabilityScope:
 
 CATEGORY_MATCH_TOOL = "category_match"
 CATEGORY_MATCH_BATCH_TOOL = "category_match_batch"
-_CATEGORY_MATCH_BATCH_MAX_WORKERS = 10
+# 每个草稿内部会连续触发标准化与类目精排两次以上模型调用；6 并发兼顾 20 品吞吐与上游连接稳定，避免 10 路瞬时尖峰引发 5xx/断流。
+_CATEGORY_MATCH_BATCH_MAX_WORKERS = 6
 _CATEGORY_MATCH_BATCH_RETRYABLE_FAILURE_LIMIT = 3
 
 
@@ -363,6 +457,7 @@ def match_categories_for_drafts(
                 query=matched.query,
                 model_confidence=matched.model_confidence,
                 changed=matched.changed,
+                updated_at=matched.updated_at,
             )
         except CapabilityInputRequired as exc:
             options = [

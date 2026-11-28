@@ -28,6 +28,7 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    RetryPromptPart,
     ThinkingPart,
     ToolCallPart,
     ToolReturnPart,
@@ -143,10 +144,36 @@ def project_model_context_for_model(
     return strip_stale_thinking(messages, current_run_id=current_run_id)
 
 
+def _is_user_input_answer_request(messages: Sequence[ModelMessage], index: int) -> bool:
+    """判断该 UserPromptPart 是否属于回答 request_user_input 的中途续跑，而非开启新任务回合。"""
+    current = messages[index]
+    if isinstance(current, ModelRequest) and any(
+        isinstance(part, ToolReturnPart) and part.tool_name == "request_user_input"
+        for part in current.parts
+    ):
+        return True
+    if index > 0:
+        previous = messages[index - 1]
+        if isinstance(previous, ModelRequest) and any(
+            isinstance(part, ToolReturnPart) and part.tool_name == "request_user_input"
+            for part in previous.parts
+        ):
+            return True
+    return False
+
+
 def _prior_tool_result_previews(messages: list[ModelMessage]) -> list[ModelMessage]:
-    """旧用户回合的大工具结果仅作摘要；本轮结果和所有原生调用配对原样保留。"""
-    boundary = max((i for i, m in enumerate(messages)
-                    if isinstance(m, ModelRequest) and any(isinstance(p, UserPromptPart) for p in m.parts)), default=0)
+    """旧用户回合的大工具结果仅作摘要；本轮结果（含 request_user_input 回答续跑）原样保留以保住前缀缓存。"""
+    boundary = max(
+        (
+            i
+            for i, m in enumerate(messages)
+            if isinstance(m, ModelRequest)
+            and any(isinstance(p, UserPromptPart) for p in m.parts)
+            and not _is_user_input_answer_request(messages, i)
+        ),
+        default=0,
+    )
     projected = []
     for index, message in enumerate(messages):
         if index >= boundary or not isinstance(message, ModelRequest):
@@ -214,6 +241,37 @@ async def project_model_request(
                     part = dataclasses.replace(part, content=content)
             parts.append(part)
         shared_messages.append(dataclasses.replace(message, parts=parts))
+    # 将脚本失败回执与额度耗尽收尾提示附加到最后一条请求消息尾部，避免动态修改系统前缀击穿前缀缓存，
+    # 同时让耗尽工具额度的 Agent 在紧邻历史尾部收到明确禁止继续调用业务工具的信号。
+    deps = getattr(ctx, "deps", None)
+    tool_runtime = getattr(deps, "tool_runtime", None)
+    if shared_messages and isinstance(shared_messages[-1], ModelRequest):
+        last = shared_messages[-1]
+        tail_parts = list(last.parts)
+        tail_changed = False
+        support = getattr(tool_runtime, "run_support", None)
+        if support is not None:
+            failure_notice = support.code_failure_instructions(shared_messages)
+            if failure_notice:
+                attached = False
+                for idx, part in enumerate(tail_parts):
+                    if isinstance(part, RetryPromptPart) and part.tool_name == "run_code" and isinstance(part.content, str):
+                        tail_parts[idx] = dataclasses.replace(part, content=f"{part.content}\n\n{failure_notice}")
+                        attached = True
+                        break
+                if not attached:
+                    tail_parts.append(UserPromptPart(failure_notice))
+                tail_changed = True
+        limit = getattr(tool_runtime, "max_tool_calls", None)
+        usage = getattr(ctx, "usage", None)
+        if limit is not None and usage is not None and getattr(usage, "tool_calls", 0) >= limit:
+            tail_parts.append(UserPromptPart(
+                f"本轮工具调用额度已耗尽（上限 {limit} 次），所有业务与检索工具均已关闭。"
+                "严禁再调用任何业务或检索工具，请立即仅基于已有信息提交最终结果。"
+            ))
+            tail_changed = True
+        if tail_changed:
+            shared_messages[-1] = dataclasses.replace(last, parts=tail_parts)
     # model_id/streaming 是原生 init=False 字段，dataclasses.replace 会重置它们。
     projected = copy(request_context)
     projected.messages = shared_messages

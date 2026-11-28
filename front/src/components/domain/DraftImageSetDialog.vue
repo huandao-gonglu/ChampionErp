@@ -156,7 +156,7 @@ defineExpose({ restoreAction })
         <p class="text-sm">统一风格：{{ resultPlan.style }}</p>
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <article v-for="result in results" :key="result.page.key" class="rounded-xl border border-slate-200 p-3 dark:border-dark-700" :data-set-page="result.page.key">
-            <a v-if="result.asset" :href="imageUrl(result.asset)" target="_blank" rel="noopener" :aria-label="`查看套图 ${result.page.title}`"><img :src="imageUrl(result.asset)" :alt="result.page.title" class="aspect-square w-full rounded-lg object-contain" /></a>
+            <a v-if="result.asset" :href="imageUrl(result.asset)" target="_blank" rel="noopener noreferrer" :aria-label="`查看套图 ${result.page.title}`"><img :src="imageUrl(result.asset)" referrerpolicy="no-referrer" :alt="result.page.title" class="aspect-square w-full rounded-lg object-contain" /></a>
             <div v-else class="flex aspect-square items-center justify-center rounded-lg bg-slate-50 p-4 text-center text-sm dark:bg-dark-800">{{ result.item?.outcome_unknown ? '结果待核对' : result.item?.status === 'failed' ? result.item.error : result.item?.status === 'running' ? '生成中…' : result.item?.status === 'success' ? '正在读取结果…' : '等待生成' }}</div>
             <p class="mt-3 font-medium">{{ result.page.title }}</p>
             <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">{{ targetLabel(result.page) }}</p>
@@ -178,7 +178,7 @@ defineExpose({ restoreAction })
         <article v-for="(page, index) in plan.pages" :key="page.key" class="space-y-3 rounded-xl border border-slate-200 p-4 dark:border-dark-700">
           <label class="block text-sm font-medium">第 {{ index + 1 }} 张 · {{ targetLabel(page) }}{{ page.role === 'main' ? ' · 主图' : '' }}<input v-model="page.title" class="input mt-2" maxlength="100" required :disabled="busy" /></label>
           <label class="block text-sm">设计内容<textarea v-model="page.prompt" class="input mt-2" rows="4" maxlength="4000" required :disabled="busy" /></label>
-          <div class="flex flex-wrap gap-2"><img v-for="id in page.source_image_ids" :key="id" :src="byId.has(id) ? imageUrl(byId.get(id)!) : ''" alt="本页参考素材" class="h-16 w-16 rounded object-contain" /></div>
+          <div class="flex flex-wrap gap-2"><img v-for="id in page.source_image_ids" :key="id" :src="byId.has(id) ? imageUrl(byId.get(id)!) : ''" referrerpolicy="no-referrer" alt="本页参考素材" class="h-16 w-16 rounded object-contain" /></div>
         </article>
         <p class="muted">生成 {{ plan.pages.length }} 张新图（共用 {{ plan.pages.filter(page => page.scope !== 'sku').length }} 张，SKU {{ plan.pages.filter(page => page.scope === 'sku').length }} 张），不立即替换当前草稿图片。</p>
         <div class="flex justify-end gap-3"><button class="btn btn-outline" type="button" :disabled="busy" @click="plan = null">返回调整</button><button class="btn btn-primary" type="submit" :disabled="busy || !!generateReason">{{ busy ? '正在提交…' : `开始生成 ${plan.pages.length} 张` }}</button></div>
@@ -197,7 +197,7 @@ defineExpose({ restoreAction })
           <fieldset v-if="includeCommon" class="space-y-3">
             <legend class="mb-3 text-sm font-medium">共用图参考素材（{{ sourceIds.length }} / 12）</legend>
             <div class="grid grid-cols-3 gap-3 sm:grid-cols-5">
-              <label v-for="image in candidates" :key="image.id" class="relative cursor-pointer rounded-lg border border-slate-200 p-1 dark:border-dark-700"><img :src="imageUrl(image)" alt="套图参考素材" class="aspect-square w-full object-contain" /><input v-model="sourceIds" type="checkbox" :value="image.id" :aria-label="`套图参考 ${image.id}`" class="absolute left-2 top-2 h-5 w-5" /></label>
+              <label v-for="image in candidates" :key="image.id" class="relative cursor-pointer rounded-lg border border-slate-200 p-1 dark:border-dark-700"><img :src="imageUrl(image)" referrerpolicy="no-referrer" alt="套图参考素材" class="aspect-square w-full object-contain" /><input v-model="sourceIds" type="checkbox" :value="image.id" :aria-label="`套图参考 ${image.id}`" class="absolute left-2 top-2 h-5 w-5" /></label>
             </div>
             <label class="block text-sm font-medium">共用图张数<select v-model.number="count" class="input mt-2"><option v-for="number in [2, 3, 4, 5, 6, 7, 8]" :key="number" :value="number">{{ number }} 张</option></select></label>
           </fieldset>
@@ -206,7 +206,7 @@ defineExpose({ restoreAction })
             <div class="grid max-h-80 grid-cols-2 gap-3 overflow-y-auto sm:grid-cols-3">
               <label v-for="group in skuGroups" :key="group.assetId" class="flex cursor-pointer items-center gap-3 rounded-lg border border-slate-200 p-2 text-sm dark:border-dark-700">
                 <input v-model="skuSourceIds" type="checkbox" :value="group.assetId" :disabled="!group.image" :aria-label="`生成 SKU 图 ${group.assetId}`" />
-                <img v-if="group.image" :src="imageUrl(group.image)" alt="SKU 原图" class="h-14 w-14 rounded object-contain" />
+                <img v-if="group.image" :src="imageUrl(group.image)" referrerpolicy="no-referrer" alt="SKU 原图" class="h-14 w-14 rounded object-contain" />
                 <span>{{ group.skus.map(sku => sku.name).join('、') }}<span v-if="!group.image" class="block text-rose-600">素材缺失</span></span>
               </label>
             </div>

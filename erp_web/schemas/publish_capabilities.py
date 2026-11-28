@@ -30,6 +30,10 @@ class ProductPublishValidateBatchRequest(BaseModel):
     ] = Field(min_length=1, max_length=100, description="待批量执行只读发布校验的草稿 ID 列表。")
     platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    include_sku_summaries: bool = Field(
+        default=False,
+        description="默认省略逐 SKU 摘要列表以保持批量预检紧凑；仅需逐 SKU 售价/库存明细时设为 true。",
+    )
 
 
 class ProductPublishPrepareRequest(ProductPublishValidateRequest):
@@ -155,6 +159,7 @@ class ProductPublishValidateBatchItem(BaseModel):
     draft_id: Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]
     ok: bool
     passed: bool = False
+    sku_count: int = Field(default=0, ge=0)
     validation: ProductPublishValidationResult | None = None
     error_code: Annotated[TrimmedText, StringConstraints(max_length=120)] = ""
     error: Annotated[TrimmedText, StringConstraints(max_length=1000)] = ""
@@ -185,6 +190,7 @@ class ProductPublishPrepareResult(BaseModel):
 
     validation: ProductPublishValidationResult
     public_access_checks: list[ImagePublicAccessCheck] = Field(default_factory=list)
+    updated_at: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
 
 
 class PublishRequestConfirmation(BaseModel):

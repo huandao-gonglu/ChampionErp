@@ -167,6 +167,7 @@ def test_blocking_io_capabilities_thread_bounded_timeout() -> None:
     blocking_io_capabilities = (
         "category_search",
         "category_attributes_query",
+        "category_attributes_query_batch",
         "category_attribute_values_query",
         "category_precheck",
     )

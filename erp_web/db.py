@@ -493,7 +493,6 @@ _PUBLISH_FAILED_STATUSES = frozenset(
     {
         "failed",
         "real_publish_failed",
-        "not_ready",
         "interrupted",
         "outcome_unknown",
         "needs_attention",
@@ -1789,7 +1788,7 @@ class ErpDatabase:
         return [_record_from_row(row, drafts_by_product.get(row["product_id"], {})) for row in rows]
 
     def list_draft_rows(self, scope: str = "active", limit: int = 2000) -> list[dict[str, Any]]:
-        """草稿箱只投影列表与市场选择所需字段，按真实发布态筛选后再截取行数。"""
+        """草稿箱只投影列表、市场选择与 6 步进度所需轻量字段，按真实发布态筛选后再截取行数。"""
         resolved_limit = max(1, int(limit or 2000))
         with self._connect() as conn:
             jobs_by_draft = self._load_draft_publish_jobs_map(conn)
@@ -1800,6 +1799,63 @@ class ErpDatabase:
                        p.source_platform, p.source_url,
                        json_extract(d.draft_json, '$.source_product_id') AS source_product_id,
                        json_extract(d.draft_json, '$.title') AS title,
+                       CASE WHEN length(trim(coalesce(json_extract(d.draft_json, '$.description'), ''))) > 0 THEN 1 ELSE 0 END AS has_description,
+                       coalesce(nullif(json_extract(d.draft_json, '$.copy_generated_at'), ''),
+                                json_extract(d.draft_json, '$.copyGeneratedAt'), '') AS copy_generated_at,
+                       coalesce(nullif(json_extract(d.draft_json, '$.copy_source'), ''),
+                                json_extract(d.draft_json, '$.copySource'), '') AS copy_source,
+                       CASE WHEN json_type(d.draft_json, '$.images') = 'array'
+                            THEN json_array_length(d.draft_json, '$.images') ELSE 0 END AS image_count,
+                       coalesce(json_extract(d.draft_json, '$.image_preparation.mode'), '') AS image_preparation_mode,
+                       coalesce(json_extract(d.draft_json, '$.images_manually_modified_at'), '') AS images_manually_modified_at,
+                       (SELECT count(*) FROM json_each(
+                            CASE WHEN json_type(d.draft_json, '$.images') = 'array'
+                                 THEN d.draft_json -> '$.images' ELSE json('[]') END
+                        ) img
+                        JOIN media_assets m ON m.product_id = d.product_id
+                         AND m.asset_id = coalesce(
+                             json_extract(img.value, '$.asset_id'),
+                             json_extract(img.value, '$.assetId'),
+                             CASE WHEN img.type = 'text' THEN img.value END
+                         )
+                        WHERE m.origin IN ('ai_translated', 'ai_generated', 'local_upload', 'chatgpt_import')
+                       ) AS processed_image_count,
+                       coalesce(nullif(json_extract(d.draft_json, '$.category_id'), ''),
+                                json_extract(d.draft_json, '$.categoryId'), '') AS root_category_id,
+                       coalesce(nullif(json_extract(d.draft_json, '$.description_category_id'), ''),
+                                json_extract(d.draft_json, '$.descriptionCategoryId'), '') AS root_description_category_id,
+                       coalesce(nullif(json_extract(d.draft_json, '$.category_path'), ''),
+                                json_extract(d.draft_json, '$.categoryPath'), '') AS root_category_path,
+                       coalesce(d.draft_json -> '$.category_block', d.draft_json -> '$.categoryBlock', json('{}')) AS root_category_block,
+                       (SELECT count(*) FROM json_each(
+                            CASE WHEN json_type(d.draft_json, '$.attributes') = 'object'
+                                 THEN d.draft_json -> '$.attributes' ELSE json('{}') END
+                        ) ra WHERE ra.value IS NOT NULL AND trim(CAST(ra.value AS TEXT)) NOT IN ('', '[]', '{}')) AS root_attribute_count,
+                       (SELECT count(*) FROM json_each(
+                            CASE WHEN json_type(d.draft_json, '$.validation_errors') = 'array'
+                                 THEN d.draft_json -> '$.validation_errors' ELSE json('[]') END
+                        ) rv WHERE rv.type = 'object' AND upper(coalesce(json_extract(rv.value, '$.code'), '')) = 'NEED_REVIEW_ATTRIBUTES') AS root_review_attribute_count,
+                       coalesce(d.draft_json -> '$.last_precheck', d.draft_json -> '$.lastPrecheck', json('{}')) AS root_last_precheck,
+                       (SELECT json_group_array(json_object(
+                            'applied', CASE WHEN json_extract(s.value, '$.pricing.applied') = 1 THEN 1 ELSE 0 END,
+                            'targets', coalesce(
+                                (SELECT json_group_array(pt.key) FROM json_each(
+                                    CASE WHEN json_type(s.value, '$.pricing.targets') = 'object'
+                                         THEN s.value -> '$.pricing.targets' ELSE json('{}') END
+                                ) pt),
+                                json('[]')
+                            ),
+                            'attr_targets', coalesce(
+                                (SELECT json_group_array(atgt.key) FROM json_each(
+                                    CASE WHEN json_type(s.value, '$.attributes_by_target') = 'object'
+                                         THEN s.value -> '$.attributes_by_target' ELSE json('{}') END
+                                ) atgt WHERE atgt.type = 'object' AND trim(CAST(atgt.value AS TEXT)) NOT IN ('', '{}')),
+                                json('[]')
+                            )
+                        )) FROM json_each(
+                            CASE WHEN json_type(d.draft_json, '$.sku_items') = 'array'
+                                 THEN d.draft_json -> '$.sku_items' ELSE json('[]') END
+                        ) s WHERE s.type = 'object' AND coalesce(json_extract(s.value, '$.selected'), 0) != 0) AS selected_skus_json,
                        coalesce(nullif(json_extract(d.draft_json, '$.publish_status'), ''),
                                 json_extract(d.draft_json, '$.publishStatus'), '') AS publish_status,
                        (SELECT m.preview_url FROM media_assets m WHERE m.product_id = d.product_id
@@ -1810,6 +1866,19 @@ class ErpDatabase:
                            'language', json_extract(t.value, '$.language'),
                            'status', json_extract(t.value, '$.status'),
                            'publish_status', coalesce(nullif(json_extract(t.value, '$.publish_status'), ''), json_extract(t.value, '$.publishStatus')),
+                           'category_id', coalesce(nullif(json_extract(t.value, '$.category_id'), ''), json_extract(t.value, '$.categoryId'), ''),
+                           'description_category_id', coalesce(nullif(json_extract(t.value, '$.description_category_id'), ''), json_extract(t.value, '$.descriptionCategoryId'), ''),
+                           'category_path', coalesce(nullif(json_extract(t.value, '$.category_path'), ''), json_extract(t.value, '$.categoryPath'), ''),
+                           'category_block', coalesce(t.value -> '$.category_block', t.value -> '$.categoryBlock', json('{}')),
+                           'attribute_count', (SELECT count(*) FROM json_each(
+                               CASE WHEN json_type(t.value, '$.attributes') = 'object'
+                                    THEN t.value -> '$.attributes' ELSE json('{}') END
+                           ) ta WHERE ta.value IS NOT NULL AND trim(CAST(ta.value AS TEXT)) NOT IN ('', '[]', '{}')),
+                           'review_attribute_count', (SELECT count(*) FROM json_each(
+                               CASE WHEN json_type(t.value, '$.validation_errors') = 'array'
+                                    THEN t.value -> '$.validation_errors' ELSE json('[]') END
+                           ) tv WHERE tv.type = 'object' AND upper(coalesce(json_extract(tv.value, '$.code'), '')) = 'NEED_REVIEW_ATTRIBUTES'),
+                           'last_precheck', coalesce(t.value -> '$.last_precheck', t.value -> '$.lastPrecheck', json('{}')),
                            'sites_to_sell', (SELECT json_group_array(json_object(
                                'site_id', coalesce(json_extract(m.value, '$.site_id'), json_extract(m.value, '$.siteId')),
                                'logistic_type', coalesce(json_extract(m.value, '$.logistic_type'), json_extract(m.value, '$.logisticType'))
@@ -1825,7 +1894,35 @@ class ErpDatabase:
             item = dict(row)
             raw_status = str(item.pop("raw_status") or "")
             raw_publish_status = str(item.get("publish_status") or "")
-            targets = json_loads(item.pop("markets"), []) or [{"platform": row["platform"], "site": row["site"]}]
+            has_description = bool(item.pop("has_description", 0))
+            copy_generated_at = str(item.pop("copy_generated_at", "") or "")
+            copy_source = str(item.pop("copy_source", "") or "")
+            image_count = int(item.pop("image_count", 0) or 0)
+            image_preparation_mode = str(item.pop("image_preparation_mode", "") or "")
+            images_manually_modified_at = str(item.pop("images_manually_modified_at", "") or "")
+            processed_image_count = int(item.pop("processed_image_count", 0) or 0)
+            root_category_id = str(item.pop("root_category_id", "") or "")
+            root_description_category_id = str(item.pop("root_description_category_id", "") or "")
+            root_category_path = str(item.pop("root_category_path", "") or "")
+            root_category_block = json_loads(item.pop("root_category_block", "{}"), {})
+            root_attribute_count = int(item.pop("root_attribute_count", 0) or 0)
+            root_review_attribute_count = int(item.pop("root_review_attribute_count", 0) or 0)
+            root_last_precheck = json_loads(item.pop("root_last_precheck", "{}"), {})
+            selected_skus_rows = json_loads(item.pop("selected_skus_json", "[]"), []) or []
+            raw_targets = json_loads(item.pop("markets"), [])
+            targets = raw_targets if raw_targets else [{
+                "platform": row["platform"],
+                "site": row["site"],
+                "category_id": root_category_id,
+                "description_category_id": root_description_category_id,
+                "category_path": root_category_path,
+                "category_block": root_category_block,
+                "attribute_count": root_attribute_count,
+                "review_attribute_count": root_review_attribute_count,
+                "last_precheck": root_last_precheck,
+                "status": raw_status,
+                "publish_status": raw_publish_status,
+            }]
             for target in targets:
                 platform = str(target.get("platform") or row["platform"]).strip().lower()
                 site = marketplace_site(platform, target.get("site") or "")
@@ -1839,6 +1936,51 @@ class ErpDatabase:
             )
             if not _draft_matches_scope(publish_state, scope):
                 continue
+            sku_attr_targets: set[str] = set()
+            selected_sku_pricing: list[dict[str, Any]] = []
+            for srow in selected_skus_rows:
+                if not isinstance(srow, dict):
+                    continue
+                for atgt in (srow.get("attr_targets") or []):
+                    if str(atgt or "").strip():
+                        sku_attr_targets.add(str(atgt).strip().lower())
+                selected_sku_pricing.append({
+                    "applied": bool(srow.get("applied")),
+                    "targets": [str(k).strip().lower() for k in (srow.get("targets") or []) if str(k or "").strip()],
+                })
+            progress_targets: list[dict[str, Any]] = []
+            for target in targets:
+                lp = target.get("last_precheck") if isinstance(target.get("last_precheck"), dict) else {}
+                lp_errors = lp.get("errors") if isinstance(lp.get("errors"), list) else []
+                t_key = f"{target['platform']}:{target['site']}".lower()
+                attr_count = int(target.get("attribute_count") or 0)
+                if attr_count == 0 and t_key in sku_attr_targets:
+                    attr_count = 1
+                progress_targets.append({
+                    "platform": target["platform"],
+                    "site": target["site"],
+                    "category_id": str(target.get("category_id") or "").strip(),
+                    "description_category_id": str(target.get("description_category_id") or "").strip(),
+                    "category_path": str(target.get("category_path") or "").strip(),
+                    "category_block": target.get("category_block") if isinstance(target.get("category_block"), dict) else {},
+                    "attribute_count": attr_count,
+                    "review_attribute_count": int(target.get("review_attribute_count") or 0),
+                    "precheck_has": bool(lp),
+                    "precheck_ok": lp.get("ok") is True,
+                    "precheck_error_count": len(lp_errors),
+                    "precheck_error_codes": [
+                        str(err.get("code") or "").strip().upper()
+                        for err in lp_errors
+                        if isinstance(err, dict) and str(err.get("code") or "").strip()
+                    ],
+                    "precheck_error_messages": [
+                        str(err.get("message") if isinstance(err, dict) else err or "").strip()
+                        for err in lp_errors
+                        if str(err.get("message") if isinstance(err, dict) else err or "").strip()
+                    ][:3],
+                    "status": str(target.get("status") or "").strip().lower(),
+                    "publish_status": str(target.get("publish_status") or "").strip().lower(),
+                })
             projected_targets = [
                 {
                     "platform": target["platform"],
@@ -1852,14 +1994,29 @@ class ErpDatabase:
                 }
                 for target in targets
             ]
+            primary_target = targets[0]
             item.update(
                 status=display_status,
                 publish_state=publish_state,
                 publish_status=effective_publish_status,
                 language=projected_targets[0]["language"],
+                category_id=str(primary_target.get("category_id") or "").strip(),
+                category_path=str(primary_target.get("category_path") or "").strip(),
                 target_sites=projected_targets,
                 platforms=_draft_platforms({"target_sites": projected_targets}, row["platform"]),
                 source_product_id=item["source_product_id"] or item["product_id"],
+                _progress_facts={
+                    "title": str(item.get("title") or "").strip(),
+                    "has_description": has_description,
+                    "copy_generated_at": copy_generated_at,
+                    "copy_source": copy_source,
+                    "image_count": image_count,
+                    "processed_image_count": processed_image_count,
+                    "image_preparation_mode": image_preparation_mode,
+                    "images_manually_modified_at": images_manually_modified_at,
+                    "selected_sku_pricing": selected_sku_pricing,
+                    "targets": progress_targets,
+                },
             )
             items.append(item)
             if len(items) >= resolved_limit:
@@ -1958,6 +2115,28 @@ class ErpDatabase:
             targets=target_sites,
             job_entries=job_entries or [],
         )
+        source_pool = (
+            _dict(_dict(product).get("source")).get("image_pool")
+            if isinstance(_dict(_dict(product).get("source")).get("image_pool"), list)
+            else []
+        )
+        processed_asset_ids = {
+            str(entry.get("id") or "").strip()
+            for entry in source_pool
+            if isinstance(entry, dict)
+            and str(entry.get("origin") or "")
+            in {"ai_translated", "ai_generated", "local_upload", "chatgpt_import"}
+        }
+        processed_image_count = sum(
+            1
+            for ref in (draft.get("images") if isinstance(draft.get("images"), list) else [])
+            if (
+                str(ref.get("asset_id") or "").strip()
+                if isinstance(ref, dict)
+                else str(ref or "").strip()
+            )
+            in processed_asset_ids
+        )
         return {
             "draft_id": row["draft_id"],
             "product_id": row["product_id"],
@@ -1982,6 +2161,7 @@ class ErpDatabase:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "product_file_path": f"sqlite://products/{row['product_id']}",
+            "_processed_image_count": processed_image_count,
             "raw": draft,
         }
 

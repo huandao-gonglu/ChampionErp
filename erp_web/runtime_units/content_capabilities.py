@@ -187,6 +187,8 @@ def copy_generate(
         "mode": result["mode"],
     }
     saved_product = save_copy_result(product, result["target_market"], copy_record)
+    saved_drafts = saved_product.get("drafts") if isinstance(saved_product.get("drafts"), dict) else {}
+    saved_draft = saved_drafts.get(platform) if isinstance(saved_drafts.get(platform), dict) else {}
     plan = apply_product_drafts_to_plan(
         saved_product,
         build_plan_for_platform(saved_product, platform),
@@ -205,6 +207,7 @@ def copy_generate(
         mode=_text(result.get("mode")),
         copy_record=dict(copy_record),
         listing=dict(listing) if isinstance(listing, dict) else {},
+        updated_at=_text(saved_draft.get("updated_at")),
     )
 
 

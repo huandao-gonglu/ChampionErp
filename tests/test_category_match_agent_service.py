@@ -998,3 +998,187 @@ def test_validator_retries_forbidden_selection_so_model_can_pick_compliant_alter
     )
     assert result.output["selected_category_id"] == "74873567"
     assert turns == 3
+
+
+def test_structured_output_agent_avoids_forced_tool_choice_when_budget_exhausted():
+    """类目匹配（纯结构化输出）达到 max_tool_calls 时由 PrepareTools 清空检索工具，不下发 ToolOrOutput 避免思考模型抛 UserError。"""
+    from pydantic_ai.exceptions import UserError
+    from pydantic_ai.models import ModelRequestParameters
+    from pydantic_ai.models.openai import OpenAIResponsesModel
+    from pydantic_ai.profiles.openai import OpenAIModelProfile
+    from pydantic_ai.providers.openai import OpenAIProvider
+    from pydantic_ai.tools import ToolDefinition
+    from erp_web.services.ai_agent_factory import _safe_agent_error
+
+    ledger = CategoryCandidateLedger()
+    forbidden_candidate = {
+        **candidate("90509"),
+        "platform": "yandex",
+        "site": "global",
+        "path_segments": ["Авто", "Запчасти", "Датчики кислорода"],
+        "forbidden": True,
+        "forbidden_reason": "上级类目 90402（Запчасти）在禁售名单中",
+    }
+    searcher = Searcher([[forbidden_candidate], [], [], []])
+    yandex_toolset = build_category_match_toolset(
+        platform="yandex",
+        site="global",
+        searcher=searcher,
+        ledger=ledger,
+    ).toolset
+    yandex_payload = {
+        "target": {"platform": "yandex", "site": "global", "language": "ru-RU"},
+        "product": {"source": {"title": "汽车氧传感器"}, "target": {"title": "Кислородный датчик"}},
+    }
+    seen_tools: list[list[str]] = []
+    seen_tool_choices: list[object] = []
+    seen_tail_texts: list[str] = []
+
+    def model(messages, info):
+        seen_tools.append([tool.name for tool in info.function_tools])
+        seen_tool_choices.append((info.model_settings or {}).get("tool_choice"))
+        last_parts = getattr(messages[-1], "parts", ()) if messages else ()
+        seen_tail_texts.append(" ".join(str(getattr(p, "content", "")) for p in last_parts))
+        step = len(seen_tools)
+        if step <= CATEGORY_MATCH_AGENT_PROFILE.max_tool_calls:
+            return ModelResponse(parts=[ToolCallPart("search_categories", {
+                "product_identity": "汽车排气氧传感器",
+                "product_type": f"датчик {step}",
+                "alternative_names": [],
+                "keywords": [f"датчик {step}"],
+            }, tool_call_id=f"search-{step}")])
+        return final_output(info, {
+            "selected_category_id": "",
+            "selected_category_path": [],
+            "type_relationship": "incompatible",
+            "physical_comparison": {
+                "product_form": "汽车氧传感器",
+                "category_form": "",
+                "compatible": False,
+            },
+            "abstained": True,
+            "abstain_reason": "forbidden_only",
+            "model_confidence": 0.95,
+            "evidence": ["唯一匹配的汽车零部件类目在禁售名单中，无合规替代"],
+        }, "final-abstain")
+
+    result = run_category_match_agent(
+        yandex_payload,
+        yandex_toolset,
+        ledger,
+        timeout_seconds=10,
+        factory=factory_for(FunctionModel(model)),
+    )
+    assert result.output["abstained"] is True
+    assert result.output["abstain_reason"] == "forbidden_only"
+    assert len(seen_tools) == CATEGORY_MATCH_AGENT_PROFILE.max_tool_calls + 1
+    assert seen_tools[-1] == []
+    assert seen_tool_choices[-1] is None
+    assert "本轮工具调用额度已耗尽" in seen_tail_texts[-1]
+    assert "严禁再调用任何业务或检索工具" in seen_tail_texts[-1]
+
+    # 在启用思考且不支持强制 tool_choice 的 OpenAI Responses 模型上：
+    # - 显式下发 ToolOrOutput(function_tools=[]) 会触发 UserError；
+    # - 未设置 tool_choice 会平滑降级为 auto，不触发 UserError。
+    from pydantic_ai.settings import ToolOrOutput
+
+    thinking_model = OpenAIResponsesModel(
+        "deepseek-flash",
+        provider=OpenAIProvider(api_key="test-key", base_url="https://example.invalid/v1"),
+        profile=OpenAIModelProfile(
+            supports_thinking=True,
+            openai_supports_reasoning=True,
+            openai_reasoning_enabled_by_default=True,
+            openai_supports_forced_tool_choice_with_thinking=False,
+        ),
+    )
+    wire_params = ModelRequestParameters(
+        function_tools=[],
+        output_mode="tool",
+        output_tools=[ToolDefinition(name="final_result", description="submit")],
+        allow_text_output=False,
+    )
+    forced_settings, forced_params = thinking_model.prepare_request(
+        {"thinking": "low", "tool_choice": ToolOrOutput(function_tools=[])},
+        wire_params,
+    )
+    with pytest.raises(UserError):
+        thinking_model._get_responses_tool_choice(forced_settings or {}, forced_params)
+
+    safe_settings, safe_params = thinking_model.prepare_request(
+        {"thinking": "low"},
+        wire_params,
+    )
+    _wire_tools, wire_choice = thinking_model._get_responses_tool_choice(
+        safe_settings or {},
+        safe_params,
+    )
+    assert wire_choice == "auto"
+
+    # 若外部确实抛出 UserError，应归类为不可重试的 AI_MODEL_REQUEST_UNSUPPORTED，而不是可重试 AI_AGENT_RUN_FAILED。
+    err = _safe_agent_error(
+        UserError("tool_choice is not supported"),
+        validator=None,
+        conversation_id="c1",
+        task_run_id="t1",
+        use_case_id="category.product_match",
+    )
+    assert err.code == "AI_MODEL_REQUEST_UNSUPPORTED"
+    assert err.retryable is False
+
+
+def test_hybrid_category_browse_marks_must_finalize_when_combined_calls_reach_limit():
+    """混合模式下 search_categories + browse_categories 共享 4 次总额度，第 4 次返回 must_finalize=True。"""
+    from erp_web.schemas.ai_trace import AiExecutionContext
+
+    class HybridSearcher:
+        def search_categories(self, keyword: str) -> dict[str, Any]:
+            return {"keyword": keyword, "candidates": [], "source": "test"}
+
+        def root_categories(self) -> dict[str, Any]:
+            return {
+                "parent_ids": [],
+                "source": "test",
+                "nodes": [
+                    {"node_id": "b1", "name": "B1", "level": "branch", "depth": 1, "parent_id": "", "path_segments": ["B1"], "child_count": 1},
+                ],
+            }
+
+        def browse_categories(self, parent_ids: list[str]) -> dict[str, Any]:
+            pid = parent_ids[0]
+            nxt = {"b1": "b2", "b2": "b3", "b3": "leaf"}[pid]
+            if nxt == "leaf":
+                return {
+                    "parent_ids": parent_ids,
+                    "source": "test",
+                    "nodes": [
+                        {"node_id": "leaf", "category_id": "leaf", "name": "Leaf", "level": "product_type", "depth": 4, "parent_id": pid, "path_segments": ["B1", "B2", "B3", "Leaf"], "child_count": 0},
+                    ],
+                }
+            return {
+                "parent_ids": parent_ids,
+                "source": "test",
+                "nodes": [
+                    {"node_id": nxt, "name": nxt.upper(), "level": "branch", "depth": 2, "parent_id": pid, "path_segments": ["B1", nxt.upper()], "child_count": 1},
+                ],
+            }
+
+    ledger = CategoryCandidateLedger()
+    bundle = build_category_match_toolset(
+        searcher=HybridSearcher(),
+        ledger=ledger,
+        platform="yandex",
+        site="global",
+    )
+    exec_ctx = AiExecutionContext.create(timeout_seconds=10, budget_profile="test")
+    search_exec = bundle.toolset.bindings["search_categories"].executor
+    browse_exec = bundle.toolset.bindings["browse_categories"].executor
+
+    search_exec({"product_identity": "传感器", "product_type": "датчик", "alternative_names": [], "keywords": []}, exec_ctx)
+    r1 = browse_exec({"parent_ids": ["b1"]}, exec_ctx)
+    r2 = browse_exec({"parent_ids": ["b2"]}, exec_ctx)
+    r3 = browse_exec({"parent_ids": ["b3"]}, exec_ctx)
+
+    assert r1["navigation_calls_used"] == 1 and r1["navigation_calls_remaining"] == 2 and r1["must_finalize"] is False
+    assert r2["navigation_calls_used"] == 2 and r2["navigation_calls_remaining"] == 1 and r2["must_finalize"] is False
+    assert r3["navigation_calls_used"] == 3 and r3["navigation_calls_remaining"] == 0 and r3["must_finalize"] is True

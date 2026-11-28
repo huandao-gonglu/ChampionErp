@@ -87,9 +87,9 @@ def test_explicit_shipping_option_uses_requested_warehouse_even_when_more_expens
     assert automatic['evidence']['decision']['selection'] == 'lowest_shipping_cost'
     assert len(explicit['candidates']) == 1
     assert float(explicit['amount']) > float(automatic['amount'])
-    # 恢复全部比价不受前一次过滤污染，同一批只同步一次仓库。
+    # 恢复全部比价不受前一次过滤污染，刚保存的新鲜仓库快照直接复用、不重复远端同步。
     assert resolver(COMMON, target('yandex'))['evidence']['fulfillment_plan']['publish_warehouse_id'] == 32
-    assert len(calls) == before + 1
+    assert len(calls) == before
 
 
 def test_unavailable_or_ineligible_selected_shipping_never_falls_back(routing):
@@ -177,17 +177,69 @@ def test_revision_and_account_are_checked_at_commit(routing):
     assert service.configuration()['bindings'] == body['bindings']
 
 
-def test_sync_failure_invalidates_cache_and_is_reused_for_batch(routing, monkeypatch):
+def _expire_catalog_cache(service):
+    cached = dict(service.config_store.load_app_config()['yandex_warehouses']['catalog'])
+    cached['checked_at'] = '2020-01-01T00:00:00Z'
+    service.config_store.save_yandex_warehouse_catalog(cached)
+
+
+def test_sync_failure_blocks_batch_without_wiping_persisted_catalog(routing, monkeypatch):
     service, body, config, _, _ = routing
     service.save(body)
+    existing_plan = service.plans()[0]
+    _expire_catalog_cache(service)
     calls = []
     def fail(*_args):
         calls.append(1)
         raise RuntimeError('仓库接口超时')
     monkeypatch.setattr('erp_web.services.yandex_logistics_service.fetch_yandex_partner_warehouses', fail)
     resolver = shipping(service, config)
-    for _ in range(3): assert '仓库接口超时' in resolver(COMMON, target('yandex'))['error']
-    assert len(calls) == 1 and service.plans() == []
+    for _ in range(3):
+        assert '仓库接口超时' in resolver(COMMON, target('yandex'))['error']
+    # 单次核价批次只尝试同步 1 次且整批阻断，但既有持久化仓库目录保持完整，不误杀已核价草稿。
+    assert len(calls) == 1
+    assert service.validate(existing_plan) == existing_plan
+
+
+def test_pricing_plans_reuses_fresh_catalog_across_sessions_and_refreshes_on_expiry(routing):
+    service, body, config, _, calls = routing
+    service.save(body)
+    before = len(calls)
+    # 5 分钟内连续跨多个 PricingShipping / 草稿核价，全部复用已同步仓库目录。
+    for _ in range(5):
+        quote = shipping(service, config)(COMMON, target('yandex'))
+        assert 'error' not in quote
+    assert len(calls) == before
+    # 超过 TTL 后自动刷新一次，随后再次复用；force_refresh / detail(refresh=True) 仍强制拉取。
+    _expire_catalog_cache(service)
+    quote = shipping(service, config)(COMMON, target('yandex'))
+    assert 'error' not in quote and len(calls) == before + 1
+    quote2 = shipping(service, config)(COMMON, target('yandex'))
+    assert 'error' not in quote2 and len(calls) == before + 1
+    service.pricing_plans(force_refresh=True)
+    assert len(calls) == before + 2
+    service.detail(refresh=True)
+    assert len(calls) == before + 3
+
+
+def test_budget_blocked_warehouse_refresh_preserves_existing_priced_plans(routing, monkeypatch):
+    from erp_web.schemas.external_requests import ExternalRequestBlocked, RequestFailure
+
+    service, body, config, _, _ = routing
+    service.save(body)
+    priced_plan = shipping(service, config)(COMMON, target('yandex'))['evidence']['fulfillment_plan']
+    _expire_catalog_cache(service)
+
+    def block(*_args):
+        raise ExternalRequestBlocked(
+            RequestFailure('AI_EXTERNAL_REQUEST_BUDGET', '单轮 AI 外部请求次数已达上限（40 次），已停止继续调用', 'operation')
+        )
+
+    monkeypatch.setattr('erp_web.services.yandex_logistics_service.fetch_yandex_partner_warehouses', block)
+    blocked_quote = shipping(service, config)(COMMON, target('yandex'))
+    assert '单轮 AI 外部请求次数已达上限' in blocked_quote['error']
+    # 被限流拦截后，先前已核价草稿的 validate() 依然有效，不会被清空缓存误报“已变化”。
+    assert service.validate(priced_plan) == priced_plan
 
 
 def test_account_change_during_sync_cannot_save_mapping(routing, monkeypatch):
@@ -373,7 +425,7 @@ def test_all_selected_skus_use_lowest_total_common_warehouse(routing, monkeypatc
         assert len(quote['shipping_candidates']) == 2
         assert quote['calculation_fingerprint'] == pricing_calculation_fingerprint(quote['calculation_basis'])
 
-    assert len(calls) == before + 1
+    assert len(calls) == before
     # 明确选择了互不相同的仓库时，不悄悄覆盖选择，也不拆仓出价。
     for item, warehouse in zip(inputs, (31, 32), strict=True):
         plan = next(plan for plan in service.plans() if plan['publish_warehouse_id'] == warehouse)

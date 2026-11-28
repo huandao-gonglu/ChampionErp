@@ -393,7 +393,7 @@ class YandexPublishingAdapter:
 
     def prepare_product(self, product: dict[str, Any], config: dict[str, Any], *, on_progress: PublishPreparationObserver | None = None) -> dict[str, Any]:
         if str(config.get('yandex', {}).get('placement_type') or '').upper() == 'FBS':
-            get_context().yandex_logistics.pricing_plans()
+            get_context().yandex_logistics.pricing_plans(force_refresh=True)
         prepared = get_context().image_delivery.prepare_product(product, self.platform, on_progress=on_progress)
         if on_progress:
             on_progress({"stage": "saving_images"})

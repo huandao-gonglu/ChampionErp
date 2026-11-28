@@ -89,7 +89,7 @@ describe('AiMessagePart', () => {
     expect(reasoning.text()).toContain('分析过程')
   })
 
-  it('按状态渲染工具卡', async () => {
+  it('按状态渲染无胶囊工具行，完成后不贴已完成绿框', async () => {
     const wrapper = mountPart({
       type: 'tool-drafts_query',
       toolCallId: 'call-1',
@@ -99,8 +99,9 @@ describe('AiMessagePart', () => {
     })
 
     const card = wrapper.get('[data-testid="ai-part-tool"]')
+    expect(card.attributes('data-tool-status')).toBe('completed')
     expect(card.text()).toContain('查询草稿')
-    expect(card.text()).toContain('已完成')
+    expect(card.text()).not.toContain('已完成')
     expect(card.find('pre').exists()).toBe(false)
     await expand(card.get<HTMLDetailsElement>('details'))
     expect(card.text()).toContain('"total": 2')
@@ -177,7 +178,7 @@ describe('AiMessagePart', () => {
     expect(wrapper.text()).not.toContain('已修复')
   })
 
-  it('run_code 按调用函数展示业务动作标题、实时子进度、单步耗时并格式化展开脚本', async () => {
+  it('run_code 去技术化展示业务动作、同行紧凑进度、单步耗时并格式化展开脚本', async () => {
     const outputSpy = vi.fn(() => ({ done: 20 }))
     const wrapper = mount(AiMessagePart, {
       props: {
@@ -206,10 +207,11 @@ describe('AiMessagePart', () => {
       },
     })
 
-    expect(wrapper.get('summary').text()).toContain('批量处理 · 匹配商品类目')
-    expect(wrapper.get('summary').text()).toContain('执行中')
+    expect(wrapper.get('summary').text()).toContain('正在匹配商品类目')
+    expect(wrapper.get('summary').text()).not.toContain('批量处理')
+    expect(wrapper.get('summary').text()).not.toContain('执行中')
     expect(wrapper.get('[data-testid="ai-tool-elapsed"]').text()).toBe('1分 5秒')
-    expect(wrapper.get('[data-testid="ai-tool-progress"]').text()).toBe('正在匹配商品类目：已完成 11/20，1 项异常')
+    expect(wrapper.get('[data-testid="ai-tool-progress"]').text()).toContain('11/20 · 1 项异常')
     expect(outputSpy).not.toHaveBeenCalled()
 
     await expand(wrapper.get<HTMLDetailsElement>('[data-testid="ai-tool-details"]'))
@@ -217,6 +219,21 @@ describe('AiMessagePart', () => {
     expect(wrapper.get('[data-testid="ai-run-code-source"]').text()).not.toContain('\\n')
     expect(wrapper.get('[data-testid="ai-run-code-receipts"]').text()).toContain('匹配商品类目 × 2（1 项失败）')
     expect(outputSpy).toHaveBeenCalledOnce()
+
+    // 完成后不贴绿色已完成胶囊，直接同行展示写回执汇总计数。
+    await wrapper.setProps({
+      active: false,
+      part: {
+        type: 'tool-run_code',
+        toolCallId: 'call-batch',
+        state: 'output-available',
+        input: { code: 'await category_match(draft_id="d1")' },
+        output: { ok: true },
+      } as unknown as AiUiPart,
+    })
+    expect(wrapper.get('summary').text()).toContain('匹配商品类目')
+    expect(wrapper.get('summary').text()).not.toContain('已完成')
+    expect(wrapper.get('[data-testid="ai-tool-meta"]').text()).toContain('2 项 · 1 项失败')
   })
 
   it('run_code 运行中遇到首个 402 时立即在进度行下浮出红色故障告警并支持跳转模型设置', async () => {

@@ -57,7 +57,14 @@ class CategoryAttributesQueryRequest(BaseModel):
     ]
     cursor: Annotated[TrimmedText, StringConstraints(max_length=160)] = ""
     limit: int = Field(default=50, ge=1, le=100)
-    scope: Literal["common", "sku", "all"] = Field(default="common", description="common 只读可写公共属性；sku 只读可写 SKU 属性；all 查看全部定义及 write_scope。分页游标沿用原始定义页，过滤后空页仍须检查 has_more。")
+    scope: Literal["common", "sku", "writable", "all"] = Field(
+        default="common",
+        description="common 只读可写公共属性；sku 只读可写 SKU 属性；writable 一次读全部可写公共与 SKU 属性；all 查看全部定义及 write_scope。分页游标沿用原始定义页，过滤后空页仍须检查 has_more。",
+    )
+    compact: bool = Field(
+        default=False,
+        description="true 时省略长说明与 excluded_attributes，只返回填写所需的紧凑可写字段摘要。",
+    )
 
 
 class CategoryAttributesQueryResult(BaseModel):
@@ -75,6 +82,64 @@ class CategoryAttributesQueryResult(BaseModel):
     excluded_attributes: tuple[dict[str, JsonValue], ...] = ()
     next_cursor: TrimmedText = ""
     has_more: bool = False
+
+
+class CategoryAttributesQueryBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    platform: Annotated[TrimmedText, StringConstraints(max_length=80)] = (
+        "mercadolibre"
+    )
+    site: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
+    category_ids: list[
+        Annotated[TrimmedText, StringConstraints(min_length=1, max_length=160)]
+    ] = Field(
+        min_length=1,
+        max_length=30,
+        description="待批量查询属性定义的类目 ID 列表（最多 30 个，自动去重保序）；服务端并发翻完各自分页并默认返回紧凑可写视图。",
+    )
+    scope: Literal["common", "sku", "writable", "all"] = Field(
+        default="writable",
+        description="writable（默认）一次返回可写公共与 SKU 属性并标注 write_scope/variation_role；也可选 common/sku/all。",
+    )
+    compact: bool = Field(
+        default=True,
+        description="true（默认）省略长描述与 excluded_attributes，仅保留填写和字典查询所需字段；需看完整说明时设 false。",
+    )
+    include_excluded: bool = Field(
+        default=False,
+        description="是否附带被排除的托管/只读属性摘要；默认 false 保持回执紧凑。",
+    )
+    max_options_per_attribute: int = Field(
+        default=20,
+        ge=0,
+        le=50,
+        description="紧凑模式下每个属性最多内联返回的 options 预览条数（0 表示仅返回字段元数据，完整大字典用 category_attribute_values_query）。",
+    )
+
+
+class CategoryAttributesQueryBatchItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    category_id: TrimmedText
+    ok: bool
+    category_path: TrimmedText = ""
+    attribute_count: int = Field(default=0, ge=0)
+    attributes: tuple[dict[str, JsonValue], ...] = ()
+    excluded_attributes: tuple[dict[str, JsonValue], ...] = ()
+    error_code: TrimmedText = ""
+    error: TrimmedText = ""
+
+
+class CategoryAttributesQueryBatchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    platform: TrimmedText
+    site: TrimmedText = ""
+    total: int = Field(ge=0)
+    ok_count: int = Field(ge=0)
+    error_count: int = Field(ge=0)
+    items: list[CategoryAttributesQueryBatchItem] = Field(default_factory=list, max_length=30)
 
 
 class CategoryAttributeValuesQueryRequest(BaseModel):
@@ -146,6 +211,9 @@ class CategoryPrecheckResult(BaseModel):
 __all__ = [
     "CategoryAttributeValuesQueryRequest",
     "CategoryAttributeValuesQueryResult",
+    "CategoryAttributesQueryBatchItem",
+    "CategoryAttributesQueryBatchRequest",
+    "CategoryAttributesQueryBatchResult",
     "CategoryAttributesQueryRequest",
     "CategoryAttributesQueryResult",
     "CategoryPrecheckRequest",

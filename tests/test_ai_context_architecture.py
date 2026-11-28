@@ -930,7 +930,7 @@ def test_draft_pricing_has_one_business_entry_and_no_raw_ai_or_http_calculator()
     from erp_web.ai_capability_composition import APPLICATION_CAPABILITY_CATALOG
     from erp_web.http_route_units.product_routes import POST_HANDLERS
     assert "pricing_calculate" not in APPLICATION_CAPABILITY_CATALOG.tools
-    assert {"draft_pricing_preview", "draft_pricing_apply"} <= APPLICATION_CAPABILITY_CATALOG.tools.keys()
+    assert {"draft_pricing_preview", "draft_pricing_preview_batch", "draft_pricing_apply", "draft_pricing_apply_batch"} <= APPLICATION_CAPABILITY_CATALOG.tools.keys()
     assert "/api/calculate-price" not in POST_HANDLERS
     assert {"/api/draft-pricing/preview", "/api/draft-pricing/apply", "/api/draft-pricing/restore"} <= POST_HANDLERS.keys()
     for relative in ("erp_web/facades/draft_pricing_facade.py", "erp_web/runtime_units/draft_pricing_capabilities.py", "erp_web/runtime_units/market_prepare_capabilities.py"):

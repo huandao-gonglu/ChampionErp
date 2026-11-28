@@ -812,4 +812,57 @@ describe('AuthSettingsPanel AI 功能绑定高级设置', () => {
       'global.chat': { model_id: 'main_ds', timeout_override_seconds: '' },
     })
   })
+
+  it('不展示环境变量输入框；换 Key 不清能力与模型，改模型清能力并自动解绑失效功能', async () => {
+    const config = {
+      ...qwenConfig,
+      ai_models: [
+        {
+          id: 'main_model',
+          name: 'deepseepTokenShop',
+          connection_type: 'api',
+          provider: 'OpenAI（官方 / 兼容协议）',
+          provider_id: 'openai',
+          api_style: 'openai_compatible',
+          base_url: 'https://api.example.invalid/v1',
+          api_key_configured: true,
+          model: 'deepseek-chat',
+          capabilities: ['chat', 'tool_calling'],
+          capability_profiles: {
+            chat: { tested: true, version: 2 },
+            tool_calling: { tested: true, version: 2 },
+          },
+          enabled: true,
+        },
+      ],
+      ai_use_cases: [
+        { id: 'global.chat', label: '全局 AI', required_capabilities: ['chat', 'tool_calling'] },
+      ],
+      ai_use_case_bindings: {
+        'global.chat': { model_id: 'main_model' },
+      },
+    }
+
+    const wrapper = mountPanel(config)
+    expect(wrapper.text()).not.toContain('Base URL 环境变量')
+    expect(wrapper.text()).not.toContain('API Key 环境变量')
+
+    // 更换 API Key 不清空 model 和已测能力，也不解绑
+    const keyInput = wrapper.get('input[type="password"]')
+    await keyInput.setValue('sk-rotated-key')
+    await keyInput.trigger('input')
+    expect((wrapper.get('input[role="combobox"]').element as HTMLInputElement).value).toBe('deepseek-chat')
+    let saved = await save(wrapper)
+    expect((saved.ai_models as Array<Record<string, unknown>>)[0].capabilities).toEqual(['chat', 'tool_calling'])
+    expect(saved.ai_use_case_bindings).toEqual({
+      'global.chat': { model_id: 'main_model', timeout_override_seconds: '' },
+    })
+
+    // 切换 API 协议不清空 model，但清空已测能力并自动解绑失效的 global.chat
+    await wrapper.get('[data-testid="ai-api-style"]').setValue('openai_responses')
+    expect((wrapper.get('input[role="combobox"]').element as HTMLInputElement).value).toBe('deepseek-chat')
+    saved = await save(wrapper)
+    expect((saved.ai_models as Array<Record<string, unknown>>)[0].capabilities).toEqual([])
+    expect(saved.ai_use_case_bindings).toEqual({})
+  })
 })

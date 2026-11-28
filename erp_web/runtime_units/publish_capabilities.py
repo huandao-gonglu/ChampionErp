@@ -574,11 +574,18 @@ def validate_products_publish_batch(
                 context=active_context,
                 validation_session=shared_session,
             )
+            result = evaluation.result
+            sku_count = len(result.summary.sku_items)
+            if not request.include_sku_summaries and sku_count:
+                result = result.model_copy(
+                    update={"summary": result.summary.model_copy(update={"sku_items": ()})}
+                )
             return ProductPublishValidateBatchItem(
                 draft_id=draft_id,
                 ok=True,
-                passed=evaluation.result.passed,
-                validation=evaluation.result,
+                passed=result.passed,
+                sku_count=sku_count,
+                validation=result,
             )
         except BusinessCapabilityError as exc:
             return ProductPublishValidateBatchItem(
@@ -648,7 +655,12 @@ def prepare_product_publish(
             if asset and asset.get("url"):
                 urls.append(str(asset["url"]))
         checks = check_image_public_access(urls)
-    return ProductPublishPrepareResult(validation=evaluation.result, public_access_checks=checks)
+    saved_draft = saved.get("draft") if isinstance(saved.get("draft"), dict) else {}
+    return ProductPublishPrepareResult(
+        validation=evaluation.result,
+        public_access_checks=checks,
+        updated_at=_text(saved_draft.get("updated_at")),
+    )
 
 
 def request_product_publish(

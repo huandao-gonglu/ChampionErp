@@ -219,7 +219,7 @@ watch(() => props.images, () => {
             :aria-label="`预览${label(image)}`"
             @click="previewImage = image"
           >
-            <img :src="imageUrl(image)" :alt="label(image)" class="aspect-square w-full object-contain" />
+            <img :src="imageUrl(image)" referrerpolicy="no-referrer" :alt="label(image)" class="aspect-square w-full object-contain" />
           </button>
 
           <!-- 左上角悬浮勾选框 -->
@@ -301,7 +301,7 @@ watch(() => props.images, () => {
   </section>
 
   <WorkspaceDialog :open="Boolean(previewImage)" title="图片预览" @close="previewImage = null">
-    <img v-if="previewImage" :src="imageUrl(previewImage)" :alt="label(previewImage)" class="mx-auto max-h-[70dvh] max-w-full object-contain" />
+    <img v-if="previewImage" :src="imageUrl(previewImage)" referrerpolicy="no-referrer" :alt="label(previewImage)" class="mx-auto max-h-[70dvh] max-w-full object-contain" />
   </WorkspaceDialog>
   <WorkspaceDialog :open="imageEditPromptOpen" title="图生图" @close="imageEditPromptOpen = false">
     <form v-desktop="'image.translate'" class="space-y-4" @submit.prevent="submitEdit">

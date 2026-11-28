@@ -142,6 +142,7 @@ def test_low_thinking_defaults_respect_model_profile_and_user_overrides(tmp_path
 
 def test_batch_copy_workers_and_category_match_budget():
     assert copy_generation._BATCH_COPY_MAX_WORKERS == 16
+    assert cat_cap._CATEGORY_MATCH_BATCH_MAX_WORKERS == 6
     assert CATEGORY_MATCH_AGENT_PROFILE.max_model_requests == 6
     assert CATEGORY_MATCH_AGENT_PROFILE.max_tool_calls == 4
 
@@ -165,6 +166,7 @@ def test_category_match_batch_sliding_window_and_classifications(monkeypatch):
                 category_path="Root / Slow",
                 model_confidence=0.9,
                 changed=True,
+                updated_at="2026-11-28T02:35:10Z",
             )
         if req.draft_id == "d-unresolved":
             finished_order.append(req.draft_id)
@@ -195,6 +197,7 @@ def test_category_match_batch_sliding_window_and_classifications(monkeypatch):
             category_path=f"Root / {req.draft_id}",
             model_confidence=0.95,
             changed=True,
+            updated_at=f"2026-11-28T02:35:11Z-{req.draft_id}",
         )
 
     monkeypatch.setattr(cat_cap, "match_category", fake_match_category)
@@ -222,6 +225,8 @@ def test_category_match_batch_sliding_window_and_classifications(monkeypatch):
     assert unresolved.status == "unresolved" and unresolved.needs_confirmation is True
     assert unresolved.candidate_options[0].value == "200"
     assert result.items[3].status == "forbidden"
+    assert result.items[0].updated_at == "2026-11-28T02:35:10Z"
+    assert result.items[1].updated_at == "2026-11-28T02:35:11Z-d-fast-1"
 
 
 def test_category_match_batch_circuit_breaks_repeated_retryable_failures(monkeypatch):
@@ -352,3 +357,501 @@ def test_publish_validation_session_uses_point_ancestor_lookup_and_for_sku_group
     assert child_a.yandex_ancestor_ids("200") == ("90401", "100")
     assert child_b.yandex_ancestor_ids("200") == ("90401", "100")
     assert ancestor_calls == ["200"]
+
+
+def test_user_input_only_resume_resets_usage_limits_while_approval_keeps_accumulated_usage():
+    from pydantic_ai import DeferredToolRequests
+    from pydantic_ai.messages import ToolCallPart
+    from erp_web.services.global_agent_chat_service import _is_user_input_only_deferred
+
+    user_only = DeferredToolRequests(
+        calls=[ToolCallPart(tool_name="request_user_input", args={"title": "t", "question": "q"}, tool_call_id="c1")],
+    )
+    approval_only = DeferredToolRequests(
+        approvals=[ToolCallPart(tool_name="product_publish_request", args={"draft_id": "d1"}, tool_call_id="c2")],
+    )
+    mixed = DeferredToolRequests(
+        calls=[ToolCallPart(tool_name="request_user_input", args={"title": "t", "question": "q"}, tool_call_id="c1")],
+        approvals=[ToolCallPart(tool_name="product_publish_request", args={"draft_id": "d1"}, tool_call_id="c2")],
+    )
+    job_call = DeferredToolRequests(
+        calls=[ToolCallPart(tool_name="online_products_sync", args={}, tool_call_id="c3")],
+    )
+    assert _is_user_input_only_deferred(user_only) is True
+    assert _is_user_input_only_deferred(approval_only) is False
+    assert _is_user_input_only_deferred(mixed) is False
+    assert _is_user_input_only_deferred(job_call) is False
+
+
+def test_python_tool_budget_returns_structured_error_without_monty_scheduler_stall(tmp_path, monkeypatch):
+    import asyncio
+    from dataclasses import replace
+    from pydantic_ai.models.function import FunctionModel
+    from erp_web.services import global_agent_chat_service
+    from tests.test_ai_code_mode import binding, body, code_delta, service, tools
+
+    monkeypatch.setattr(
+        global_agent_chat_service,
+        "GLOBAL_CHAT_PROFILE",
+        replace(global_agent_chat_service.GLOBAL_CHAT_PROFILE, max_tool_calls=10),
+    )
+    code1 = """import asyncio
+for i in range(6):
+    await update_row(draft_id=f'pre-{i}')
+'ok'
+"""
+    code2 = """import asyncio
+W = {}; F = {}
+async def wr(i):
+    r = await update_row(draft_id=str(i))
+    if r.get('ok') is False:
+        F[i] = (r.get('error') or {}).get('code')
+    else:
+        W[i] = r
+await asyncio.gather(*[wr(i) for i in range(8)])
+{'W': sorted(W.keys()), 'F': F}
+"""
+    executed: list[str] = []
+    retries: list[str] = []
+    returned: list[object] = []
+    steps = iter([code_delta(code1, "s1"), code_delta(code2, "s2")])
+
+    async def model(messages, info):
+        for msg in messages:
+            for part in msg.parts:
+                if getattr(part, "part_kind", "") == "retry-prompt":
+                    retries.append(str(part.content))
+                elif getattr(part, "part_kind", "") == "tool-return" and getattr(part, "tool_name", "") == "run_code":
+                    returned.append(part.content)
+        step = next(steps, None)
+        if step is None:
+            yield "已完成 2 份，其余触及额度。"
+        else:
+            yield {0: step}
+
+    def slow_write(args, ctx):
+        if not args["draft_id"].startswith("pre-"):
+            time.sleep(0.08)
+        executed.append(args["draft_id"])
+        return {"ok": True, "id": args["draft_id"]}
+
+    ui = service(
+        tmp_path,
+        FunctionModel(stream_function=model),
+        tools(binding("update_row", slow_write, write=True)),
+    )
+    asyncio.run(ui.prepare_run(body()).stream(lambda _: None))
+
+    assert executed[:6] == ["pre-0", "pre-1", "pre-2", "pre-3", "pre-4", "pre-5"]
+    assert sorted(executed[6:]) == ["0", "1"]
+    assert not any("asyncio scheduler stalled" in msg for msg in retries)
+    assert any(
+        isinstance(item, dict)
+        and item.get("W") == [0, 1]
+        and all(code == "TOOL_BUDGET_EXHAUSTED" for code in (item.get("F") or {}).values())
+        and len(item.get("F") or {}) == 6
+        for item in returned
+    )
+
+
+def test_draft_attributes_read_batch_returns_product_weight_and_isolates_errors(monkeypatch):
+    from erp_web.schemas.product_capabilities import (
+        DraftAttributesReadBatchRequest,
+        DraftAttributesReadResult,
+        DraftAttributeTarget,
+        ProductFacts,
+    )
+
+    def fake_read(req, scope):
+        del scope
+        if req.draft_id == "d-missing":
+            raise BusinessCapabilityError("DRAFT_NOT_FOUND", "草稿不存在")
+        return DraftAttributesReadResult(
+            draft_id=req.draft_id,
+            updated_at="2026-11-27T00:00:00Z",
+            product=ProductFacts(
+                product_id=f"p-{req.draft_id}",
+                name="测试商品",
+                weight_kg="8000",
+                updated_at="2026-11-27T00:00:00Z",
+            ),
+            targets=[DraftAttributeTarget(platform="yandex", site="global", category_id="100", attributes={})],
+            skus=[],
+            sku_count=3,
+        )
+
+    monkeypatch.setattr(prod_cap, "_read_draft_attributes", fake_read)
+    batch = prod_cap.draft_attributes_read_batch(
+        DraftAttributesReadBatchRequest(
+            draft_ids=["d-1", "d-missing", "d-1"],
+            platform="yandex",
+            site="global",
+            scope="sku",
+        ),
+        scope=SimpleNamespace(),
+    )
+    assert batch.total == 2
+    assert batch.ok_count == 1
+    assert batch.error_count == 1
+    assert batch.items[0].ok is True and batch.items[0].result.product.weight_kg == "8000"
+    assert batch.items[1].ok is False and batch.items[1].error_code == "DRAFT_NOT_FOUND"
+
+
+def test_product_publish_validate_batch_omits_sku_items_by_default_and_supports_opt_in(monkeypatch):
+    from erp_web.schemas.publish_capabilities import ProductPublishSkuSummary
+
+    def fake_evaluate(req, *, context=None, validation_session=None):
+        del context, validation_session
+        res = ProductPublishValidationResult(
+            passed=False,
+            summary=ProductPublishSummary(
+                draft_id=req.draft_id,
+                platform="yandex",
+                site="global",
+                store_identity="yandex:test",
+                sku_items=(
+                    ProductPublishSkuSummary(sku_id="s1", sku="SKU-1"),
+                    ProductPublishSkuSummary(sku_id="s2", sku="SKU-2"),
+                ),
+            ),
+            errors=[],
+            warnings=[],
+        )
+        return SimpleNamespace(result=res)
+
+    monkeypatch.setattr(pub_cap, "evaluate_publish_validation", fake_evaluate)
+    compact = pub_cap.validate_products_publish_batch(
+        ProductPublishValidateBatchRequest(draft_ids=["d-1"], platform="yandex", site="global"),
+        context=SimpleNamespace(),
+    )
+    assert compact.items[0].sku_count == 2
+    assert compact.items[0].validation.summary.sku_items == ()
+
+    detailed = pub_cap.validate_products_publish_batch(
+        ProductPublishValidateBatchRequest(
+            draft_ids=["d-1"],
+            platform="yandex",
+            site="global",
+            include_sku_summaries=True,
+        ),
+        context=SimpleNamespace(),
+    )
+    assert detailed.items[0].sku_count == 2
+    assert len(detailed.items[0].validation.summary.sku_items) == 2
+
+
+def test_draft_pricing_batch_shares_session_picks_independent_warehouses_and_isolates_errors(monkeypatch):
+    """多草稿批量核价共享单一 PricingSession 合批算价、各草稿独立选仓，并隔离单项缺资料错误。"""
+    from copy import deepcopy
+    from erp_web.product_model import default_product_model
+    from erp_web.runtime_units import draft_pricing as dp
+    from erp_web.runtime_units.draft_pricing_capabilities import (
+        DraftPricingCapabilityScope,
+        draft_pricing_apply_batch,
+        draft_pricing_preview_batch,
+    )
+    from erp_web.runtime_units.pricing_runtime import PricingSession
+    from erp_web.schemas.draft_pricing import (
+        DraftPricingBatchApplyItem,
+        DraftPricingBatchApplyRequest,
+        DraftPricingBatchPreviewRequest,
+    )
+    from erp_web.services.pricing_shipping import PricingShipping
+    from tests.pricing_test_utils import official_commission
+    from tests.runtime_test_utils import seed_store_currency
+    from tests.yandex_logistics_support import PLAN, install_logistics
+
+    plan_31 = {**deepcopy(PLAN), "publish_warehouse_id": 31, "route_id": "route-31", "partner_name": "仓31"}
+    plan_32 = {**deepcopy(PLAN), "publish_warehouse_id": 32, "route_id": "route-32", "partner_name": "仓32"}
+    install_logistics(monkeypatch, plans=[plan_31, plan_32])
+    monkeypatch.setattr("erp_web.runtime_units.pricing_runtime.PricingCommissions", lambda _cfg, **_kw: official_commission)
+    seed_store_currency("yandex", "RUB", mode="manual")
+
+    class MultiWarehouseShipping(PricingShipping):
+        def __call__(self, common, target):
+            if self.yandex_plans is None:
+                self.yandex_plans = [deepcopy(plan_31), deepcopy(plan_32)]
+            weight_kg = float(common["weight_kg"])
+            # 轻货（<=0.5kg）在仓 31 更便宜；重货（>0.5kg）在仓 32 更便宜。
+            candidates = []
+            for plan in self.yandex_plans:
+                wh = plan["publish_warehouse_id"]
+                amount = "4" if (wh == 31 and weight_kg <= 0.5) or (wh == 32 and weight_kg > 0.5) else "12"
+                candidates.append({"amount_cny": amount, "fulfillment_plan": deepcopy(plan)})
+            best = min(candidates, key=lambda item: (float(item["amount_cny"]), item["fulfillment_plan"]["publish_warehouse_id"]))
+            return {
+                "amount": best["amount_cny"],
+                "currency": "CNY",
+                "minimum_price_cny": "0",
+                "billable_g": str(weight_kg * 1000),
+                "evidence": {"fulfillment_plan": deepcopy(best["fulfillment_plan"])},
+                "candidates": candidates,
+            }
+
+    monkeypatch.setattr("erp_web.runtime_units.pricing_runtime.PricingShipping", MultiWarehouseShipping)
+
+    created_sessions = 0
+    calculate_many_batch_sizes: list[int] = []
+
+    class TrackingPricingSession(PricingSession):
+        def __init__(self) -> None:
+            nonlocal created_sessions
+            created_sessions += 1
+            super().__init__()
+
+        def calculate_many(self, inputs):
+            calculate_many_batch_sizes.append(len(inputs))
+            return super().calculate_many(inputs)
+
+    monkeypatch.setattr(dp, "PricingSession", TrackingPricingSession)
+
+    app = get_context()
+
+    def _seed_yandex_draft(product_id: str, draft_id: str, skus: list[dict]) -> None:
+        product = default_product_model()
+        product.update(product_id=product_id, name=f"商品 {draft_id}", sku_items=skus)
+        product["drafts"] = {
+            "yandex": {
+                "draft_id": draft_id,
+                "title": f"草稿 {draft_id}",
+                "description": "描述",
+                "target_sites": [{"platform": "yandex", "site": "global", "language": "ru-RU"}],
+                "sku_items": [
+                    {"sku_id": sku["id"], "sku": f"SELL-{draft_id}-{idx}", "selected": True, "stock": "5"}
+                    for idx, sku in enumerate(skus)
+                ],
+                "pricing": {
+                    "common": {
+                        "domestic_freight_cny": 1,
+                        "packaging_cost_cny": 2,
+                        "other_cost_cny": 0,
+                        "exchange_rate_mode": "manual",
+                        "usd_cny_rate": 7,
+                        "mxn_usd_rate": 20,
+                        "rub_cny_rate": 12,
+                    },
+                    "targets": {
+                        "yandex:global": {"shipping_quote_mode": "auto", "target_margin_percent": 30},
+                    },
+                },
+            }
+        }
+        app.products.save_product(product)
+
+    _seed_yandex_draft("prod-batch-a", "draft-batch-a", [
+        {"id": "a-1", "name": "轻款1", "active": True, "cost_cny": "10", "package_dimensions": {"length_cm": "15", "width_cm": "10", "height_cm": "8", "weight_kg": "0.3"}},
+        {"id": "a-2", "name": "轻款2", "active": True, "cost_cny": "12", "package_dimensions": {"length_cm": "15", "width_cm": "10", "height_cm": "8", "weight_kg": "0.4"}},
+    ])
+    _seed_yandex_draft("prod-batch-b", "draft-batch-b", [
+        {"id": "b-1", "name": "重款1", "active": True, "cost_cny": "20", "package_dimensions": {"length_cm": "25", "width_cm": "20", "height_cm": "15", "weight_kg": "1.2"}},
+        {"id": "b-2", "name": "重款2", "active": True, "cost_cny": "25", "package_dimensions": {"length_cm": "25", "width_cm": "20", "height_cm": "15", "weight_kg": "1.5"}},
+    ])
+    _seed_yandex_draft("prod-batch-c", "draft-batch-c", [
+        {"id": "c-1", "name": "缺宽", "active": True, "cost_cny": "15", "package_dimensions": {"length_cm": "15", "width_cm": "", "height_cm": "8", "weight_kg": "0.3"}},
+    ])
+
+    scope = DraftPricingCapabilityScope(app.products)
+    preview = draft_pricing_preview_batch(
+        DraftPricingBatchPreviewRequest(draft_ids=["draft-batch-a", "draft-batch-b", "draft-batch-c", "draft-batch-a"]),
+        scope,
+    )
+    assert preview.total == 3
+    assert preview.succeeded_count == 2
+    assert preview.failed_count == 1
+    assert preview.applied is False
+    # 全批只创建 1 个 PricingSession，首次 calculate_many 一次性合并 2 份有效草稿的 4 个 SKU。
+    assert created_sessions == 1
+    assert calculate_many_batch_sizes == [4]
+
+    item_a, item_b, item_c = preview.items
+    assert item_a.ok and item_a.preview_id and item_a.sku_count == 2
+    assert item_b.ok and item_b.preview_id and item_b.sku_count == 2
+    assert not item_c.ok and item_c.error_code == "PRICING_INPUT_INVALID" and "包装边长" in item_c.error
+
+    # 验证 Draft A 选仓 31、Draft B 独立选仓 32（unify_yandex_warehouse 不污染共享 session）。
+    cached_a = app.pricing_cache.previews.get(item_a.preview_id)
+    cached_b = app.pricing_cache.previews.get(item_b.preview_id)
+    assert cached_a is not None and cached_b is not None
+    wh_a = cached_a["batch"]["items"][0]["result"]["results"][0]["calculation_basis"]["shipping_evidence"]["fulfillment_plan"]["publish_warehouse_id"]
+    wh_b = cached_b["batch"]["items"][0]["result"]["results"][0]["calculation_basis"]["shipping_evidence"]["fulfillment_plan"]["publish_warehouse_id"]
+    assert wh_a == 31
+    assert wh_b == 32
+
+    # 批量应用：包含 2 份有效预览与 1 份缺包装资料草稿，有效草稿各自原子保存且返回新 updated_at。
+    exec_ctx = AiExecutionContext.create(timeout_seconds=30, budget_profile="test")
+    applied = draft_pricing_apply_batch(
+        DraftPricingBatchApplyRequest(
+            items=[
+                DraftPricingBatchApplyItem(draft_id="draft-batch-a", preview_id=item_a.preview_id, expected_updated_at=item_a.updated_at),
+                DraftPricingBatchApplyItem(draft_id="draft-batch-b", preview_id=item_b.preview_id, expected_updated_at=item_b.updated_at),
+                DraftPricingBatchApplyItem(draft_id="draft-batch-c", preview_id="missing-preview"),
+            ]
+        ),
+        scope,
+        exec_ctx,
+    )
+    assert applied.total == 3
+    assert applied.succeeded_count == 2
+    assert applied.failed_count == 1
+    assert applied.applied is False  # 部分失败不得标记整批 applied=True
+    assert applied.items[0].ok and applied.items[0].applied and applied.items[0].updated_at
+    assert applied.items[1].ok and applied.items[1].applied and applied.items[1].updated_at
+    assert not applied.items[2].ok and applied.items[2].error_code == "PRICING_INPUT_INVALID"
+
+    # 已消耗的 preview_id 再次应用返回 PRICING_PREVIEW_REQUIRED。
+    reused = draft_pricing_apply_batch(
+        DraftPricingBatchApplyRequest(
+            items=[DraftPricingBatchApplyItem(draft_id="draft-batch-a", preview_id=item_a.preview_id)]
+        ),
+        scope,
+        exec_ctx,
+    )
+    assert reused.failed_count == 1 and reused.items[0].error_code == "PRICING_PREVIEW_REQUIRED"
+
+    saved_a = app.db.load_draft_model("draft-batch-a")
+    saved_b = app.db.load_draft_model("draft-batch-b")
+    assert all(row["pricing"]["applied"] for row in saved_a["sku_items"])
+    assert all(row["pricing"]["applied"] for row in saved_b["sku_items"])
+    assert saved_a["sku_items"][0]["pricing"]["targets"]["yandex:global"]["calculation_basis"]["shipping_evidence"]["fulfillment_plan"]["publish_warehouse_id"] == 31
+    assert saved_b["sku_items"][0]["pricing"]["targets"]["yandex:global"]["calculation_basis"]["shipping_evidence"]["fulfillment_plan"]["publish_warehouse_id"] == 32
+
+    # 重复 draft_id 在应用前直接报错拒绝。
+    with pytest.raises(BusinessCapabilityError) as dup_exc:
+        draft_pricing_apply_batch(
+            DraftPricingBatchApplyRequest(
+                items=[
+                    DraftPricingBatchApplyItem(draft_id="draft-batch-a", preview_id="p1"),
+                    DraftPricingBatchApplyItem(draft_id="draft-batch-a", preview_id="p2"),
+                ]
+            ),
+            scope,
+            exec_ctx,
+        )
+    assert dup_exc.value.code == "PRICING_BATCH_DUPLICATE_DRAFT"
+
+
+def test_category_attributes_query_batch_paginates_compacts_and_isolates_errors():
+    """批量类目属性查询自动翻页、合并 common+sku 可写字段、省略冗长说明并隔离单项失败。"""
+    from erp_web.runtime_units.category_query_capabilities import (
+        CategoryQueryCapabilityScope,
+        category_attributes_query,
+        category_attributes_query_batch,
+    )
+    from erp_web.schemas.category_query_capabilities import (
+        CategoryAttributesQueryBatchRequest,
+        CategoryAttributesQueryRequest,
+    )
+
+    pages = {
+        ("cat-ok", ""): {
+            "platform": "yandex",
+            "site": "global",
+            "category_id": "cat-ok",
+            "category_path": "Все товары / Посуда / Миски",
+            "attributes": [
+                {
+                    "id": "100",
+                    "name": "Материал",
+                    "name_zh": "材质",
+                    "description": "很长的俄语说明" * 50,
+                    "description_zh": "很长的中文说明" * 50,
+                    "required": True,
+                    "value_type": "enum",
+                    "value_mode": "strict_enum",
+                    "allow_custom_values": False,
+                    "read_only": False,
+                    "is_dictionary": True,
+                    "unit_options": [{"id": "u1", "name": "см"}],
+                    "options": [
+                        {"value": f"opt-{i}", "dictionary_value_id": str(i), "label_zh": f"选项{i}"}
+                        for i in range(25)
+                    ],
+                    "has_more_values": False,
+                },
+                {
+                    "id": "999",
+                    "name": "Только чтение",
+                    "read_only": True,
+                },
+            ],
+            "next_cursor": "page2",
+            "has_more": True,
+        },
+        ("cat-ok", "page2"): {
+            "platform": "yandex",
+            "site": "global",
+            "category_id": "cat-ok",
+            "category_path": "Все товары / Посуда / Миски",
+            "attributes": [
+                {
+                    "id": "14871214",
+                    "name": "Цвет товара для карточки",
+                    "name_zh": "商品颜色",
+                    "variation_role": "variant",
+                    "value_type": "string",
+                    "value_mode": "free_text",
+                    "allow_custom_values": True,
+                },
+            ],
+            "next_cursor": "",
+            "has_more": False,
+        },
+    }
+
+    def fake_loader(platform, category_id, *, site="", cursor="", limit=50, timeout_seconds=None):
+        del platform, site, limit
+        assert timeout_seconds is not None and timeout_seconds > 0
+        if category_id == "cat-err":
+            raise RuntimeError("upstream timeout")
+        return pages[(category_id, cursor)]
+
+    scope = CategoryQueryCapabilityScope(
+        searcher=lambda *a, **kw: [],
+        attributes_loader=fake_loader,
+        attribute_values_loader=lambda *a, **kw: {},
+        record_loader=lambda *a, **kw: {},
+        draft_context_loader=lambda body: ({}, None, 200),
+        product_loader=lambda body: ({}, None, 200),
+    )
+    exec_ctx = AiExecutionContext.create(timeout_seconds=30, budget_profile="test")
+
+    batch = category_attributes_query_batch(
+        CategoryAttributesQueryBatchRequest(
+            platform="yandex",
+            site="global",
+            category_ids=["cat-ok", "cat-err", "cat-ok"],
+            max_options_per_attribute=5,
+        ),
+        scope,
+        exec_ctx,
+    )
+    assert batch.total == 2
+    assert batch.ok_count == 1
+    assert batch.error_count == 1
+
+    ok_item, err_item = batch.items
+    assert ok_item.ok and ok_item.category_id == "cat-ok" and ok_item.attribute_count == 2
+    assert ok_item.excluded_attributes == ()
+    by_id = {attr["id"]: attr for attr in ok_item.attributes}
+    assert set(by_id) == {"100", "14871214"}
+    assert by_id["100"]["write_scope"] == "common"
+    assert "description" not in by_id["100"] and "description_zh" not in by_id["100"]
+    assert by_id["100"]["unit_options"] == ["см"]
+    assert len(by_id["100"]["options"]) == 5
+    assert by_id["14871214"]["write_scope"] == "sku" and by_id["14871214"]["variation_role"] == "variant"
+    assert not err_item.ok and err_item.error_code == "CATEGORY_LIVE_API_FAILED"
+
+    single_compact = category_attributes_query(
+        CategoryAttributesQueryRequest(
+            platform="yandex",
+            site="global",
+            category_id="cat-ok",
+            scope="writable",
+            compact=True,
+        ),
+        scope,
+        exec_ctx,
+    )
+    assert [attr["id"] for attr in single_compact.attributes] == ["100"]
+    assert single_compact.excluded_attributes == ()
+    assert "description" not in single_compact.attributes[0]

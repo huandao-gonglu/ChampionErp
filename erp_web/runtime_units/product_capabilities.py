@@ -24,6 +24,9 @@ from erp_web.schemas.category import category_attribute_value_is_valid
 from erp_web.runtime_units.category_attribute_updates import validate_attribute_updates
 from erp_web.runtime_units.product_attribute_patch import apply_attribute_patch
 from erp_web.schemas.product_capabilities import (
+    DraftAttributesReadBatchItem,
+    DraftAttributesReadBatchRequest,
+    DraftAttributesReadBatchResult,
     DraftSkuAttributesUpdateRequest,
     DraftSkuVariantsCheckBatchItem,
     DraftSkuVariantsCheckBatchRequest,
@@ -679,14 +682,12 @@ def product_read(
     return read_product(request, product_store=scope.products)
 
 
-@ai_tool(
-    name="draft_attributes_read",
-    description="属性任务优先使用此工具：默认返回商品/来源事实、全部平台目标的类目和已填公共属性，不含图片与 SKU 列表，无需先调用 draft_read/product_read。SKU 任务用 scope=sku 并明确平台/站点，一次返回范围内全部事实和属性；默认全部已选启用 SKU，局部核实用 sku_ids，分页用 limit 和 next_offset。先明确本轮全部 category_attributes_query 定义，保留一次读取的 draft_data 并据此批量补齐候选，再同时计算颜色、规格等本轮所需属性并合并提交，不按属性分轮重读整批 SKU。跨脚本复用本轮 REPL 变量；保存回执已有实际值，无需再次读取确认；整组差异任务用 draft_sku_variants_check 核对组合。返回 cost_cny、cost_source 和商品规格包装；核价直接用 draft_pricing_preview/apply，不为核价预读成本。只向模型汇总数量、缺口及少量必要样本，不输出整份数据。",
-    permission="product.read", side_effect="none", recovery_policy="retry_safe", version="2",
-)
-def draft_attributes_read(
+_BATCH_ATTRIBUTES_READ_MAX_WORKERS = 8
+
+
+def _read_draft_attributes(
     request: DraftAttributesReadRequest,
-    scope: Annotated[ProductCapabilityScope, Injected()],
+    scope: ProductCapabilityScope,
 ) -> DraftAttributesReadResult:
     draft, product = _load_draft(scope.products, request.draft_id)
     targets = (
@@ -729,6 +730,80 @@ def draft_attributes_read(
         draft_id=request.draft_id, updated_at=_text(draft.get("updated_at")), product=_product_facts(product), targets=target_facts,
         skus=items, sku_count=len(selected),
         next_offset=end if request.scope == "sku" and end < len(selected) else None,
+    )
+
+
+@ai_tool(
+    name="draft_attributes_read",
+    description="属性任务优先使用此工具：默认返回商品/来源事实（含 weight_kg/dimensions/updated_at）、全部平台目标的类目和已填公共属性，不含图片与 SKU 列表，无需先调用 draft_read/product_read。多份草稿批量读取请优先使用 draft_attributes_read_batch。SKU 任务用 scope=sku 并明确平台/站点，一次返回范围内全部事实和属性；默认全部已选启用 SKU，局部核实用 sku_ids，分页用 limit 和 next_offset。先明确本轮全部 category_attributes_query 定义，保留一次读取的 draft_data 并据此批量补齐候选，再同时计算颜色、规格等本轮所需属性并合并提交，不按属性分轮重读整批 SKU。跨脚本复用本轮 REPL 变量；保存回执已有实际值，无需再次读取确认；整组差异任务用 draft_sku_variants_check 核对组合。返回 cost_cny、cost_source 和商品规格包装；核价直接用 draft_pricing_preview/apply，不为核价预读成本。只向模型汇总数量、缺口及少量必要样本，不输出整份数据。",
+    permission="product.read", side_effect="none", recovery_policy="retry_safe", version="2",
+)
+def draft_attributes_read(
+    request: DraftAttributesReadRequest,
+    scope: Annotated[ProductCapabilityScope, Injected()],
+) -> DraftAttributesReadResult:
+    return _read_draft_attributes(request, scope)
+
+
+@ai_tool(
+    name="draft_attributes_read_batch",
+    description=(
+        "批量并发读取多份草稿的商品主档事实（含 product_id、updated_at、weight_kg、dimensions、source_attributes）、"
+        "目标类目与已填公共属性；scope=sku 时同时返回每份草稿全部已选启用 SKU 的规格、包装、成本、库存与平台属性。"
+        "多份草稿准备属性、核对重量/包装事实或恢复后重读时优先调用本工具，一次替代多条 draft_attributes_read 与 product_read，"
+        "避免循环消耗工具额度。脚本只向模型汇总缺口与必要样本，不整份打印返回体。"
+    ),
+    permission="product.read", side_effect="none", recovery_policy="retry_safe", version="1",
+)
+def draft_attributes_read_batch(
+    request: DraftAttributesReadBatchRequest,
+    scope: Annotated[ProductCapabilityScope, Injected()],
+) -> DraftAttributesReadBatchResult:
+    draft_ids = list(dict.fromkeys(request.draft_ids))
+
+    def _run_one(draft_id: str) -> DraftAttributesReadBatchItem:
+        check_cancellation()
+        try:
+            result = _read_draft_attributes(
+                DraftAttributesReadRequest(
+                    draft_id=draft_id,
+                    platform=request.platform,
+                    site=request.site,
+                    scope=request.scope,
+                    limit=request.max_skus_per_draft if request.scope == "sku" else None,
+                ),
+                scope,
+            )
+            return DraftAttributesReadBatchItem(draft_id=draft_id, ok=True, result=result)
+        except BusinessCapabilityError as exc:
+            return DraftAttributesReadBatchItem(
+                draft_id=draft_id,
+                ok=False,
+                error_code=exc.code,
+                error=str(exc),
+            )
+        except Exception as exc:
+            return DraftAttributesReadBatchItem(
+                draft_id=draft_id,
+                ok=False,
+                error_code="DRAFT_ATTRIBUTES_READ_FAILED",
+                error=str(exc) or "批量读取草稿属性失败",
+            )
+
+    workers = min(_BATCH_ATTRIBUTES_READ_MAX_WORKERS, len(draft_ids))
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="draft-attrs-read-batch") as pool:
+            futures = [pool.submit(copy_context().run, _run_one, draft_id) for draft_id in draft_ids]
+            items = [future.result() for future in futures]
+    else:
+        items = [_run_one(draft_id) for draft_id in draft_ids]
+
+    ok_count = sum(1 for item in items if item.ok)
+    return DraftAttributesReadBatchResult(
+        total=len(items),
+        ok_count=ok_count,
+        error_count=len(items) - ok_count,
+        items=items,
     )
 
 
@@ -983,6 +1058,7 @@ def product_images_prepare(
 PRODUCT_AI_CAPABILITIES = (
     product_read,
     draft_attributes_read,
+    draft_attributes_read_batch,
     draft_sku_variants_check,
     draft_sku_variants_check_batch,
     product_attributes_update,
@@ -1004,6 +1080,7 @@ __all__ = [
     "product_images_prepare",
     "product_read",
     "draft_attributes_read",
+    "draft_attributes_read_batch",
     "draft_sku_variants_check",
     "draft_sku_variants_check_batch",
     "read_product",

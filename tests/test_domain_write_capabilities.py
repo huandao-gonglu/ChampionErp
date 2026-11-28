@@ -937,7 +937,11 @@ def test_copy_generate_batch_strict_lookup_and_draft_ids_support(
         "product-copy-strict-b",
     ]
     assert all(item["platform"] == "yandex" for item in draft_batch_result.items)
-    assert context.products.find_draft_from_index(draft_a)["drafts"]["yandex"]["title"] == "Generated for product-copy-strict-a"
+    saved_a = context.products.find_draft_from_index(draft_a)["drafts"]["yandex"]
+    saved_b = context.products.find_draft_from_index(draft_b)["drafts"]["yandex"]
+    assert saved_a["title"] == "Generated for product-copy-strict-a"
+    assert draft_batch_result.items[0]["updated_at"] == saved_a["updated_at"]
+    assert draft_batch_result.items[1]["updated_at"] == saved_b["updated_at"]
     assert context.products.find_draft_from_index(draft_b)["drafts"]["yandex"]["title"] == "Generated for product-copy-strict-b"
 
     # 3) 不存在的 draft_id 与跨平台不匹配的 draft_id 均严格失败，不污染任何草稿。

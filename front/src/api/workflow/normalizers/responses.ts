@@ -1,5 +1,13 @@
 import type {
   DraftIndexItem,
+  DraftPrepStage,
+  DraftProgressMarket,
+  DraftProgressStep,
+  DraftProgressStepKey,
+  DraftProgressStepState,
+  DraftProgressSummary,
+  DraftProgressTab,
+  DraftProgressTone,
   Marketplace,
   MercadoLibreAuthChecklist,
   Product,
@@ -50,6 +58,53 @@ export function normalizeDraftsIndex(value: unknown): DraftIndexItem[] {
   return Array.isArray(value) ? value.map(normalizeDraftIndexItem) : []
 }
 
+function normalizeDraftProgress(value: unknown): DraftProgressSummary | undefined {
+  const record = asRecord(value)
+  if (!Object.keys(record).length) return undefined
+  const rawSteps = Array.isArray(record.steps) ? record.steps : []
+  const steps: DraftProgressStep[] = rawSteps
+    .map((entry) => {
+      const item = asRecord(entry)
+      const key = getString(item, ['key']) as DraftProgressStepKey
+      if (!key) return null
+      return {
+        key,
+        short: getString(item, ['short']),
+        label: getString(item, ['label']),
+        tab: (getString(item, ['tab']) || 'category') as DraftProgressTab,
+        state: (getString(item, ['state']) || 'pending') as DraftProgressStepState,
+        summary: getString(item, ['summary']),
+      }
+    })
+    .filter((item): item is DraftProgressStep => item !== null)
+  const rawMarkets = Array.isArray(record.markets) ? record.markets : []
+  const markets: DraftProgressMarket[] = rawMarkets.map((entry) => {
+    const item = asRecord(entry)
+    return {
+      platform: getString(item, ['platform']),
+      site: getString(item, ['site']),
+      label: getString(item, ['label']),
+      forbidden: getBoolean(item, ['forbidden']),
+      forbiddenReason: getString(item, ['forbidden_reason', 'forbiddenReason']),
+      statusLabel: getString(item, ['status_label', 'statusLabel']),
+      tone: (getString(item, ['tone']) || 'muted') as DraftProgressTone,
+      summary: getString(item, ['summary']),
+    }
+  })
+  return {
+    forbidden: getBoolean(record, ['forbidden']),
+    statusCode: getString(record, ['status_code', 'statusCode']),
+    statusLabel: getString(record, ['status_label', 'statusLabel']),
+    statusTone: (getString(record, ['status_tone', 'statusTone']) || 'muted') as DraftProgressTone,
+    prepStage: (getString(record, ['prep_stage', 'prepStage']) || 'pending') as DraftPrepStage,
+    completedSteps: getNumber(record, ['completed_steps', 'completedSteps'], 0),
+    totalSteps: getNumber(record, ['total_steps', 'totalSteps'], steps.length || 6),
+    alert: getString(record, ['alert']),
+    steps,
+    markets,
+  }
+}
+
 export function normalizeDraftIndexItem(value: unknown): DraftIndexItem {
   const record = asRecord(value)
   const platform = (getString(record, ['platform']) || 'mercadolibre') as Marketplace
@@ -73,6 +128,7 @@ export function normalizeDraftIndexItem(value: unknown): DraftIndexItem {
     language: getString(record, ['language']),
     status: getString(record, ['status']) as DraftIndexItem['status'],
     publishState: (getString(record, ['publish_state', 'publishState']) || undefined) as DraftIndexItem['publishState'],
+    progress: normalizeDraftProgress(record.progress),
     title: getString(record, ['title']),
     productTitle: getString(record, ['product_title']),
     mainImage: getString(record, ['main_image']),

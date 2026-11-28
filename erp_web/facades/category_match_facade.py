@@ -60,6 +60,7 @@ from erp_web.services.category_product_canonicalizer import (
 )
 from erp_web.services.forbidden_category_service import (
     forbidden_category_issue,
+    forbidden_category_match,
     forbidden_category_reason,
 )
 
@@ -817,17 +818,22 @@ def finalize_category_match(
         ]
         if abstain_reason == "forbidden_only" and forbidden_candidates:
             forbidden_labels = []
+            matched_category_ids: list[str] = []
+            matched_forbidden_ids: list[str] = []
+            forbidden_map = _forbidden_categories_map() if platform == "yandex" else {}
             for row in forbidden_candidates[:3]:
                 cid = str(row.get("category_id") or "").strip()
                 name = str(row.get("name") or "").strip()
                 reason = str(row.get("forbidden_reason") or "").strip()
-                if not reason and platform == "yandex":
-                    reason = forbidden_category_reason(
-                        platform,
-                        cid,
-                        _forbidden_categories_map(),
-                        ancestor_ids=get_context().category_catalog.cached_category_ancestor_ids(platform, cid),
-                    )
+                if cid:
+                    matched_category_ids.append(cid)
+                if platform == "yandex" and cid and forbidden_map:
+                    ancestors = get_context().category_catalog.cached_category_ancestor_ids(platform, cid)
+                    match = forbidden_category_match(platform, cid, forbidden_map, ancestor_ids=ancestors)
+                    if match and match.get("matched_category_id"):
+                        matched_forbidden_ids.append(str(match["matched_category_id"]))
+                    if not reason:
+                        reason = forbidden_category_reason(platform, cid, forbidden_map, ancestor_ids=ancestors)
                 label = (
                     f"{cid}（{name}：{reason}）"
                     if name and reason
@@ -845,6 +851,10 @@ def finalize_category_match(
                     "message": f"最匹配的类目属于禁售范围，且无合规替代类目：{'；'.join(forbidden_labels)}",
                     "stage": "decision",
                     "retryable": False,
+                    "details": {
+                        "matched_category_ids": list(dict.fromkeys(matched_category_ids)),
+                        "matched_forbidden_ids": list(dict.fromkeys(matched_forbidden_ids)),
+                    },
                 },
                 trace=trace,
             )

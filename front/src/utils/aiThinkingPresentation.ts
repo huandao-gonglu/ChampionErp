@@ -15,7 +15,7 @@ export function splitAssistantText(text: string, streaming = false): AssistantTe
     }
     // 只处理开头的标签块；正文提及标签或代码示例不做解释。
     if (!prefix.startsWith('<think>')) {
-      const toolMarkup = /^<run_code>\s*<code>|^<[｜|]{1,2}DSML[｜|]{1,2}\s*(?:function_calls|invoke)\b|<\/[｜|]{1,2}DSML[｜|]{1,2}\s*(?:function_calls|invoke|parameter|calls)\s*>/i.test(prefix)
+      const toolMarkup = /^<run_code>\s*<code>|^<[｜|]{1,2}DSML[｜|]{1,2}\s*(?:function_calls|calls|invoke)\b|<\/[｜|]{1,2}DSML[｜|]{1,2}\s*(?:function_calls|calls|invoke|parameter)\s*>/i.test(prefix)
       segments.push({ kind: toolMarkup ? 'tool-markup' : 'text', text: rest })
       break
     }

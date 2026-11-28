@@ -16,10 +16,13 @@ const props = withDefaults(defineProps<{
   /** 当前活动 conversation；切换、首次进入与 history version 变化时探测任务关联。 */
   conversationId?: string
   historyVersion?: number
+  /** page：全页居中阅读宽度 + 右贴边滚动条；compact：浮层紧凑全宽。 */
+  layout?: 'compact' | 'page'
 }>(), {
   error: '',
   conversationId: '',
   historyVersion: 0,
+  layout: 'compact',
 })
 
 const emit = defineEmits<{
@@ -147,7 +150,11 @@ onBeforeUnmount(() => { disposed = true; resizeObserver?.disconnect() })
 </script>
 
 <template>
-  <section class="mx-auto flex h-full w-full max-w-5xl flex-col" data-testid="ai-chat-panel">
+  <section
+    class="flex h-full w-full flex-col"
+    :class="layout === 'page' ? '' : 'mx-auto max-w-5xl'"
+    data-testid="ai-chat-panel"
+  >
     <p v-if="chatStore.restoring" role="status" class="p-6 text-center text-sm text-slate-500" data-testid="ai-chat-restoring">
       正在恢复上次对话…
     </p>
@@ -169,7 +176,11 @@ onBeforeUnmount(() => { disposed = true; resizeObserver?.disconnect() })
           @touchmove.passive="handleTouchMove"
           @keydown="handleKeydown"
         >
-          <div ref="contentRef" class="space-y-4 pb-5">
+          <div
+            ref="contentRef"
+            class="space-y-4 pb-5"
+            :class="layout === 'page' ? 'w-full px-6 pt-4' : ''"
+          >
             <!-- 空状态 -->
             <div
               v-if="!messages.length"
@@ -230,19 +241,22 @@ onBeforeUnmount(() => { disposed = true; resizeObserver?.disconnect() })
         </button>
       </div>
 
-      <ChatPendingActions :key="conversationId" />
-      <!-- 输入框 -->
-      <AiChatComposer
-        :model-value="input"
-        :busy="busy || chatStore.canStop"
-        :stopping="chatStore.stopping"
-        :queued-messages="chatStore.queueRows"
-        :status-notice="chatStore.receivedNotice"
-        :conversation-id="conversationId"
-        @update:model-value="emit('update:input', $event)"
-        @send="emit('send')"
-        @stop="emit('stop')"
-      />
+      <div :class="layout === 'page' ? 'w-full shrink-0 px-6 pb-3' : 'shrink-0'">
+        <ChatPendingActions :key="conversationId" />
+        <!-- 输入框 -->
+        <AiChatComposer
+          :model-value="input"
+          :busy="busy || chatStore.canStop"
+          :stopping="chatStore.stopping"
+          :queued-messages="chatStore.queueRows"
+          :status-notice="chatStore.receivedNotice"
+          :conversation-id="conversationId"
+          :borderless="layout === 'page'"
+          @update:model-value="emit('update:input', $event)"
+          @send="emit('send')"
+          @stop="emit('stop')"
+        />
+      </div>
     </template>
   </section>
 </template>

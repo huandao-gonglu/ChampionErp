@@ -1,13 +1,37 @@
 """远端 Yandex 发布仓指定物流商与运输模式；本地报单仓不参与。"""
 from copy import deepcopy
+from datetime import datetime, timezone
 import hashlib
 import json
+import threading
 
 from erp_web.international_shipping.tariff_store import load_active
 from erp_web.marketplaces.yandex_http import fetch_yandex_partner_warehouses, YandexApiError
 from erp_web.schemas.logistics import CARRIERS
 from erp_web.schemas.yandex_warehouses import SaveYandexWarehouses, account_key
 from erp_web.schemas.orders import utc_iso
+
+_CATALOG_CACHE_TTL_SECONDS = 300.0
+
+
+def _catalog_is_fresh(cached: object, identity: str, *, max_age_seconds: float | None) -> bool:
+    if max_age_seconds is None or max_age_seconds <= 0:
+        return False
+    if not isinstance(cached, dict) or cached.get('identity') != identity:
+        return False
+    if not isinstance(cached.get('items'), list):
+        return False
+    checked_at = str(cached.get('checked_at') or '').strip()
+    if not checked_at:
+        return False
+    try:
+        parsed = datetime.fromisoformat(checked_at.replace('Z', '+00:00'))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - parsed).total_seconds()
+    return 0.0 <= age < max_age_seconds
 
 
 def fingerprint(value):
@@ -30,6 +54,7 @@ class YandexLogisticsService:
         self.config_store = config_store
         self.rules_dir = rules_dir
         self.snapshot_loader = snapshot_loader or (lambda platform: load_active(rules_dir, platform))
+        self._refresh_lock = threading.Lock()
 
     def account(self):
         store = self.config_store.load_store_config().get('yandex', {})
@@ -43,17 +68,26 @@ class YandexLogisticsService:
         settings = self.config_store.load_app_config()['yandex_warehouses']
         return settings['accounts'].get(account_key(self.account()), {'revision': 0, 'bindings': []})
 
-    def warehouse_catalog(self, refresh=False):
-        identity = self.identity()
-        account = self.account()
-        cached = self.config_store.load_app_config()['yandex_warehouses']['catalog']
-        if refresh:
-            self.config_store.save_yandex_warehouse_catalog({})
+    def warehouse_catalog(self, refresh=False, *, max_age_seconds: float | None = None):
+        if not refresh:
+            identity = self.identity()
+            cached = self.config_store.load_app_config()['yandex_warehouses']['catalog']
+            return cached if cached.get('identity') == identity else {'items': [], 'checked_at': ''}
+        with self._refresh_lock:
+            identity = self.identity()
+            account = self.account()
+            cached = self.config_store.load_app_config()['yandex_warehouses']['catalog']
             if account['placement_type'] != 'FBS' or account['stock_update_mode'] != 'business':
+                self.config_store.save_yandex_warehouse_catalog({})
                 raise ValueError('按物流选择发布仓库目前要求 Yandex FBS 独立仓库；仓库组不能指定组内单仓')
             store = self.config_store.load_store_config().get('yandex', {})
             if not account['business_id'] or not account['campaign_id'] or not store.get('api_token'):
+                self.config_store.save_yandex_warehouse_catalog({})
                 raise ValueError('请先完成 Yandex 店铺授权')
+            if _catalog_is_fresh(cached, identity, max_age_seconds=max_age_seconds):
+                return cached
+            # 先取远端并校验再覆盖本地快照；限流/预算拦截或网络超时时保留既有有效目录，
+            # 避免已核价草稿在发布预检中被误判为“发布仓库或运输模式已变化”。
             rows = fetch_yandex_partner_warehouses(store['api_token'], account['business_id'])
             items = []
             for row in rows:
@@ -70,7 +104,7 @@ class YandexLogisticsService:
                 raise ValueError('Yandex 账号已变化，请重新同步发布仓库')
             cached = {'identity': identity, 'items': items, 'checked_at': utc_iso()}
             self.config_store.save_yandex_warehouse_catalog(cached)
-        return cached if cached.get('identity') == identity else {'items': [], 'checked_at': ''}
+            return cached
 
     def routes(self):
         snapshot = self.snapshot_loader('yandex')
@@ -174,7 +208,7 @@ class YandexLogisticsService:
                 plans.append(plan)
         return sorted(plans, key=lambda p: (p['route_id'], p['publish_warehouse_id']))
 
-    def pricing_plans(self):
+    def pricing_plans(self, *, force_refresh: bool = False):
         try:
             bindings, _ = self.mode_bindings(self.routes(), self.configuration())
         except (ValueError, FileNotFoundError):
@@ -182,7 +216,10 @@ class YandexLogisticsService:
         if not any(b['enabled'] and b['shipping_mode'] for b in bindings):
             return []
         try:
-            self.warehouse_catalog(refresh=True)
+            self.warehouse_catalog(
+                refresh=True,
+                max_age_seconds=None if force_refresh else _CATALOG_CACHE_TTL_SECONDS,
+            )
         except (RuntimeError, YandexApiError) as exc:
             raise ValueError(f'Yandex 发布仓库同步失败，无法核验可用物流方案：{exc}') from exc
         return self.plans()

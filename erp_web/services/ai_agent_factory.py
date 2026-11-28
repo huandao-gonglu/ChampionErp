@@ -31,6 +31,7 @@ from pydantic_ai.exceptions import (
     ModelAPIError,
     ModelHTTPError,
     UnexpectedModelBehavior,
+    UserError,
 )
 from pydantic_ai.messages import (
     AgentStreamEvent,
@@ -360,6 +361,18 @@ def _safe_agent_error(
             retryable=True,
             **correlation,
         )
+    if isinstance(exc, UserError):
+        return AiAgentExecutionError(
+            "AI_MODEL_REQUEST_UNSUPPORTED",
+            safe_model_error_text(str(exc)) or "模型请求参数不受支持。",
+            retryable=False,
+            details=model_error_attribution(
+                use_case_id=use_case_id,
+                model_id=model_id,
+                model_name=model_name,
+            ),
+            **correlation,
+        )
     if isinstance(exc, (UnexpectedModelBehavior, AgentRunError)):
         return AiAgentExecutionError(
             exc.__class__.__name__,
@@ -627,6 +640,8 @@ class AiAgentFactory:
     @staticmethod
     def _bounded_model_settings(
         base: ModelSettings,
+        *,
+        allow_text_output: bool = True,
     ) -> Callable[[RunContext[AiAgentDependencies]], ModelSettings]:
         base_settings = dict(base)
 
@@ -639,8 +654,10 @@ class AiAgentFactory:
             limit = ctx.deps.tool_runtime.max_tool_calls
             if limit is not None and limit - ctx.usage.tool_calls <= 1:
                 current["parallel_tool_calls"] = False
-            if (limit is not None and ctx.usage.tool_calls >= limit) or _deadline_reserve_reached(ctx):
-                # 同时约束 Provider 的工具选择，避免模型继续调用历史里已隐藏的查询工具或空壳 run_code。
+            if allow_text_output and ((limit is not None and ctx.usage.tool_calls >= limit) or _deadline_reserve_reached(ctx)):
+                # 文本输出 Agent 在收尾时约束 tool_choice，避免模型继续调用历史里已隐藏的查询工具或空壳 run_code。
+                # 纯结构化输出 Agent 已由 PrepareTools 清空 function_tools，只保留 output_tools；
+                # 若显式传 ToolOrOutput(function_tools=[])，思考/不支持 required 的模型会被 SDK 视为强制 tool_choice 而抛 UserError。
                 current["tool_choice"] = ToolOrOutput(function_tools=[])
             return current
 
@@ -668,17 +685,21 @@ class AiAgentFactory:
         def run_instructions(ctx: RunContext[AiAgentDependencies]) -> str:
             # 业务要求与动态额度是同一组指令；统一交给原生 instructions 编码。
             # 部分兼容服务只保留最后一条 system 消息，拆开发送会丢失业务约束。
+            # 脚本异常回执改在 project_model_request 附加到尾部 RetryPromptPart，避免动态改写系统前缀击穿缓存。
             support = ctx.deps.tool_runtime.run_support
             background = support.context_instructions() if support is not None else ""
-            receipts = support.code_failure_instructions(ctx.messages) if support is not None else ""
-            return "\n\n".join(filter(None, (instructions, background, receipts, agent_budget_instructions(ctx))))
+            return "\n\n".join(filter(None, (instructions, background, agent_budget_instructions(ctx))))
 
+        allow_text_output = profile.output_type is str or str in get_args(profile.output_type)
         agent: Agent[AiAgentDependencies, OutputT] = Agent(
             model_override or binding.model,
             output_type=profile.output_type,
             instructions=run_instructions,
             deps_type=AiAgentDependencies,
-            model_settings=self._bounded_model_settings(binding.model_settings),
+            model_settings=self._bounded_model_settings(
+                binding.model_settings,
+                allow_text_output=allow_text_output,
+            ),
             retries=profile.retries,
             tools=[USER_INPUT_TOOL] if profile.user_input_tool else [],
             toolsets=[build_pydantic_toolset(toolset)],

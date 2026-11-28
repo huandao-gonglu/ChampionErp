@@ -105,8 +105,24 @@ const fallbackProviders = [
   { id: PROVIDER_ID_ALIBABA, label: '阿里云百炼 / Qwen', description: '使用 Pydantic AI 的 AlibabaProvider，支持百炼原生 Thinking 与联网参数。', provider_family: 'alibaba', default_base_url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models', base_url_editable: true },
   { id: PROVIDER_ID_OMLX, label: 'oMLX（本地模型）', description: '通过 OpenAI 兼容接口连接 oMLX，默认使用 Chat Completions，支持模型 Thinking 开关。', provider_family: 'omlx', default_base_url: 'http://127.0.0.1:8000/v1', default_api_style: 'openai_compatible', supported_api_styles: ['openai_compatible', 'openai_responses'], model_discovery: 'openai_models', base_url_editable: true },
 ]
-const modelListDependencyFields = new Set(['provider_id', 'api_style', 'base_url', 'base_url_env', 'api_key', 'api_key_env'])
-const capabilityProbeDependencyFields = new Set([...modelListDependencyFields, 'model', 'connection_type', 'cli_tool', 'command', 'profile', 'sandbox', 'browser_provider', 'browser_mode', 'browser_profile', 'browser_port', 'browser_url', 'browser_proxy'])
+const modelListDependencyFields = new Set(['provider_id', 'base_url'])
+const capabilityProbeDependencyFields = new Set([
+  'provider_id',
+  'api_style',
+  'base_url',
+  'model',
+  'connection_type',
+  'cli_tool',
+  'command',
+  'profile',
+  'sandbox',
+  'browser_provider',
+  'browser_mode',
+  'browser_profile',
+  'browser_port',
+  'browser_url',
+  'browser_proxy',
+])
 const aiRequestPending = ref(false)
 const aiRequestMessage = ref('')
 const capabilityProbeDialog = reactive({
@@ -375,12 +391,9 @@ function normalizeAiModelRow(value: unknown, index: number): UnknownRecord {
     provider_id: connectionType === API_CONNECTION_TYPE ? providerId : '',
     api_style: firstText(record.api_style, providerDefaultApiStyle(providerId)),
     base_url: firstText(record.base_url),
-    base_url_env: firstText(record.base_url_env),
     api_key: firstText(record.api_key),
-    api_key_env: firstText(record.api_key_env),
     api_key_masked: firstText(record.api_key_masked),
     model,
-    model_env: firstText(record.model_env),
     quality: firstText(record.quality),
     size: firstText(record.size),
     timeout_seconds: firstText(record.timeout_seconds),
@@ -721,8 +734,8 @@ const capabilityLabelByValue = Object.fromEntries(capabilityOptions.map((item) =
 const selectedAiModelConnectionType = computed(() => normalizeConnectionType(modelField('connection_type', API_CONNECTION_TYPE)))
 const selectedSystemModel = computed(() => selectedAiModel.value?.system_managed === true)
 const systemConnectionFields = new Set([
-  'id', 'connection_type', 'provider_id', 'api_style', 'base_url', 'base_url_env',
-  'api_key', 'api_key_env', 'model', 'model_env',
+  'id', 'connection_type', 'provider_id', 'api_style', 'base_url',
+  'api_key', 'model',
 ])
 
 function modelForServer(row: UnknownRecord): UnknownRecord {
@@ -784,8 +797,8 @@ const selectedModelListReady = computed(() => Boolean(
   && selectedAiModelIsApi.value
   && selectedProviderSupportsModelDiscovery.value
   && !selectedSystemModel.value
-  && firstText(selectedAiModel.value.base_url, selectedAiModel.value.base_url_env)
-  && (firstText(selectedAiModel.value.api_key, selectedAiModel.value.api_key_env) || selectedAiModel.value.api_key_configured),
+  && firstText(selectedAiModel.value.base_url)
+  && (firstText(selectedAiModel.value.api_key) || selectedAiModel.value.api_key_configured),
 ))
 const aiControlsLocked = computed(() => props.modelsReading || props.modelsSaving || aiRequestPending.value)
 const modelStatus = computed(() => {
@@ -851,9 +864,7 @@ function aiPayload(bindings: UnknownRecord): UnknownRecord {
         row.provider = cliToolLabel(String(row.cli_tool || 'codex'))
         row.command = firstText(row.command, cliToolDefaultCommand(String(row.cli_tool || 'codex')))
         row.base_url = ''
-        row.base_url_env = ''
         row.api_key = ''
-        row.api_key_env = ''
         row.api_style = 'openai_compatible'
         row.api_key_configured = false
         row.api_key_masked = ''
@@ -880,14 +891,11 @@ function aiPayload(bindings: UnknownRecord): UnknownRecord {
           row.browser_mode = firstText(row.browser_mode, BROWSER_MODE_MANAGED_PROFILE)
         }
         row.base_url = ''
-        row.base_url_env = ''
         row.api_key = ''
-        row.api_key_env = ''
         row.api_style = 'openai_compatible'
         row.api_key_configured = false
         row.api_key_masked = ''
         delete row.provider_id
-        row.model_env = ''
         delete row.cli_tool
         delete row.command
         delete row.extra
@@ -932,9 +940,26 @@ function updateCustomRequestBodyText(value: string) {
   customRequestBodyEditor.error = ''
 }
 
+function pruneIncompatibleBindingsForModel(model: UnknownRecord) {
+  const modelId = firstText(model.id)
+  if (!modelId) return
+  for (const [useCaseId, binding] of Object.entries(aiUseCaseBindings.value)) {
+    if (firstText(binding.model_id) !== modelId) continue
+    const useCase = aiUseCases.value.find((item) => firstText(item.id) === useCaseId)
+    if (useCase && modelSupportsUseCase(model, useCase)) continue
+    const next: UnknownRecord = { ...binding, model_id: '' }
+    if (!firstText(next.model_id, next.timeout_override_seconds) && !useCaseBindingGenerationPayload(next)) {
+      delete aiUseCaseBindings.value[useCaseId]
+    } else {
+      aiUseCaseBindings.value[useCaseId] = next
+    }
+  }
+}
+
 function clearCapabilityProofs(model: UnknownRecord) {
   model.capabilities = []
   model.capability_profiles = {}
+  pruneIncompatibleBindingsForModel(model)
 }
 
 function commitCustomRequestBody(): boolean {
@@ -1074,6 +1099,17 @@ function setSelectedModelField(field: string, value: string | boolean) {
   const previousCliTool = String(selectedAiModel.value.cli_tool || 'codex')
   const previousCliDefaultCommand = cliToolDefaultCommand(previousCliTool)
   selectedAiModel.value[field] = nextValue
+  if (field === 'id' && typeof previous === 'string' && typeof nextValue === 'string') {
+    const previousId = firstText(previous)
+    const nextId = firstText(nextValue)
+    if (previousId && nextId && previousId !== nextId) {
+      for (const [useCaseId, binding] of Object.entries(aiUseCaseBindings.value)) {
+        if (firstText(binding.model_id) === previousId) {
+          aiUseCaseBindings.value[useCaseId] = { ...binding, model_id: nextId }
+        }
+      }
+    }
+  }
   if (field === 'connection_type') {
     if (nextValue === CLI_CONNECTION_TYPE) {
       const cliTool = firstText(selectedAiModel.value.cli_tool, 'codex')
@@ -1082,9 +1118,7 @@ function setSelectedModelField(field: string, value: string | boolean) {
       selectedAiModel.value.provider = cliToolLabel(cliTool)
       selectedAiModel.value.model = ''
       selectedAiModel.value.base_url = ''
-      selectedAiModel.value.base_url_env = ''
       selectedAiModel.value.api_key = ''
-      selectedAiModel.value.api_key_env = ''
       selectedAiModel.value.api_style = 'openai_compatible'
       selectedAiModel.value.provider_id = ''
       selectedAiModel.value.browser_provider = ''
@@ -1098,11 +1132,8 @@ function setSelectedModelField(field: string, value: string | boolean) {
       selectedAiModel.value.browser_provider = firstText(selectedAiModel.value.browser_provider)
       selectedAiModel.value.browser_mode = firstText(selectedAiModel.value.browser_mode, BROWSER_MODE_MANAGED_PROFILE)
       selectedAiModel.value.model = ''
-      selectedAiModel.value.model_env = ''
       selectedAiModel.value.base_url = ''
-      selectedAiModel.value.base_url_env = ''
       selectedAiModel.value.api_key = ''
-      selectedAiModel.value.api_key_env = ''
       selectedAiModel.value.api_style = 'openai_compatible'
       selectedAiModel.value.provider_id = ''
       selectedAiModel.value.cli_tool = ''
@@ -1173,6 +1204,9 @@ function setSelectedModelField(field: string, value: string | boolean) {
       clearCapabilityProofs(selectedAiModel.value)
     }
   }
+  if (field === 'enabled' && nextValue === false) {
+    pruneIncompatibleBindingsForModel(selectedAiModel.value)
+  }
 }
 
 function selectedCapabilities(): string[] {
@@ -1203,6 +1237,7 @@ function setWebSearchRequestMode(mode: string) {
     capabilities.delete('web_search')
     selectedAiModel.value.capabilities = Array.from(capabilities)
     removeCapabilityProfile(selectedAiModel.value, 'web_search')
+    pruneIncompatibleBindingsForModel(selectedAiModel.value)
   }
 }
 
@@ -1407,6 +1442,7 @@ function setCapability(capability: string, checked: boolean, event?: Event) {
     removeCapabilityProfile(selectedAiModel.value, capability)
   }
   selectedAiModel.value.capabilities = Array.from(current)
+  if (!checked) pruneIncompatibleBindingsForModel(selectedAiModel.value)
   if (!modelHasImageCapability(selectedAiModel.value)) {
     selectedAiModel.value.quality = ''
     selectedAiModel.value.size = ''
@@ -1454,7 +1490,7 @@ function duplicateSelectedAiModel() {
   const cloned = normalizeAiModelRow({
     ...current,
     system_managed: false,
-    ...(current.system_managed ? { api_key_configured: false, api_key_masked: '', api_key_env: '', base_url: '' } : {}),
+    ...(current.system_managed ? { api_key_configured: false, api_key_masked: '', base_url: '' } : {}),
     id: uniqueAiModelId(sourceId || firstText(current.model) || `ai_model_${aiModels.value.length + 1}`),
     name: uniqueAiModelName(firstText(current.name, current.id, `AI 模型 ${aiModels.value.length + 1}`)),
     capabilities: asStringArray(current.capabilities),
@@ -2103,14 +2139,6 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
                         <option v-for="apiStyle in selectedProviderApiStyleOptions" :key="apiStyle" :value="apiStyle">{{ apiStyleLabel(apiStyle) }}</option>
                       </select>
                       <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">默认自动匹配：DeepSeek、Qwen 等第三方模型与中转站走 Chat Completions；OpenAI 官方 GPT-5 / o3 / Codex 走 Responses。</span>
-                    </label>
-                    <label class="block">
-                      <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">Base URL 环境变量</span>
-                      <input class="input" :value="modelField('base_url_env')" :disabled="selectedSystemModel || aiControlsLocked" placeholder="可选" @input="setSelectedModelField('base_url_env', eventText($event))" />
-                    </label>
-                    <label class="block">
-                      <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">API Key 环境变量</span>
-                      <input class="input" :value="modelField('api_key_env')" :disabled="selectedSystemModel || aiControlsLocked" placeholder="可选" @input="setSelectedModelField('api_key_env', eventText($event))" />
                     </label>
                     <label class="block md:col-span-2">
                       <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">自定义请求 JSON</span>

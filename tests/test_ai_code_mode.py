@@ -404,9 +404,12 @@ def test_script_error_exposes_saved_receipts_before_retry_without_replaying(tmp_
         if len(requests) == 1:
             yield {0: code_delta("await update_row(draft_id='already-saved')\n1 / 0", "partial")}
         elif len(requests) == 2:
-            assert "already-saved" in info.instructions
-            assert "partial__1" in info.instructions
-            assert "禁止整段重放" in info.instructions
+            retries = [str(p.content) for m in messages for p in m.parts if isinstance(p, RetryPromptPart)]
+            assert retries
+            assert "already-saved" in retries[-1]
+            assert "partial__1" in retries[-1]
+            assert "禁止整段重放" in retries[-1]
+            assert "already-saved" not in (info.instructions or "")
             yield {0: code_delta("await update_row(draft_id='remaining')", "continue")}
         else:
             yield "两项已保存。"
@@ -444,7 +447,7 @@ def test_large_script_summary_is_bounded_without_losing_nested_receipts(tmp_path
 
 
 def test_run_code_type_errors_get_more_corrections_than_other_tools(tmp_path):
-    assert global_agent_chat_service.GLOBAL_CHAT_PROFILE.retries == 2
+    assert global_agent_chat_service.GLOBAL_CHAT_PROFILE.retries == 3
     assert global_agent_chat_service.GLOBAL_CHAT_PROFILE.python_retries == 4
     finals = []
 
@@ -506,7 +509,8 @@ def test_script_error_then_literal_tool_text_recovers_with_existing_evidence(tmp
         elif retries[-1].tool_name == "run_code":
             assert "ModuleNotFoundError" in str(retries[-1].content)
             assert "2928" in str(retries[-1].content)
-            assert "标准输出" in info.instructions
+            assert "标准输出" in str(retries[-1].content)
+            assert "标准输出" not in (info.instructions or "")
             yield invalid
         else:
             assert "未执行" in retries[-1].content
@@ -533,25 +537,160 @@ def test_script_error_then_literal_tool_text_recovers_with_existing_evidence(tmp
     "```xml\n<run_code><code>示例</code></run_code>\n```",
 ])
 def test_tool_markup_in_explanation_is_displayable(text):
-    from erp_web.services.chat_reply_text import is_tool_call_text
+    from erp_web.services.chat_reply_text import has_unclosed_think, is_tool_call_text
     assert not is_tool_call_text(text)
+    assert not has_unclosed_think(text)
     assert is_tool_call_text("<think>计划</think>\n<｜DSML｜function_calls>")
+    assert is_tool_call_text('\n\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name="run_code">')
+    assert is_tool_call_text("Now: collect SKU dims.\n</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ calls>")
+    # 未闭合 <think> 后残留 DSML 闭合标记时，不能被 visible_reply 返回空串而漏检。
+    assert is_tool_call_text("<think>\nStill 4 groups...\n</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls>")
+    assert has_unclosed_think("<think>\n仍在分析但忘记闭合")
+    assert not has_unclosed_think("<think>内部思考</think>正式结论")
+
+
+def test_unclosed_think_with_dsml_and_blank_think_only_reply_trigger_retry(tmp_path):
+    """未闭合 <think> 夹带 DSML 标记或仅有思考标签无可见正文时，必须触发原生重试并恢复。"""
+    leaked_dsml = (
+        "<think>\nStill 4 groups of 2 duplicates.\n"
+        "</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls>"
+    )
+    blank_think = "<think>\n忘记闭合的思考正文，没有可见输出。"
+    final = "已完成 20 条草稿核对并输出最终结论。"
+    step = {"n": 0}
+
+    async def model(messages, info):
+        retries = [p for m in messages for p in m.parts if isinstance(p, RetryPromptPart)]
+        step["n"] += 1
+        if step["n"] == 1:
+            yield leaked_dsml
+        elif step["n"] == 2:
+            assert retries and "工具调用标记" in str(retries[-1].content)
+            yield blank_think
+        else:
+            assert len(retries) == 2 and "未闭合的 <think>" in str(retries[-1].content)
+            yield final
+
+    ui = service(tmp_path, FunctionModel(stream_function=model), tools())
+    asyncio.run(ui.prepare_run(body("继续处理草稿")).stream(lambda _: None))
+    assert step["n"] == 3
+    assert ui.dump_ui_messages(CONVERSATION)["run_status"] == "completed"
+    visible = ui.dump_ui_messages(CONVERSATION)["messages"]
+    texts = [p["text"] for m in visible for p in m["parts"] if p["type"] == "text"]
+    assert leaked_dsml not in texts and blank_think not in texts and texts[-1] == final
+
+
+def test_dsml_calls_variant_triggers_native_retry_and_recovers(tmp_path):
+    executions = []
+    leaked = (
+        '\n\n<｜｜DSML｜｜ calls>\n'
+        '<｜｜DSML｜｜ invoke name="run_code">\n'
+        '<｜｜DSML｜｜ parameter name="code" string="true">await update_row(draft_id="d1")</｜｜DSML｜｜ parameter>\n'
+        '</｜｜DSML｜｜ invoke>\n'
+        '</｜｜DSML｜｜ calls>'
+    )
+    final = "已完成 1 条草稿处理。"
+
+    async def model(messages, info):
+        retries = [p for m in messages for p in m.parts if isinstance(p, RetryPromptPart)]
+        if not retries:
+            yield leaked
+        else:
+            assert "未执行" in str(retries[-1].content)
+            yield final
+
+    update = binding("update_row", lambda args, ctx: executions.append(args), write=True)
+    ui = service(tmp_path, FunctionModel(stream_function=model), tools(update))
+    asyncio.run(ui.prepare_run(body("继续处理草稿")).stream(lambda _: None))
+    assert not executions
+    assert ui.dump_ui_messages(CONVERSATION)["run_status"] == "completed"
+    visible = ui.dump_ui_messages(CONVERSATION)["messages"]
+    texts = [p["text"] for m in visible for p in m["parts"] if p["type"] == "text"]
+    assert leaked not in texts and texts[-1] == final
 
 
 def test_repeated_tool_markup_exhausts_native_retries_without_executing(tmp_path):
     calls, executions = [], []
+    retry_prompts: list[str] = []
 
     async def model(messages, info):
         calls.append(1)
+        for msg in messages:
+            for part in msg.parts:
+                if isinstance(part, RetryPromptPart):
+                    text = str(part.content)
+                    if text not in retry_prompts:
+                        retry_prompts.append(text)
         yield "<｜DSML｜function_calls><｜DSML｜invoke name=\"update_row\">"
 
     update = binding("update_row", lambda args, ctx: executions.append(args), write=True)
     ui = service(tmp_path, FunctionModel(stream_function=model), tools(update))
     asyncio.run(ui.prepare_run(body()).stream(lambda _: None))
     assert len(calls) == global_agent_chat_service.GLOBAL_CHAT_PROFILE.retries + 1
+    assert any("严禁输出任何工具调用标记" in prompt and "不要继续调用工具" in prompt for prompt in retry_prompts)
     assert ui.dump_ui_messages(CONVERSATION)["run_status"] == "failed"
     assert not executions
     assert not any((m.metadata or {}).get("chat_final") for m in ui.chat_service.trusted_history(CONVERSATION))
+
+
+def test_last_chance_retry_prompt_recovers_readable_summary_after_repeated_dsml(tmp_path):
+    calls = 0
+
+    async def model(messages, info):
+        nonlocal calls
+        calls += 1
+        retries = [str(p.content) for m in messages for p in m.parts if isinstance(p, RetryPromptPart)]
+        if retries and "这是最后一次回复机会" in retries[-1]:
+            yield "已完成 16 份草稿，跳过 2 份禁售草稿，另有 2 份待补充尺寸。"
+        else:
+            yield "<｜DSML｜calls><｜DSML｜invoke name=\"draft_read\">"
+
+    ui = service(tmp_path, FunctionModel(stream_function=model))
+    asyncio.run(ui.prepare_run(body("继续处理 20 份草稿")).stream(lambda _: None))
+    assert calls == global_agent_chat_service.GLOBAL_CHAT_PROFILE.retries + 1
+    dumped = ui.dump_ui_messages(CONVERSATION)
+    assert dumped["run_status"] == "completed"
+    texts = [p["text"] for m in dumped["messages"] for p in m["parts"] if p["type"] == "text"]
+    assert texts[-1] == "已完成 16 份草稿，跳过 2 份禁售草稿，另有 2 份待补充尺寸。"
+
+
+def test_code_failure_receipts_attach_to_retry_part_without_mutating_system_instructions(tmp_path):
+    """run_code 报错后的写回执提醒附加在尾部 RetryPromptPart，不改写 System Instructions 前缀，也不污染持久化历史。"""
+    instructions_seen: list[str] = []
+    retry_contents_seen: list[str] = []
+    writes: list[dict] = []
+
+    async def model(messages, info):
+        instructions_seen.append(info.instructions or "")
+        retries = [str(p.content) for m in messages for p in m.parts if isinstance(p, RetryPromptPart)]
+        if len(instructions_seen) == 1:
+            yield {0: code_delta("await update_row(draft_id='d1')\n1 / 0", "boom")}
+        elif len(instructions_seen) == 2:
+            retry_contents_seen.extend(retries)
+            yield {0: code_delta("1 + 1", "ok")}
+        else:
+            yield "已按回执完成后续计算。"
+
+    ui = service(
+        tmp_path,
+        FunctionModel(stream_function=model),
+        tools(binding("update_row", lambda args, ctx: writes.append(args) or {"ok": True}, write=True)),
+    )
+    asyncio.run(ui.prepare_run(body("更新并计算")).stream(lambda _: None))
+    assert writes == [{"draft_id": "d1"}]
+    assert len(instructions_seen) == 3
+    # 系统指令在首轮、报错重试轮与恢复轮完全一致，不击穿前缀缓存。
+    assert instructions_seen[0] == instructions_seen[1] == instructions_seen[2]
+    assert "刚才脚本的实际写回执如下" not in instructions_seen[1]
+    assert any("刚才脚本的实际写回执如下" in text and "update_row" in text for text in retry_contents_seen)
+    # 持久化原生历史仍保留干净的原始 RetryPromptPart，未被投影污染。
+    persisted_retries = [
+        str(p.content)
+        for m in ui.chat_service.trusted_history(CONVERSATION)
+        for p in m.parts
+        if isinstance(p, RetryPromptPart)
+    ]
+    assert persisted_retries and all("刚才脚本的实际写回执如下" not in text for text in persisted_retries)
 
 
 def test_run_code_emits_transient_code_progress_chunks_without_polluting_history(tmp_path):
@@ -730,3 +869,71 @@ def test_run_code_emits_deduped_fatal_model_errors_in_code_progress(tmp_path):
     assert last_fatal[0]["use_case_label"] == "商品类目候选匹配"
     assert last_fatal[0]["model_name"] == "deepSeekv4.1flash"
     assert last_fatal[0]["count"] == 2
+
+
+def test_dynamic_catalog_splits_sandbox_and_direct_only_tool_announcements(tmp_path):
+    """按需发现后，审批/direct_only 工具不得被广播为可在 run_code 内调用，应明确提示仅支持顶层直接调用。"""
+    from pydantic_ai.messages import SystemPromptPart
+
+    executed: list[str] = []
+    search_descriptions: list[str] = []
+    announcements: list[str] = []
+
+    lookup = binding("lookup_row", lambda args, ctx: executed.append("lookup_row") or {"ok": True})
+    confirm = binding(
+        "confirm_estimates",
+        lambda args, ctx: executed.append("confirm_estimates") or {"ok": True},
+        write=True,
+        approval=True,
+    )
+    direct_img = replace(
+        binding("edit_image", lambda args, ctx: executed.append("edit_image") or {"ok": True}, write=True),
+        direct_only=True,
+    )
+
+    async def model(messages, info):
+        search_tool = next((t for t in info.function_tools if t.name == "search_tools"), None)
+        if search_tool is not None and not search_descriptions:
+            search_descriptions.append(search_tool.description or "")
+        for msg in messages:
+            for part in msg.parts:
+                content = getattr(part, "content", None)
+                if isinstance(content, str) and "run_code" in content and content not in announcements:
+                    announcements.append(content)
+        if discovery := discover_tools(info, "lookup_row", "confirm_estimates", "edit_image"):
+            yield {0: discovery}
+            return
+        if "edit_image" not in executed:
+            yield {0: DeltaToolCall(name="edit_image", json_args='{"draft_id":"d1"}', tool_call_id="c-img")}
+            return
+        yield "已完成。"
+
+    ts = replace(tools(lookup, confirm, direct_img), defer_loading=True)
+    ui = service(tmp_path, FunctionModel(stream_function=model), ts)
+    asyncio.run(ui.prepare_run(body("发现工具并直接调用")).stream(lambda _: None))
+
+    assert search_descriptions
+    assert "discovered tools become callable as functions inside the run_code sandbox" not in search_descriptions[0]
+    assert "must be called directly as top-level tool calls" in search_descriptions[0]
+
+    sandbox_notes = [note for note in announcements if "available inside `run_code`" in note and "NOT available" not in note]
+    direct_notes = [note for note in announcements if "NOT available inside `run_code`" in note]
+    assert len(sandbox_notes) == 1
+    assert "`lookup_row`" in sandbox_notes[0]
+    assert "confirm_estimates" not in sandbox_notes[0]
+    assert "edit_image" not in sandbox_notes[0]
+
+    assert len(direct_notes) == 1
+    assert "`confirm_estimates`" in direct_notes[0]
+    assert "`edit_image`" in direct_notes[0]
+    assert "lookup_row" not in direct_notes[0]
+
+    native_system_notes = [
+        str(part.content)
+        for msg in ui.chat_service.trusted_history(CONVERSATION)
+        for part in msg.parts
+        if isinstance(part, SystemPromptPart)
+    ]
+    assert any("`lookup_row`" in note and "confirm_estimates" not in note for note in native_system_notes)
+    assert any("NOT available inside `run_code`" in note and "`confirm_estimates`" in note for note in native_system_notes)
+    assert executed == ["edit_image"]

@@ -100,6 +100,7 @@ export {
   type BackendProductSku,
   type BackendProductSource,
   type BackendMercadoLibreSiteToSell,
+  type BackendDraftCategoryBlock,
   type BackendDraftTargetSite,
   type BackendPlatformDraft,
   type BackendProduct,
@@ -312,6 +313,9 @@ export type WorkflowStatus =
   | 'images_ready'
   | 'priced'
   | 'category_ready'
+  | 'category_forbidden'
+  | 'preparing'
+  | 'needs_confirmation'
   | 'ready_to_publish'
   | 'published'
   | 'failed'
@@ -839,6 +843,54 @@ export interface ProductIndexItem {
   raw: UnknownRecord
 }
 
+export type DraftProgressStepKey = 'category' | 'copy' | 'images' | 'attributes' | 'pricing' | 'precheck'
+export type DraftProgressStepState = 'done' | 'blocked' | 'attention' | 'partial' | 'pending'
+export type DraftProgressTone = 'success' | 'danger' | 'warning' | 'info' | 'muted'
+export type DraftProgressTab = 'text' | 'images' | 'category' | 'skus' | 'pricing' | 'precheck'
+export type DraftPrepStage =
+  | 'category_forbidden'
+  | 'not_ready'
+  | 'ready_to_publish'
+  | 'needs_confirmation'
+  | 'preparing'
+  | 'pending'
+  | 'publishing'
+  | 'publish_failed'
+  | 'published'
+
+export interface DraftProgressStep {
+  key: DraftProgressStepKey
+  short: string
+  label: string
+  tab: DraftProgressTab
+  state: DraftProgressStepState
+  summary: string
+}
+
+export interface DraftProgressMarket {
+  platform: Marketplace | string
+  site: string
+  label: string
+  forbidden: boolean
+  forbiddenReason: string
+  statusLabel: string
+  tone: DraftProgressTone
+  summary: string
+}
+
+export interface DraftProgressSummary {
+  forbidden: boolean
+  statusCode: string
+  statusLabel: string
+  statusTone: DraftProgressTone
+  prepStage: DraftPrepStage
+  completedSteps: number
+  totalSteps: number
+  alert: string
+  steps: DraftProgressStep[]
+  markets: DraftProgressMarket[]
+}
+
 export interface DraftIndexItem {
   draftId: string
   productId: string
@@ -850,6 +902,7 @@ export interface DraftIndexItem {
   language: string
   status: WorkflowStatus | string
   publishState?: DraftPublishState
+  progress?: DraftProgressSummary
   title: string
   productTitle: string
   mainImage: string

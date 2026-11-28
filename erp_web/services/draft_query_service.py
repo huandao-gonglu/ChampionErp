@@ -104,6 +104,7 @@ def _summary(item: dict[str, Any], *, view: str = "detail") -> DraftSummary:
             f"{target.get('platform', '')}:{target.get('site', '')}".lower()
         )) for row in selected_skus),
     ) for target in raw.get("target_sites", []) if isinstance(target, dict)]
+    progress = item.get("progress") if isinstance(item.get("progress"), dict) else {}
     summary = DraftSummary(
         draft_id=draft_id,
         product_id=_text(item.get("source_product_id") or item.get("product_id")),
@@ -123,6 +124,10 @@ def _summary(item: dict[str, Any], *, view: str = "detail") -> DraftSummary:
         readiness=DraftPublishReadiness(
             workflow_status=_text(item.get("status")),
             publish_status=_text(item.get("publish_status")),
+            forbidden=bool(progress.get("forbidden")),
+            prep_stage=_text(progress.get("prep_stage")),
+            completed_steps=int(progress.get("completed_steps") or 0),
+            total_steps=int(progress.get("total_steps") or 6),
             precheck_passed=last_precheck.get("ok") is True,
             image_count=len(images),
             attribute_count=len(attributes),
@@ -148,6 +153,10 @@ def _summary(item: dict[str, Any], *, view: str = "detail") -> DraftSummary:
     status_only = DraftPublishReadiness(
         workflow_status=summary.readiness.workflow_status,
         publish_status=summary.readiness.publish_status,
+        forbidden=summary.readiness.forbidden,
+        prep_stage=summary.readiness.prep_stage,
+        completed_steps=summary.readiness.completed_steps,
+        total_steps=summary.readiness.total_steps,
     )
     if view == "summary":
         return DraftSummary(**identity, readiness=status_only)

@@ -23,7 +23,7 @@
 1. Core 的整轮 UsageLimits 在模型响应边界检查，CodeMode 自带的嵌套调用上限只按单次脚本计算。`PythonToolBudget` 在官方工具执行 hook 中，以原生已完成计数加尚未结束的调用数，再调用原生 `UsageLimits.check_before_tool_call`。它不保存执行计划或另设额度；防止多段脚本及并发调用超过同一轮额度。若上游原生嵌套调度加入同样的预算预留，此适配应删除。
 2. 官方 ToolOutputLimits 默认提供溢出文件读取工具。本项目只使用截断，因此按官方 Coder 的做法关闭该额外工具，不生成溢出文件。若上游支持直接关闭该工具，可移除子类。
 3. Core 2.44.0 的 `Tool.from_schema` 不接收返回 Schema，因此 Bridge 使用原生 `Tool.prepare` 设置 `ToolDefinition.return_schema`，交由官方 CodeMode 生成返回类型。官方 Python 签名省略 `maximum`、`maxItems` 等约束，`ai_tool_contract_description.py` 从已有 Schema 机械生成约束说明，不实现类型编译器或另一套校验。上游签名能完整显示约束后删除这份补充说明。
-4. Harness 0.34.0 的 `CodeMode(tools=...)` 会把选中工具转入脚本并移除其直接入口；官方支持按工具分流，但没有同一工具同时保留两种入口的选项，也没有明确禁止这种用法。`DirectAndPythonCodeMode` 使用公开 `get_wrapper_toolset` 扩展点，`DirectAndPythonToolset` 只在 `get_tools` 中合并原有工具和官方 CodeMode 工具。调用、重试、REPL、生命周期和嵌套调度全部继承官方实现，未重写 `call_tool`。上游提供保留直接入口选项时应删除这两个适配类。
+4. Harness 0.34.0 的 `CodeMode(tools=...)` 会把选中工具转入脚本并移除其直接入口；官方支持按工具分流，但没有同一工具同时保留两种入口的选项，也没有明确禁止这种用法。同时在 `dynamic_catalog=True` 且 `tools` 为子集时，官方 `_announce_newly_discovered` 与 `search_tools` 说明未按 `tool_selector` 过滤，会把审批、持久 Job 与 `direct_only` 工具一并广播为“可在 `run_code` 内调用”。`DirectAndPythonCodeMode` 使用公开 `get_wrapper_toolset` 扩展点并按 `self.tools` 拆分沙箱/仅直调工具公告，`DirectAndPythonToolset` 只在 `get_tools` 中合并原有工具、官方 CodeMode 工具并澄清 `search_tools` 描述。调用、重试、REPL、生命周期和嵌套调度全部继承官方实现，未重写 `call_tool`。上游提供保留直接入口选项且按 `tool_selector` 区分发现公告时应删除这两个适配类。
 
 两种入口并存有上下文成本：2026-09-25 对完整主对话工具集的隔离测量中，原来的 Python 入口方案为 8 个顶层工具，工具名称、说明和参数 Schema 的 JSON 共 52,338 字符；并存后为 60 个、99,283 字符。仅直接入口为 59 个、50,305 字符。这里是字符数，不是 token 或实际网络请求大小；不同模型的编码与缓存会影响真实费用和延迟。恢复直接调用减少了简单操作写脚本的必要性，但不保证总耗时下降。当前保留完整的参数、业务规则和 Python 返回类型说明，未通过删减校验契约来压缩上下文。
 

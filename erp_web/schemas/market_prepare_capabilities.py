@@ -52,6 +52,7 @@ class CategoryMatchCapabilityResult(BaseModel):
     query: Annotated[TrimmedText, StringConstraints(max_length=500)] = ""
     model_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     changed: bool
+    updated_at: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
 
 
 class CategoryMatchBatchRequest(BaseModel):
@@ -88,6 +89,7 @@ class CategoryMatchBatchItem(BaseModel):
     query: Annotated[TrimmedText, StringConstraints(max_length=500)] = ""
     model_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     changed: bool = False
+    updated_at: Annotated[TrimmedText, StringConstraints(max_length=80)] = ""
     error_code: Annotated[TrimmedText, StringConstraints(max_length=120)] = ""
     error: Annotated[TrimmedText, StringConstraints(max_length=1000)] = ""
     needs_confirmation: bool = False

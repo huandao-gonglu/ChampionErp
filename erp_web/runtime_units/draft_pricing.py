@@ -17,9 +17,18 @@ from erp_web.runtime_units.draft_publish_context import draft_for_publish_target
 from erp_web.runtime_units.market_capability_support import load_draft, raise_store_error
 from erp_web.runtime_units.pricing_batch import calculate_sku_prices
 from erp_web.runtime_units.pricing_results import _apply_mercadolibre_destination_results
-from erp_web.schemas.draft_pricing import DraftPricingRequest, PricingCommonPatch, PricingTargetPatch
+from erp_web.runtime_units.pricing_runtime import PricingSession
+from erp_web.schemas.draft_pricing import (
+    DraftPricingBatchApplyRequest,
+    DraftPricingBatchPreviewRequest,
+    DraftPricingRequest,
+    PricingCommonPatch,
+    PricingTargetPatch,
+)
+from erp_web.services.ai_run_cancellation import check_cancellation
 from erp_web.services.capability_errors import BusinessCapabilityError
 from erp_web.services.pricing_service import pricing_calculation_fingerprint
+from erp_web.services.yandex_pricing_selection import unify_yandex_warehouse
 
 BatchCalculator = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -234,6 +243,95 @@ def _validate_results(batch: dict[str, Any], inputs: list[dict[str, Any]]) -> li
     return errors
 
 
+def _build_pricing_rows(
+    batch: dict[str, Any],
+    inputs: list[dict[str, Any]],
+    targets: list[dict[str, Any]],
+    *,
+    errors: list[dict[str, Any]],
+    now: str,
+    applied: bool,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    by_input = {item["sku_id"]: item["input"] for item in inputs}
+    by_target = {target_key(target): target for target in targets}
+    pricing_rows: dict[str, Any] = {}
+    for item in batch["items"]:
+        result = item["result"]
+        quotes = {}
+        for quote in result.get("results") or []:
+            key = target_key(quote)
+            if key not in by_target:
+                continue
+            quote = deepcopy(quote)
+            quote["target_key"] = key
+            if not errors and key == "mercadolibre:cbt":
+                quote["sites_to_sell"] = _apply_mercadolibre_destination_results(by_target[key], quote)
+            quotes[key] = quote
+        pricing_rows[item["sku_id"]] = {
+            "common": by_input[item["sku_id"]]["common"],
+            "targets": quotes,
+            "exchange_rates": result.get("exchange_rates", {}),
+            "updated_at": now,
+            "applied": applied and not errors,
+        }
+    return pricing_rows, by_target
+
+
+def _verify_draft_unchanged(
+    request: DraftPricingRequest,
+    *,
+    product_store: DraftPricingStore,
+    store_config_loader: Callable[[], dict[str, Any]],
+    routing: str | None,
+    snapshot: str,
+    config: dict[str, Any],
+    environment: str,
+    default_template: dict[str, Any] | None,
+    pricing_rows: dict[str, Any],
+    errors: list[dict[str, Any]],
+) -> None:
+    if routing is not None:
+        logistics = get_context().yandex_logistics
+        if routing != logistics.configuration_fingerprint():
+            raise BusinessCapabilityError("DRAFT_CHANGED", "核价期间仓库物流配置已改变，请重新核价。")
+        if not errors:
+            current_plans = logistics.plans()
+            for row in pricing_rows.values():
+                for quote in row["targets"].values():
+                    if quote.get("platform") == "yandex":
+                        plan = quote.get("calculation_basis", {}).get("shipping_evidence", {}).get("fulfillment_plan", {})
+                        if not plan or plan not in current_plans:
+                            raise BusinessCapabilityError("PRICING_LOGISTICS_INVALID", "核价使用的仓库物流方案已失效，请重新核价。")
+    latest, latest_product = load_draft(product_store, request.draft_id)
+    if (
+        snapshot != _fingerprint([latest, latest_product])
+        or config != _configuration_basis(store_config_loader())
+        or environment != _pricing_environment()
+        or default_template != _default_template(request, latest)
+    ):
+        raise BusinessCapabilityError("DRAFT_CHANGED", "核价期间 SKU、草稿或店铺配置已改变，请重新核价。")
+
+
+def _single_request_from_batch(
+    request: DraftPricingBatchPreviewRequest | DraftPricingBatchApplyRequest,
+    *,
+    draft_id: str,
+    preview_id: str = "",
+    expected_updated_at: str = "",
+) -> DraftPricingRequest:
+    kwargs: dict[str, Any] = {
+        "draft_id": draft_id,
+        "preview_id": preview_id,
+        "expected_updated_at": expected_updated_at,
+        "common": request.common,
+        "targets": request.targets,
+        "target_keys": list(request.target_keys),
+    }
+    if "template_source" in request.model_fields_set:
+        kwargs["template_source"] = request.template_source
+    return DraftPricingRequest(**kwargs)
+
+
 def price_draft(request: DraftPricingRequest, *, product_store: DraftPricingStore, apply: bool = False, restore: bool = False,
                 calculator: BatchCalculator = calculate_sku_prices,
                 store_config_loader: Callable[[], dict[str, Any]] = _store_config) -> dict[str, Any]:
@@ -272,44 +370,30 @@ def price_draft(request: DraftPricingRequest, *, product_store: DraftPricingStor
         batch = calculator({"items": inputs})
     errors = _validate_results(batch, inputs)
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    by_input = {item["sku_id"]: item["input"] for item in inputs}
-    by_target = {target_key(target): target for target in targets}
-    pricing_rows = {}
-    for item in batch["items"]:
-        result = item["result"]
-        quotes = {}
-        for quote in result.get("results") or []:
-            key = target_key(quote)
-            if key not in by_target:
-                continue
-            quote = deepcopy(quote)
-            quote["target_key"] = key
-            if not errors and key == "mercadolibre:cbt":
-                quote["sites_to_sell"] = _apply_mercadolibre_destination_results(by_target[key], quote)
-            quotes[key] = quote
-        pricing_rows[item["sku_id"]] = {"common": by_input[item["sku_id"]]["common"], "targets": quotes,
-            "exchange_rates": result.get("exchange_rates", {}), "updated_at": now, "applied": apply and not errors}
+    pricing_rows, by_target = _build_pricing_rows(
+        batch,
+        inputs,
+        targets,
+        errors=errors,
+        now=now,
+        applied=apply,
+    )
     response = {**batch, "draft_id": request.draft_id, "applied": False, "errors": errors,
                 "sku_count": len(inputs), "target_count": len(targets), "sku_pricing": pricing_rows,
                 "updated_at": original.get("updated_at", "")}
     with product_store.mutation_scope({"draft_id": request.draft_id}):
-        if routing is not None:
-            logistics = get_context().yandex_logistics
-            if routing != logistics.configuration_fingerprint():
-                raise BusinessCapabilityError('DRAFT_CHANGED', '核价期间仓库物流配置已改变，请重新核价。')
-            if not errors:
-                current_plans = logistics.plans()
-                for row in pricing_rows.values():
-                    for quote in row['targets'].values():
-                        if quote.get('platform') == 'yandex':
-                            plan = quote.get('calculation_basis', {}).get('shipping_evidence', {}).get('fulfillment_plan', {})
-                            if not plan or plan not in current_plans:
-                                raise BusinessCapabilityError('PRICING_LOGISTICS_INVALID', '核价使用的仓库物流方案已失效，请重新核价。')
-        latest, latest_product = load_draft(product_store, request.draft_id)
-        if (snapshot != _fingerprint([latest, latest_product]) or config != _configuration_basis(store_config_loader())
-                or environment != _pricing_environment()
-                or default_template != _default_template(request, latest)):
-            raise BusinessCapabilityError("DRAFT_CHANGED", "核价期间 SKU、草稿或店铺配置已改变，请重新核价。")
+        _verify_draft_unchanged(
+            request,
+            product_store=product_store,
+            store_config_loader=store_config_loader,
+            routing=routing,
+            snapshot=snapshot,
+            config=config,
+            environment=environment,
+            default_template=default_template,
+            pricing_rows=pricing_rows,
+            errors=errors,
+        )
         if not apply or errors:
             if not errors:
                 response["preview_id"] = restored_id or uuid4().hex
@@ -352,4 +436,282 @@ def price_draft(request: DraftPricingRequest, *, product_store: DraftPricingStor
     return response
 
 
-__all__ = ["BatchCalculator", "DraftPricingStore", "prepare_pricing_inputs", "price_draft"]
+def price_drafts_batch(
+    request: DraftPricingBatchPreviewRequest,
+    *,
+    product_store: DraftPricingStore,
+    session_factory: Callable[[], PricingSession] | None = None,
+    store_config_loader: Callable[[], dict[str, Any]] = _store_config,
+) -> dict[str, Any]:
+    """跨草稿共享同一 PricingSession 合批计算预览；每份草稿独立选仓、独立校验并发与独立缓存 preview_id。"""
+    started = perf_counter()
+    draft_ids = list(dict.fromkeys(str(draft_id or "").strip() for draft_id in request.draft_ids))
+    outcomes: dict[str, dict[str, Any]] = {}
+    prepared: list[dict[str, Any]] = []
+
+    for draft_id in draft_ids:
+        check_cancellation()
+        if not draft_id:
+            outcomes[draft_id] = {
+                "draft_id": draft_id,
+                "ok": False,
+                "applied": False,
+                "sku_count": 0,
+                "target_count": 0,
+                "updated_at": "",
+                "items": [],
+                "error_code": "DRAFT_NOT_FOUND",
+                "error": "草稿 ID 不能为空。",
+                "errors": [],
+            }
+            continue
+        expected_updated_at = str(request.expected_updated_at_by_draft.get(draft_id) or "")
+        single_req = _single_request_from_batch(
+            request,
+            draft_id=draft_id,
+            expected_updated_at=expected_updated_at,
+        )
+        loaded_updated_at = ""
+        try:
+            with product_store.mutation_scope({"draft_id": draft_id}):
+                original, product = load_draft(product_store, draft_id)
+                loaded_updated_at = str(original.get("updated_at") or "")
+                if single_req.expected_updated_at and single_req.expected_updated_at != loaded_updated_at:
+                    raise BusinessCapabilityError("DRAFT_CHANGED", "草稿已更新，请重新读取后核价。")
+                snapshot = _fingerprint([original, product])
+                draft = deepcopy(original)
+                default_template = _default_template(single_req, draft)
+                inputs, template, targets = _prepare(single_req, draft, product, default_template)
+        except BusinessCapabilityError as exc:
+            details_errors = (exc.details or {}).get("errors")
+            outcomes[draft_id] = {
+                "draft_id": draft_id,
+                "ok": False,
+                "applied": False,
+                "sku_count": 0,
+                "target_count": 0,
+                "updated_at": loaded_updated_at,
+                "items": [],
+                "error_code": exc.code,
+                "error": str(exc),
+                "errors": list(details_errors) if isinstance(details_errors, list) else [],
+            }
+            continue
+        prepared.append({
+            "draft_id": draft_id,
+            "request": single_req,
+            "updated_at": loaded_updated_at,
+            "snapshot": snapshot,
+            "default_template": default_template,
+            "inputs": inputs,
+            "template": template,
+            "targets": targets,
+        })
+
+    if prepared:
+        check_cancellation()
+        config = _configuration_basis(store_config_loader())
+        any_yandex = any(
+            target.get("platform") == "yandex"
+            for entry in prepared
+            for target in entry["targets"]
+        )
+        shared_routing = get_context().yandex_logistics.configuration_fingerprint() if any_yandex else None
+        environment = _pricing_environment()
+        cache = get_context().pricing_cache.previews
+
+        flat_inputs: list[dict[str, Any]] = []
+        slices: list[tuple[int, int]] = []
+        for entry in prepared:
+            start = len(flat_inputs)
+            flat_inputs.extend(entry["inputs"])
+            slices.append((start, len(flat_inputs)))
+
+        session = (session_factory or PricingSession)()
+        all_calculated = session.calculate_many([item["input"] for item in flat_inputs])
+        check_cancellation()
+
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        batch_id = uuid4().hex[:12]
+        for entry, (start, end) in zip(prepared, slices, strict=True):
+            check_cancellation()
+            draft_id = entry["draft_id"]
+            inputs = entry["inputs"]
+            targets = entry["targets"]
+            template = entry["template"]
+            draft_calculated = unify_yandex_warehouse(session, inputs, all_calculated[start:end])
+            batch_items = [
+                {"sku_id": item["sku_id"], "result": result}
+                for item, result in zip(inputs, draft_calculated, strict=True)
+            ]
+            failed_skus = sum(1 for item in batch_items if not item["result"].get("ok"))
+            batch = {
+                "ok": True,
+                "items": batch_items,
+                "metrics": {
+                    "batch_id": batch_id,
+                    "sku_count": len(inputs),
+                    "target_count": sum(len(item["input"]["targets"]) for item in inputs),
+                    "failed_sku_count": failed_skus,
+                    "duration_ms": round((perf_counter() - started) * 1000, 1),
+                    "ozon_discovery_ms": round(getattr(session.shipping.module, "ozon_discovery_ms", 0.0), 1),
+                },
+            }
+            draft_routing = shared_routing if any(t.get("platform") == "yandex" for t in targets) else None
+            binding = pricing_calculation_fingerprint({
+                "draft_id": draft_id,
+                "inputs": inputs,
+                "template": template,
+                "config": config,
+                "routing": draft_routing,
+                "environment": environment,
+            })
+            errors = _validate_results(batch, inputs)
+            pricing_rows, _by_target = _build_pricing_rows(
+                batch,
+                inputs,
+                targets,
+                errors=errors,
+                now=now,
+                applied=False,
+            )
+            try:
+                with product_store.mutation_scope({"draft_id": draft_id}):
+                    _verify_draft_unchanged(
+                        entry["request"],
+                        product_store=product_store,
+                        store_config_loader=store_config_loader,
+                        routing=draft_routing,
+                        snapshot=entry["snapshot"],
+                        config=config,
+                        environment=environment,
+                        default_template=entry["default_template"],
+                        pricing_rows=pricing_rows,
+                        errors=errors,
+                    )
+                    preview_id = ""
+                    if not errors:
+                        preview_id = uuid4().hex
+                        cache.put(preview_id, {"draft_id": draft_id, "binding": binding, "batch": batch})
+            except BusinessCapabilityError as exc:
+                details_errors = (exc.details or {}).get("errors")
+                outcomes[draft_id] = {
+                    "draft_id": draft_id,
+                    "ok": False,
+                    "applied": False,
+                    "sku_count": len(inputs),
+                    "target_count": len(targets),
+                    "updated_at": entry["updated_at"],
+                    "items": batch_items,
+                    "error_code": exc.code,
+                    "error": str(exc),
+                    "errors": list(details_errors) if isinstance(details_errors, list) else errors,
+                }
+                continue
+            outcomes[draft_id] = {
+                "draft_id": draft_id,
+                "ok": not errors,
+                "preview_id": preview_id,
+                "applied": False,
+                "sku_count": len(inputs),
+                "target_count": len(targets),
+                "updated_at": entry["updated_at"],
+                "items": batch_items,
+                "error_code": "PRICING_RESULT_INVALID" if errors else "",
+                "error": str(errors[0].get("message") or "核价未成功完成。") if errors else "",
+                "errors": errors,
+            }
+
+    ordered_items = [outcomes[draft_id] for draft_id in draft_ids]
+    succeeded_count = sum(1 for item in ordered_items if item["ok"])
+    return {
+        "total": len(ordered_items),
+        "succeeded_count": succeeded_count,
+        "failed_count": len(ordered_items) - succeeded_count,
+        "applied": False,
+        "items": ordered_items,
+    }
+
+
+def apply_draft_pricing_batch(
+    request: DraftPricingBatchApplyRequest,
+    *,
+    product_store: DraftPricingStore,
+    store_config_loader: Callable[[], dict[str, Any]] = _store_config,
+) -> dict[str, Any]:
+    """逐草稿原子应用服务端预览；单项冲突或失效仅记录该项失败，不影响其他有效草稿保存。"""
+    seen: set[str] = set()
+    for item in request.items:
+        if item.draft_id in seen:
+            raise BusinessCapabilityError(
+                "PRICING_BATCH_DUPLICATE_DRAFT",
+                f"批量应用核价包含重复的草稿 ID：{item.draft_id}，请去重后提交。",
+            )
+        seen.add(item.draft_id)
+
+    results: list[dict[str, Any]] = []
+    for item in request.items:
+        check_cancellation()
+        single_req = _single_request_from_batch(
+            request,
+            draft_id=item.draft_id,
+            preview_id=item.preview_id,
+            expected_updated_at=item.expected_updated_at,
+        )
+        try:
+            applied = price_draft(
+                single_req,
+                product_store=product_store,
+                apply=True,
+                store_config_loader=store_config_loader,
+            )
+            errors = list(applied.get("errors") or [])
+            ok = bool(applied.get("applied")) and not errors
+            results.append({
+                "draft_id": item.draft_id,
+                "ok": ok,
+                "preview_id": item.preview_id if not ok else "",
+                "applied": bool(applied.get("applied")),
+                "sku_count": int(applied.get("sku_count") or 0),
+                "target_count": int(applied.get("target_count") or 0),
+                "updated_at": str(applied.get("updated_at") or ""),
+                "items": list(applied.get("items") or []),
+                "error_code": "" if ok else "PRICING_RESULT_INVALID",
+                "error": "" if ok else str((errors[0] if errors else {}).get("message") or "核价结果未应用。"),
+                "errors": errors,
+            })
+        except BusinessCapabilityError as exc:
+            details_errors = (exc.details or {}).get("errors")
+            results.append({
+                "draft_id": item.draft_id,
+                "ok": False,
+                "preview_id": item.preview_id,
+                "applied": False,
+                "sku_count": 0,
+                "target_count": 0,
+                "updated_at": "",
+                "items": [],
+                "error_code": exc.code,
+                "error": str(exc),
+                "errors": list(details_errors) if isinstance(details_errors, list) else [],
+            })
+
+    succeeded_count = sum(1 for item in results if item["ok"])
+    failed_count = len(results) - succeeded_count
+    return {
+        "total": len(results),
+        "succeeded_count": succeeded_count,
+        "failed_count": failed_count,
+        "applied": succeeded_count > 0 and failed_count == 0,
+        "items": results,
+    }
+
+
+__all__ = [
+    "BatchCalculator",
+    "DraftPricingStore",
+    "apply_draft_pricing_batch",
+    "prepare_pricing_inputs",
+    "price_draft",
+    "price_drafts_batch",
+]

@@ -39,6 +39,7 @@ class CopyGenerateResult(BaseModel):
     mode: TrimmedText = ""
     copy_record: dict[str, JsonValue] = Field(default_factory=dict)
     listing: dict[str, JsonValue] = Field(default_factory=dict)
+    updated_at: TrimmedText = ""
 
 
 class CopyGenerateBatchRequest(BaseModel):

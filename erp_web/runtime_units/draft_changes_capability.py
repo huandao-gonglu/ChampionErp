@@ -103,7 +103,7 @@ def apply_draft_changes(request: DraftChangesApplyRequest, *, product_store: Pro
 
 @ai_tool(
     name="draft_changes_apply",
-    description="一次提交同一草稿和平台/站点的多项公共/SKU 类目属性及可售库存。明确全部所需定义，用 draft_attributes_read(scope=sku) 一次取得并保留事实与 updated_at，据此补齐候选；在同一脚本中计算本轮全部相关属性，每个 SKU 的颜色、规格等差异合入同一个 attributes，可同时设置 stock。不逐属性重读或提交整批，不逐 SKU 调用单项保存，不先试写。全部校验通过后只保存一次；任一错误或版本冲突则整组未保存。changes 回执含全部提交项的实际保存值及 updated_at，直接核对并更新脚本数据，无需重读确认；changed_count=0 表示值已一致。确需核实局部结果时按 sku_ids 补读。完整准备应在相关属性与事实保存完后统一核价和预检，窄范围修改不扩展核价。成本、包装、条码及运输事实用 product_sku_facts_update；不猜值或修改无关字段。",
+    description="一次提交同一草稿和平台/站点的多项公共/SKU 类目属性及可售库存。明确全部所需定义，用 draft_attributes_read(scope=sku) 一次取得并保留事实与 updated_at，据此补齐候选；在同一脚本中计算本轮全部相关属性，每个 SKU 的颜色、规格等差异合入同一个 attributes，可同时设置 stock。不逐属性重读或提交整批，不逐 SKU 调用单项保存，不先试写；同一草稿的多个写工具（含类目匹配、文案生成、属性保存与核价）须串行执行并沿用上一步回执的最新 updated_at，禁止对同一草稿并发写入。全部校验通过后只保存一次；任一错误或版本冲突则整组未保存。changes 回执含全部提交项的实际保存值及 updated_at，直接核对并更新脚本数据，无需重读确认；changed_count=0 表示值已一致。确需核实局部结果时按 sku_ids 补读。完整准备应在相关属性与事实保存完后统一核价和预检，窄范围修改不扩展核价。成本、包装、条码及运输事实用 product_sku_facts_update；不猜值或修改无关字段。",
     permission="draft.write", side_effect="write", approval_required=False,
     idempotency="required", idempotency_keys=("operation_key",), recovery_policy="manual", version="1",
 )

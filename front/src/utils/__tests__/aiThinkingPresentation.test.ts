@@ -27,4 +27,10 @@ describe('思考文本的展示投影', () => {
     expect(splitAssistantText(leaked)).toEqual([{ kind: 'tool-markup', text: leaked }])
     expect(visibleAssistantText(leaked)).toBe('')
   })
+
+  it('正文开头出现未闭合的 DeepSeek DSML calls 标记时即时按未执行工具文本折叠', () => {
+    const leaked = '\n\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name="run_code">'
+    expect(splitAssistantText(leaked, true)).toEqual([{ kind: 'tool-markup', text: leaked }])
+    expect(visibleAssistantText(leaked, true)).toBe('')
+  })
 })

@@ -141,4 +141,79 @@ class DraftPricingResult(PricingModel):
     errors: list[PricingIssue] = Field(default_factory=list, max_length=100)
 
 
-__all__ = ["DraftPricingRequest", "DraftPricingHttpRequest", "DraftPricingResult", "PricingParameters"]
+class DraftPricingBatchPreviewRequest(PricingParameters):
+    draft_ids: list[str] = Field(
+        min_length=1,
+        max_length=50,
+        description="待批量预览核价的草稿 ID 列表（最多 50 份，自动去重保序）；共享本轮汇率、仓库与平台佣金合批请求，各草稿独立选仓并生成独立 preview_id。",
+    )
+    expected_updated_at_by_draft: dict[str, str] = Field(
+        default_factory=dict,
+        description="可选，按 draft_id 传入预期版本时间；省略则不额外校验调用前版本。",
+    )
+    template_source: PricingTemplateSource | None = Field(
+        default=None,
+        description="本次人工费用模板来源快照，仅记录来源；省略保留各草稿原来源，null 清除。",
+    )
+    target_keys: list[str] = Field(
+        default_factory=list,
+        description="留空核价各草稿全部已选市场；传入则仅核价指定 platform:site 市场。",
+    )
+
+
+class DraftPricingBatchApplyItem(PricingModel):
+    draft_id: str = Field(min_length=1, max_length=160)
+    preview_id: str = Field(min_length=1, max_length=80, description="最近一次预览返回的该草稿 preview_id。")
+    expected_updated_at: str = ""
+
+
+class DraftPricingBatchApplyRequest(PricingParameters):
+    items: list[DraftPricingBatchApplyItem] = Field(
+        min_length=1,
+        max_length=50,
+        description="待批量应用核价结果的草稿与 preview_id 列表（最多 50 份，不得含重复 draft_id）；须与预览使用相同核价参数。",
+    )
+    template_source: PricingTemplateSource | None = Field(
+        default=None,
+        description="须与预览时一致的模板来源快照；省略保留各草稿原来源，null 清除。",
+    )
+    target_keys: list[str] = Field(
+        default_factory=list,
+        description="须与预览时一致的目标市场列表；留空应用各草稿全部已选市场。",
+    )
+
+
+class DraftPricingBatchItemResult(PricingModel):
+    draft_id: str
+    ok: bool
+    preview_id: str = ""
+    applied: bool = False
+    sku_count: int = 0
+    target_count: int = 0
+    updated_at: str = ""
+    markets: list[PricingMarketSummary] = Field(default_factory=list, max_length=100)
+    error_code: str = ""
+    error: str = ""
+    error_count: int = 0
+    errors: list[PricingIssue] = Field(default_factory=list, max_length=100)
+
+
+class DraftPricingBatchResult(PricingModel):
+    total: int
+    succeeded_count: int
+    failed_count: int
+    applied: bool
+    items: list[DraftPricingBatchItemResult] = Field(default_factory=list, max_length=50)
+
+
+__all__ = [
+    "DraftPricingRequest",
+    "DraftPricingHttpRequest",
+    "DraftPricingResult",
+    "DraftPricingBatchPreviewRequest",
+    "DraftPricingBatchApplyItem",
+    "DraftPricingBatchApplyRequest",
+    "DraftPricingBatchItemResult",
+    "DraftPricingBatchResult",
+    "PricingParameters",
+]

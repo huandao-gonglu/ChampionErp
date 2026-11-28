@@ -1,9 +1,23 @@
 <script setup lang="ts">
 import { computed, inject, ref } from 'vue'
 import { routerKey } from 'vue-router'
-import { PhBrain, PhCaretRight, PhWarningCircle } from '@phosphor-icons/vue'
+import {
+  PhArrowsClockwise,
+  PhBrain,
+  PhCaretRight,
+  PhCheck,
+  PhCircleNotch,
+  PhWarningCircle,
+  PhXCircle,
+} from '@phosphor-icons/vue'
 import type { AiUiPart, BusinessWriteReceipt, CodeProgressFatalError, CodeProgressSnapshot } from '@/types/aiWork'
-import { describeAiTool, describeRunCodeAction, formatCodeProgress } from '@/utils/aiToolLabels'
+import {
+  classifyAiToolCategory,
+  describeAiTool,
+  describeRunCodeAction,
+  formatActiveToolLabel,
+  formatCodeProgressCompact,
+} from '@/utils/aiToolLabels'
 import { aiToolIcon } from '@/utils/aiToolIcons'
 import { splitAssistantText } from '@/utils/aiThinkingPresentation'
 import {
@@ -20,7 +34,7 @@ import { hasLocalOperations } from '@/utils/desktop'
 import { continueImageOperation } from '@/api/draftImages'
 import { withAiConversation } from '@/services/withAiConversation'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   part: AiUiPart
   pendingKind?: 'approval' | 'external' | 'input'
   progress?: string
@@ -28,7 +42,10 @@ const props = defineProps<{
   writeReceipts?: BusinessWriteReceipt[]
   stepElapsedSeconds?: number
   active?: boolean
-}>()
+  variant?: 'default' | 'process'
+}>(), {
+  variant: 'default',
+})
 
 const partType = computed(() => (props.part as { type: string }).type)
 const expanded = ref<Record<string, boolean>>({})
@@ -57,6 +74,14 @@ const toolName = computed(() => (
     : describeAiTool(rawToolName.value)
 ))
 const toolIcon = computed(() => aiToolIcon(rawToolName.value))
+const toolCategory = computed(() => classifyAiToolCategory(
+  rawToolName.value,
+  tool.value.input,
+  props.codeProgress,
+  props.writeReceipts,
+  tool.value.toolCallId,
+))
+const isWriteTool = computed(() => toolCategory.value === 'write')
 
 const businessResult = computed(() => (
   tool.value.output && typeof tool.value.output === 'object'
@@ -65,15 +90,22 @@ const businessResult = computed(() => (
 ))
 const status = computed(() => aiToolStatus(props.part, props.pendingKind, props.active))
 const isActiveStatus = computed(() => ['preparing', 'waiting', 'running'].includes(status.value))
+const isAttentionStatus = computed(() => ['failed', 'partial', 'unknown', 'denied', 'approval', 'input', 'desktop'].includes(status.value))
 const toolStatusLabel = computed(() => statusLabels[status.value])
+const attentionStatusLabel = computed(() => (isAttentionStatus.value ? statusLabels[status.value] : ''))
+const subtleStatusNote = computed(() => {
+  if (status.value === 'submitted') return '已提交'
+  if (status.value === 'script_error') return '重新调整'
+  return ''
+})
 const stepElapsedText = computed(() => {
-  if (!isActiveStatus.value || !props.stepElapsedSeconds || props.stepElapsedSeconds < 2) return ''
+  if (!isActiveStatus.value || !props.stepElapsedSeconds || props.stepElapsedSeconds < 5) return ''
   const seconds = Math.floor(props.stepElapsedSeconds)
   const minutes = Math.floor(seconds / 60)
   return minutes ? `${minutes}分 ${seconds % 60}秒` : `${seconds}秒`
 })
-const liveProgress = computed(() => (
-  props.progress || (isActiveStatus.value ? formatCodeProgress(props.codeProgress) : '')
+const liveCodeProgressCompact = computed(() => (
+  isActiveStatus.value ? formatCodeProgressCompact(props.codeProgress) : ''
 ))
 const liveFatalErrors = computed<CodeProgressFatalError[]>(() => (
   isActiveStatus.value && Array.isArray(props.codeProgress?.fatal_errors)
@@ -183,6 +215,36 @@ const nestedReceiptSummary = computed(() => {
   }
   return [...counts.values()]
 })
+const nestedReceiptTotals = computed(() => nestedReceiptSummary.value.reduce(
+  (acc, item) => ({ total: acc.total + item.total, failed: acc.failed + item.failed }),
+  { total: 0, failed: 0 },
+))
+const displayToolTitle = computed(() => {
+  const base = imageTargetLabel.value ? `${toolName.value} · ${imageTargetLabel.value}` : toolName.value
+  return isActiveStatus.value ? formatActiveToolLabel(base) : base
+})
+const inlineToolMeta = computed(() => {
+  if (liveCodeProgressCompact.value) return liveCodeProgressCompact.value
+  if (!isActiveStatus.value && isRunCode.value && nestedReceiptTotals.value.total > 0) {
+    const { total, failed } = nestedReceiptTotals.value
+    return failed > 0 ? `${total} 项 · ${failed} 项失败` : `${total} 项`
+  }
+  return ''
+})
+const externalProgressText = computed(() => (
+  props.progress && !liveCodeProgressCompact.value ? props.progress : ''
+))
+const toolTitleClass = computed(() => {
+  if (isActiveStatus.value) return 'ai-shimmer-text font-medium'
+  if (status.value === 'failed') return 'font-medium text-rose-700 dark:text-rose-300'
+  if (status.value === 'script_error') return 'text-slate-400 dark:text-accent-500'
+  if (isWriteTool.value && status.value === 'completed') return 'text-slate-700 dark:text-accent-200'
+  return 'text-slate-500 dark:text-accent-300'
+})
+const inlineMetaHasFailure = computed(() => (
+  (isActiveStatus.value && (props.codeProgress?.failed ?? 0) > 0)
+  || (!isActiveStatus.value && nestedReceiptTotals.value.failed > 0)
+))
 const toolInputJson = computed(() => formatJson(tool.value.input))
 const toolOutputJson = computed(() => formatJson(tool.value.output))
 
@@ -250,7 +312,16 @@ const statusLabels: Record<string, string> = {
   <!-- 文本 -->
   <template v-if="partType === 'text'">
     <template v-for="(segment, index) in textSegments" :key="index">
-      <p v-if="segment.kind === 'text'" class="whitespace-pre-wrap break-words text-sm leading-6" data-testid="ai-part-text">{{ segment.text }}</p>
+      <p
+        v-if="segment.kind === 'text'"
+        class="whitespace-pre-wrap break-words"
+        :class="variant === 'process'
+          ? 'text-xs leading-5 text-slate-500 dark:text-accent-400'
+          : 'text-sm leading-6'"
+        data-testid="ai-part-text"
+      >
+        {{ segment.text }}
+      </p>
       <details v-else class="group/reasoning min-w-0" :data-testid="segment.kind === 'thinking' ? 'ai-part-reasoning' : `ai-part-${segment.kind}`" @toggle="toggleDetails($event, `segment-${index}`)">
         <summary class="flex cursor-pointer list-none items-center gap-2 py-1 text-xs text-slate-500 focus-visible:outline-primary-500 dark:text-accent-300 [&::-webkit-details-marker]:hidden">
           <PhBrain :size="16" class="shrink-0" aria-hidden="true" />
@@ -357,28 +428,77 @@ const statusLabels: Record<string, string> = {
     </p>
   </div>
 
-  <!-- 工具在原位置更新；仅展开时展示参数和回执。 -->
-  <div v-else-if="isToolPart" class="min-w-0" data-testid="ai-part-tool">
+  <!-- 工具在原位置更新；正常态极简无胶囊，异常态才着语义色，详情按需展开。 -->
+  <div v-else-if="isToolPart" class="min-w-0" :data-tool-status="status" data-testid="ai-part-tool">
     <details data-testid="ai-tool-details" class="group/tool" @toggle="toggleDetails($event, 'tool')">
-      <summary class="flex cursor-pointer list-none items-center gap-2 rounded py-1 text-xs focus-visible:outline-primary-500 [&::-webkit-details-marker]:hidden">
-        <component :is="toolIcon" :size="16" class="shrink-0 text-slate-500 dark:text-accent-300" aria-hidden="true" />
-        <span class="min-w-0 break-words text-slate-600 dark:text-accent-200">{{ toolName }}<template v-if="imageTargetLabel"> · {{ imageTargetLabel }}</template></span>
+      <summary class="flex min-w-0 cursor-pointer list-none items-center gap-2 rounded py-0.5 text-xs transition-colors hover:text-slate-900 focus-visible:outline-primary-500 dark:hover:text-accent-100 [&::-webkit-details-marker]:hidden">
+        <span class="flex size-3.5 shrink-0 items-center justify-center" aria-hidden="true">
+          <PhCircleNotch
+            v-if="isActiveStatus"
+            :size="14"
+            class="text-slate-400 motion-safe:animate-spin dark:text-accent-400"
+          />
+          <PhXCircle
+            v-else-if="status === 'failed'"
+            :size="14"
+            class="text-rose-500 dark:text-rose-400"
+          />
+          <PhWarningCircle
+            v-else-if="isAttentionStatus"
+            :size="14"
+            class="text-amber-500 dark:text-amber-400"
+          />
+          <PhArrowsClockwise
+            v-else-if="status === 'script_error'"
+            :size="13"
+            class="text-slate-400 dark:text-accent-500"
+          />
+          <PhCheck
+            v-else-if="status === 'submitted'"
+            :size="13"
+            class="text-sky-600/80 dark:text-sky-400/80"
+          />
+          <PhCheck
+            v-else
+            :size="13"
+            :class="isWriteTool ? 'text-emerald-600/80 dark:text-emerald-400/80' : 'text-slate-400 dark:text-accent-500'"
+          />
+        </span>
         <span
-          class="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px]"
+          class="min-w-0 truncate"
+          :class="toolTitleClass"
+          :title="displayToolTitle"
+        >{{ displayToolTitle }}</span>
+        <span
+          v-if="inlineToolMeta"
+          class="shrink-0 tabular-nums text-[11px]"
+          :class="inlineMetaHasFailure ? 'text-amber-700 dark:text-amber-300' : 'text-slate-400 dark:text-accent-500'"
+          :data-testid="liveCodeProgressCompact ? 'ai-tool-progress' : 'ai-tool-meta'"
+        >· {{ inlineToolMeta }}</span>
+        <span
+          v-else-if="subtleStatusNote"
+          class="shrink-0 text-[11px] text-slate-400 dark:text-accent-500"
+        >· {{ subtleStatusNote }}</span>
+        <span
+          v-if="attentionStatusLabel"
+          class="inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset"
           :class="toolStatusClass"
-          :role="isActiveStatus ? 'status' : undefined"
         >
-          <span v-if="isActiveStatus" class="size-1.5 shrink-0 rounded-full bg-current motion-safe:animate-pulse" aria-hidden="true" />
-          {{ toolStatusLabel }}
+          {{ attentionStatusLabel }}
         </span>
         <span
           v-if="stepElapsedText"
-          class="shrink-0 text-[11px] tabular-nums text-slate-400 dark:text-accent-400"
+          class="ml-auto shrink-0 text-[11px] tabular-nums text-slate-400 dark:text-accent-500"
           data-testid="ai-tool-elapsed"
         >{{ stepElapsedText }}</span>
-        <PhCaretRight :size="12" class="shrink-0 text-slate-400 transition-transform group-open/tool:rotate-90" aria-hidden="true" />
+        <PhCaretRight
+          :size="11"
+          class="shrink-0 text-slate-300 transition-transform group-hover/tool:text-slate-500 group-open/tool:rotate-90 dark:text-dark-500 dark:group-hover/tool:text-accent-300"
+          :class="{ 'ml-auto': !stepElapsedText }"
+          aria-hidden="true"
+        />
       </summary>
-      <div v-if="expanded.tool" class="ml-3 space-y-2 border-l border-slate-200 py-2 pl-3 dark:border-dark-700">
+      <div v-if="expanded.tool" class="ml-2 space-y-2 border-l border-slate-200 py-2 pl-3 dark:border-dark-700">
         <template v-if="nestedReceiptSummary.length">
           <p class="text-xs text-slate-500">子操作回执</p>
           <ul class="space-y-0.5 text-xs text-slate-600 dark:text-accent-200" data-testid="ai-run-code-receipts">
@@ -405,9 +525,8 @@ const statusLabels: Record<string, string> = {
         </template>
       </div>
     </details>
-    <p v-if="liveProgress" role="status" class="ml-6 mt-0.5 flex items-center gap-1.5 text-xs text-slate-500 dark:text-accent-300" data-testid="ai-tool-progress">
-      <span v-if="isActiveStatus" class="size-1 shrink-0 rounded-full bg-sky-500 motion-safe:animate-pulse" aria-hidden="true" />
-      {{ liveProgress }}
+    <p v-if="externalProgressText" class="ml-5 mt-0.5 text-xs text-slate-500 dark:text-accent-400" data-testid="ai-tool-progress">
+      {{ externalProgressText }}
     </p>
     <div
       v-if="liveFatalErrors.length"

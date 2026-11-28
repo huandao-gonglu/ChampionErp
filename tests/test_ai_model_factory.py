@@ -257,27 +257,36 @@ def test_factory_maps_alibaba_chat_reasoning_without_openai_thinking() -> None:
     }
 
 
-def test_factory_resolves_environment_credentials(
+def test_factory_ignores_personal_environment_credentials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ERP_TEST_AGENT_API_KEY", "env-secret-value")
     monkeypatch.setenv("ERP_TEST_AGENT_BASE_URL", "https://env.example.invalid/v1")
     monkeypatch.setenv("ERP_TEST_AGENT_MODEL", "env-model")
 
-    binding = create_pydantic_model_binding(
-        model_config(
-            api_key="",
-            api_key_env="ERP_TEST_AGENT_API_KEY",
-            base_url="",
-            base_url_env="ERP_TEST_AGENT_BASE_URL",
-            model="",
-            model_env="ERP_TEST_AGENT_MODEL",
+    with pytest.raises(AiModelFactoryError, match="未配置模型名"):
+        create_pydantic_model_binding(
+            model_config(
+                api_key="",
+                api_key_env="ERP_TEST_AGENT_API_KEY",
+                base_url="",
+                base_url_env="ERP_TEST_AGENT_BASE_URL",
+                model="",
+                model_env="ERP_TEST_AGENT_MODEL",
+            )
         )
-    )
 
-    assert binding.model.model_name == "env-model"
-    assert binding.model.base_url == "https://env.example.invalid/v1/"
-    assert "env-secret-value" not in repr(binding)
+    with pytest.raises(AiModelFactoryError, match="API Key"):
+        create_pydantic_model_binding(
+            model_config(
+                api_key="",
+                api_key_env="ERP_TEST_AGENT_API_KEY",
+                base_url="https://api.example.invalid/v1",
+                base_url_env="ERP_TEST_AGENT_BASE_URL",
+                model="explicit-model",
+                model_env="ERP_TEST_AGENT_MODEL",
+            )
+        )
 
 
 def test_factory_uses_curated_deepseek_provider() -> None:

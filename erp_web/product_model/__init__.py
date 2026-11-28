@@ -57,6 +57,11 @@ from .mercadolibre_publication import (
     normalize_mercadolibre_market_publication,
     normalize_mercadolibre_publication,
 )
+from .draft_progress import (
+    build_forbidden_categories_map,
+    compute_draft_progress,
+    draft_progress_facts_from_raw,
+)
 from .platform_sku import (
     draft_has_remote_listing,
 )
@@ -68,7 +73,9 @@ __all__ = [
     "SOURCE_IMAGE_ORIGINS",
     "apply_category_target_updates",
     "apply_category_selection",
+    "build_forbidden_categories_map",
     "canonicalize_mercadolibre_siteless_user_product_id",
+    "compute_draft_progress",
     "default_collect_diagnostics",
     "default_draft",
     "default_draft_image_ref",
@@ -81,6 +88,7 @@ __all__ = [
     "draft_image_refs_from_assets",
     "draft_image_refs_from_pool",
     "draft_has_remote_listing",
+    "draft_progress_facts_from_raw",
     "image_pool_refs",
     "merge_source_partial_result",
     "mercadolibre_sales_condition_basis",

@@ -29,6 +29,7 @@ TARGET_LISTING_KEYS = (
     "attributes",
     "validation_errors",
     "category_precheck",
+    "category_block",
     "publish_status",
     "status",
     "last_precheck",
