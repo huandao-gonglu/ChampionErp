@@ -22,7 +22,10 @@ def _receiving_snapshot(request: ReceivingWarehouseRequest, scope: OrderCapabili
         raise BusinessCapabilityError("ORDER_RECEIVING_STALE", "收货仓候选或版本已变化，请重新读取。")
     facts = {**order_facts(request.order_id, scope), "receiving": current,
              "bus_identity": scope.fulfillment().client.identity()}
-    return snapshot(f"确认收货仓及本单承接能力：{candidate['warehouse_name']}，{json.dumps(candidate['address'], ensure_ascii=False)}", request, facts)
+    return snapshot(
+        f"确认收货仓及本单承接能力：{candidate['warehouse_name']}，{json.dumps(candidate['address'], ensure_ascii=False)}",
+        request, facts, approval_tier="local",
+    )
 
 
 def _fulfillment_snapshot(request: OrderFulfillmentRequest, scope: OrderCapabilityScope) -> ToolApprovalSnapshot:

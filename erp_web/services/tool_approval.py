@@ -32,11 +32,10 @@ def approval_binding_digest(
         "operation_key": str(operation_key or "").strip(),
         "tool_call_id": str(tool_call_id or "").strip(),
         "approval_revision": int(approval_revision),
+        "approval_tier": snapshot.approval_tier,
         "summary": snapshot.summary,
         "canonical_payload": snapshot.canonical_payload,
     }
-    if snapshot.requires_user_confirmation:
-        payload["requires_user_confirmation"] = True
     encoded = json.dumps(
         payload,
         ensure_ascii=False,
@@ -61,8 +60,12 @@ def verify_execution_approval(
     在“所见非所批”的状态下执行破坏性写入。
     """
 
-    if snapshot.requires_user_confirmation and not execution.business_scope.get("approver", "").startswith("local-ui:"):
-        raise AiToolExecutionError("USER_CONFIRMATION_REQUIRED", "请先核对并确认建议值。")
+    approver = str(execution.business_scope.get("approver") or "").strip()
+    if snapshot.approval_tier != "local" and approver == "local-user:auto-approval":
+        raise AiToolExecutionError(
+            "AUTO_APPROVAL_NOT_ALLOWED",
+            "该高影响操作在自动审批模式下仍需人工确认。",
+        )
     digest = str(execution.approval_digest or "").strip()
     if not digest or execution.approval_revision <= 0:
         raise AiToolExecutionError(

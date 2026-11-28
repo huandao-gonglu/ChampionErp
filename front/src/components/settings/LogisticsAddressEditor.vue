@@ -1,14 +1,25 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, useId } from 'vue'
+import PageSaveButton from '@/components/layout/PageSaveButton.vue'
+import { usePageSaveAction, type PageSaveAction } from '@/composables/usePageSaveAction'
 import { parseLogisticsAddress } from '@/api/logistics'
 import type { LogisticsAddressInput, LogisticsSettings } from '@/api/logistics'
 import type { PurchaseAddressFields } from '@/api/alibabaSelfPurchase'
 const props = defineProps<{ initial: LogisticsAddressInput; settings: LogisticsSettings; busy: boolean }>()
 const emit = defineEmits<{ save: [LogisticsAddressInput]; cancel: [] }>()
+const formId = useId()
+const formEl = ref<HTMLFormElement | null>(null)
 const form = ref<LogisticsAddressInput>(JSON.parse(JSON.stringify(props.initial)))
 const rawAddress = ref(''), parsing = ref(false), parseError = ref(''), parsed = ref(false)
 const warnings = ref<string[]>([])
 let disposed = false
+const saveAction = computed<PageSaveAction>(() => ({
+  label: props.busy ? '保存中…' : '保存地址',
+  disabled: props.busy || parsing.value,
+  form: formId,
+  submitForm: () => formEl.value?.requestSubmit(),
+}))
+const { hasHost } = usePageSaveAction(saveAction)
 async function parse() {
   if (props.busy || parsing.value || !rawAddress.value.trim()) return
   parsing.value = true; parseError.value = ''; parsed.value = false; warnings.value = []
@@ -25,9 +36,15 @@ onBeforeUnmount(() => { disposed = true })
 const fields: Array<[keyof PurchaseAddressFields, string]> = [['fullName', '收货人'], ['mobile', '手机号'], ['phone', '固定电话'], ['provinceText', '省'], ['cityText', '市'], ['areaText', '区／县'], ['townText', '街道／乡镇'], ['address', '详细地址'], ['postCode', '邮编']]
 </script>
 <template>
-  <form class="mt-4 space-y-4 rounded-lg border border-accent-200 p-4 dark:border-accent-700" aria-label="物流收货地址" @submit.prevent="save">
+  <form :id="formId" ref="formEl" class="mt-4 space-y-4 rounded-lg border border-accent-200 p-4 dark:border-accent-700" aria-label="物流收货地址" @submit.prevent="save">
     <fieldset :disabled="busy || parsing" class="space-y-4">
-      <h3 class="font-semibold">{{ form.id ? '编辑收货地址' : '新增收货地址' }}</h3>
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <h3 class="font-semibold">{{ form.id ? '编辑收货地址' : '新增收货地址' }}</h3>
+        <div class="flex flex-wrap items-center gap-2">
+          <button class="btn btn-secondary" type="button" @click="emit('cancel')">取消</button>
+          <PageSaveButton v-if="!hasHost" :action="saveAction" />
+        </div>
+      </div>
       <label class="block">所属合作仓库<select v-model.number="form.warehouse_id" aria-label="所属合作仓库" class="input mt-1 w-full" required><option v-if="!settings.warehouses.some(w => w.id === form.warehouse_id)" :value="form.warehouse_id">{{ initial.warehouse_id }}（合作已失效）</option><option v-for="warehouse in settings.warehouses" :key="warehouse.id" :value="warehouse.id">{{ warehouse.name }} · ID {{ warehouse.id }}</option></select></label>
       <p v-if="form.id" class="text-sm text-accent-500">保存修改后，引用此配置的订单须重新确认收货仓及报单绑定，才能继续报单；原采购记录保留。</p>
       <label class="block">地址名称<input v-model.trim="form.name" aria-label="地址名称" class="input mt-1 w-full" maxlength="100" required placeholder="例如：义乌收货点" /></label>
@@ -54,7 +71,6 @@ const fields: Array<[keyof PurchaseAddressFields, string]> = [['fullName', '收�
         </div>
         <p v-if="!form.rules.length" class="text-sm text-accent-500">尚未选择物流商，此地址不会出现在采购候选中。</p>
       </fieldset>
-      <div class="flex gap-3"><button class="btn btn-primary" type="submit">保存地址</button><button class="btn btn-secondary" type="button" @click="emit('cancel')">取消</button></div>
     </fieldset>
   </form>
 </template>

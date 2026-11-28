@@ -195,4 +195,56 @@ describe('系统设置入口与同步间隔', () => {
     expect(adminWrapper.get('#system-settings-panel-managed').text()).toContain('图片托管（管理员共享）')
     expect(loadImageHosting).toHaveBeenCalledTimes(1)
   })
+
+  it('所有可编辑设置页签的保存按钮统一位于吸顶 PageHeader 右上角且不重复渲染', async () => {
+    const account = useAccountStore()
+    account.user = { id: 'a1', email: 'admin@example.com', display_name: '管理员', role: 'admin', status: 'enabled', created_at: 0, updated_at: 0 }
+    vi.mocked(fetchYandexWarehouses).mockResolvedValue({
+      ok: true,
+      account: { business_id: '222', campaign_id: '111', placement_type: 'FBS', stock_update_mode: 'business' },
+      revision: 0, bindings: [], binding_warnings: [],
+      modes: [{ carrier: 'GUOO_GTA', value: 'Economy', transport: '陆运' }],
+      warehouses: [{ id: 31, name: 'GUOO 远端仓' }],
+      routes: [], carriers: [{ value: 'GUOO_GTA', label: 'GUOO' }], checked_at: '', error: '',
+    })
+    const route = reactive({ query: { settings_section: 'general' } })
+    const wrapper = mount(SystemSettingsPanel, {
+      attachTo: document.body,
+      global: { ...global, provide: { [routeLocationKey as symbol]: route } },
+    })
+    await flushPromises()
+    const header = () => wrapper.get('header.page-header-sticky')
+    const panel = (key: string) => wrapper.get(`#system-settings-panel-${key}`)
+
+    expect(header().get('button.page-save-btn').text()).toBe('保存设置')
+    expect(panel('general').findAll('button[type="submit"]')).toHaveLength(0)
+    await wrapper.get('#orders-auto-sync-hours').setValue(12)
+    await header().get('button.page-save-btn').trigger('click')
+    await flushPromises()
+    expect(saveSystemSettings).toHaveBeenCalledWith({ orders_auto_sync_interval_hours: 12 })
+
+    route.query.settings_section = 'user_agents'
+    await flushPromises()
+    expect(header().get('button.page-save-btn').text()).toBe('保存自定义指令')
+    expect(panel('user_agents').findAll('button[type="submit"]')).toHaveLength(0)
+
+    route.query.settings_section = 'watermark'
+    await flushPromises()
+    expect(header().get('button.page-save-btn').text()).toBe('保存水印设置')
+    expect(panel('watermark').findAll('button[type="submit"]')).toHaveLength(0)
+
+    route.query.settings_section = 'managed'
+    await flushPromises()
+    expect(header().get('button.page-save-btn').text()).toBe('保存共享设置')
+    expect(panel('managed').findAll('button').some(b => b.text() === '保存共享设置')).toBe(false)
+
+    route.query.settings_section = 'yandex_warehouses'
+    await flushPromises()
+    expect(header().get('button.page-save-btn').text()).toBe('保存发布仓库配置')
+    expect(panel('yandex_warehouses').findAll('button[type="submit"]')).toHaveLength(0)
+
+    route.query.settings_section = 'about'
+    await flushPromises()
+    expect(header().find('button.page-save-btn').exists()).toBe(false)
+  })
 })

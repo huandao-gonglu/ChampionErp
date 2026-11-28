@@ -181,6 +181,141 @@ describe('AI 对话按轮次展示', () => {
     expect(JSON.stringify(parts)).toBe(saved)
   })
 
+  it('中途 run_code 运行时异常在后续步骤继续完成后收进过程并标为重新调整，不在正文上方残留操作失败红框', async () => {
+    const errWithReceipt: AiUiPart = {
+      type: 'tool-run_code',
+      toolCallId: 'rc-1',
+      state: 'output-error',
+      input: { code: 'r = await draft_changes_apply(draft_id="d1")\n(r.get("changes") or [{}])[1]' },
+      errorText: 'Runtime error:\nTraceback (most recent call last):\nIndexError: list index out of range',
+    }
+    const errWithoutReceipt: AiUiPart = {
+      type: 'tool-run_code',
+      toolCallId: 'rc-2',
+      state: 'output-error',
+      input: { code: 'await draft_attributes_read(draft_id="d2")\nawait draft_changes_apply(draft_id="d2")' },
+      errorText: 'Runtime error:\nTraceback (most recent call last):\nTypeError: next() unsupported',
+    }
+    const recovered: AiUiPart = {
+      type: 'tool-run_code',
+      toolCallId: 'rc-3',
+      state: 'output-available',
+      input: { code: 'await draft_changes_apply(draft_id="d1")' },
+      output: { ok: true },
+    }
+    const messages: UIMessage[] = [
+      user('u1', '处理选中的草稿'),
+      {
+        ...reply('a1', [errWithReceipt, errWithoutReceipt, recovered, text('已完成全部草稿处理。')]),
+        metadata: {
+          business_write_receipts: [
+            {
+              tool_call_id: 'rc-1__1',
+              tool_name: 'draft_changes_apply',
+              output: { ok: false, error: { code: 'ATTRIBUTE_LANGUAGE_INVALID', message: '外语平台不能直接写入中文' } },
+            },
+            {
+              tool_call_id: 'rc-3__1',
+              tool_name: 'draft_changes_apply',
+              output: { ok: true },
+            },
+          ],
+        },
+      },
+    ]
+    const wrapper = mount(AiMessageList, { props: { messages } })
+    expect(wrapper.find('[data-testid="ai-turn-attention"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('操作失败')
+    expect(wrapper.text()).not.toContain('此次操作未成功')
+    expect(wrapper.get('[data-testid="ai-turn-response"]').text()).toBe('已完成全部草稿处理。')
+
+    const process = wrapper.get<HTMLDetailsElement>('[data-testid="ai-turn-process"]')
+    expect(process.element.open).toBe(false)
+    expect(process.get('summary').text()).toContain('已处理 1 步')
+    await expand(process)
+    const toolRows = process.findAll('[data-testid="ai-part-tool"]')
+    expect(toolRows).toHaveLength(3)
+    expect(toolRows[0].attributes('data-tool-status')).toBe('script_error')
+    expect(toolRows[0].text()).toContain('重新调整')
+    expect(toolRows[0].text()).not.toContain('此次操作未成功')
+    expect(toolRows[1].attributes('data-tool-status')).toBe('script_error')
+    expect(toolRows[1].text()).toContain('重新调整')
+    await expand(toolRows[0].get<HTMLDetailsElement>('[data-testid="ai-tool-details"]'))
+    expect(toolRows[0].get('[data-testid="ai-script-diagnostic"]').text()).toContain('IndexError')
+  })
+
+  it('中途 run_code 异常前若已有结果未知的写回执，即使后续步骤继续仍保留结果未确认关注提示', () => {
+    const interrupted: AiUiPart = {
+      type: 'tool-run_code',
+      toolCallId: 'rc-unknown',
+      state: 'output-error',
+      input: { code: 'await draft_changes_apply(draft_id="d1")' },
+      errorText: 'Runtime error:\nTraceback (most recent call last):\nRuntimeError: interrupted',
+    }
+    const laterRead: AiUiPart = {
+      type: 'tool-run_code',
+      toolCallId: 'rc-after',
+      state: 'output-available',
+      input: { code: 'await draft_read(draft_id="d1")' },
+      output: { ok: true },
+    }
+    const messages: UIMessage[] = [
+      user('u1', '批量更新草稿'),
+      {
+        ...reply('a1', [interrupted, laterRead, text('请核对未确认项。')]),
+        metadata: {
+          business_write_receipts: [
+            {
+              tool_call_id: 'rc-unknown__1',
+              tool_name: 'draft_changes_apply',
+              output: { ok: false, error: { message: '写入超时', details: { outcome_unknown: true } } },
+            },
+          ],
+        },
+      },
+    ]
+    const wrapper = mount(AiMessageList, { props: { messages } })
+    const attention = wrapper.get('[data-testid="ai-turn-attention"]')
+    expect(attention.text()).toContain('结果未确认')
+    expect(attention.text()).toContain('尚未收到明确结果')
+  })
+
+  it('连续失败且无后续成功步骤的 run_code 运行时异常留在关注区，并展示子回执真实业务错误', () => {
+    const failed1: AiUiPart = {
+      type: 'tool-run_code',
+      toolCallId: 'rc-f1',
+      state: 'output-error',
+      input: { code: 'await draft_changes_apply(draft_id="d1")' },
+      errorText: 'Runtime error:\nTraceback (most recent call last):\nIndexError: list index out of range',
+    }
+    const failed2: AiUiPart = {
+      type: 'tool-run_code',
+      toolCallId: 'rc-f2',
+      state: 'output-error',
+      input: { code: 'await draft_changes_apply(draft_id="d1")' },
+      errorText: 'Runtime error:\nTraceback (most recent call last):\nKeyError: "x"',
+    }
+    const messages: UIMessage[] = [
+      user('u1', '保存草稿'),
+      {
+        ...reply('a1', [failed1, failed2, text('保存未完成。')]),
+        metadata: {
+          business_write_receipts: [
+            {
+              tool_call_id: 'rc-f1__1',
+              tool_name: 'draft_changes_apply',
+              output: { ok: false, error: { message: '外语平台不能直接写入中文' } },
+            },
+          ],
+        },
+      },
+    ]
+    const wrapper = mount(AiMessageList, { props: { messages } })
+    const attention = wrapper.get('[data-testid="ai-turn-attention"]')
+    expect(attention.findAll('[data-testid="ai-part-tool"]')).toHaveLength(2)
+    expect(attention.text()).toContain('外语平台不能直接写入中文')
+  })
+
   it('执行中的文字和并行工具按顺序原地更新，旁白降权且完成后自动收起为语义摘要', async () => {
     const wrapper = mount(AiMessageList, { props: { active: true, messages: [user(), reply('a', [text('先查询')])] } })
     const timeline = () => wrapper.get('[data-testid="ai-turn-timeline"]')

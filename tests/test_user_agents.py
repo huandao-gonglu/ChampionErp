@@ -112,7 +112,7 @@ def test_chat_updates_user_agents_only_after_native_confirmation(app_dir, decisi
         yield {0: call}
 
     ui = service(app_dir, FunctionModel(stream_function=model), build_global_chat_toolset(context))
-    ui.chat_service.approval_mode_reader = lambda: "full"
+    ui.chat_service.approval_mode_reader = lambda: "ask"
     asyncio.run(ui.prepare_run(body("把这个操作写入记忆")).stream(lambda _: None))
     assert config.user_agents() == initial
     part, = [p for m in ui.dump_ui_messages(CONVERSATION)["messages"] for p in m["parts"] if p.get("state") == "approval-requested"]
@@ -142,3 +142,43 @@ def test_chat_updates_user_agents_only_after_native_confirmation(app_dir, decisi
     asyncio.run(ui.prepare_run(fresh).stream(lambda _: None))
     assert text in fresh_instructions[0] and "始终显示单位。" in fresh_instructions[0]
     assert "编辑说明" not in fresh_instructions[0]
+
+
+@pytest.mark.parametrize("mode", ["auto", "full"])
+@pytest.mark.parametrize("decision", ["append", "replace", "duplicate"])
+def test_chat_auto_and_full_modes_auto_approve_user_agents_update(app_dir, mode, decision):
+    context = get_context()
+    config = context.config
+    original = "<!-- 编辑说明 -->\n\n始终显示单位。\n\n先给结果。\n"
+    config.save_user_agents({"content": original, "expected_revision": config.user_agents()["revision"]})
+    text = "先给结果。" if decision == "duplicate" else "Yandex 托盘缺少形状变体字段时，优先用真实形状和尺寸区分。"
+    arguments = {"text": text}
+    if decision == "replace":
+        arguments["current_text"] = "先给结果。"
+    receipt = []
+
+    async def model(messages, info):
+        for message in reversed(messages):
+            for part in message.parts:
+                if isinstance(part, ToolReturnPart) and part.tool_name == USER_AGENTS_UPDATE:
+                    receipt.append(part.content)
+                    yield "已自动保存偏好。"
+                    return
+        call = discover_tools(info, USER_AGENTS_UPDATE) or DeltaToolCall(
+            name=USER_AGENTS_UPDATE, json_args=json.dumps(arguments), tool_call_id="update-rule",
+        )
+        yield {0: call}
+
+    ui = service(app_dir, FunctionModel(stream_function=model), build_global_chat_toolset(context))
+    ui.chat_service.approval_mode_reader = lambda: mode
+    asyncio.run(ui.prepare_run(body("把这个操作写入记忆")).stream(lambda _: None))
+    pending = [p for m in ui.dump_ui_messages(CONVERSATION)["messages"] for p in m["parts"] if p.get("state") == "approval-requested"]
+    assert pending == []
+    saved = config.user_agents()
+    if decision == "duplicate":
+        assert saved["content"] == original
+        assert receipt == [{"changed": False, "text": text, "revision": saved["revision"]}]
+        return
+    expected = original.replace("先给结果。", text) if decision == "replace" else original + "\n" + text + "\n"
+    assert saved["content"] == expected
+    assert receipt == [{"changed": True, "text": text, "revision": saved["revision"]}]

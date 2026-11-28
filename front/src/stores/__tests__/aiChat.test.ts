@@ -143,6 +143,116 @@ describe('当前对话待办', () => {
     expect(store.input).toBe('稍后再发送')
     expect(store.activeConversationId).toBe(root)
   })
+
+  it('点击批准后立即移除待办并切换为运行中，在途同步不闪回，失败时自动恢复待办', async () => {
+    const store = useAiChatStore()
+    const root = store.startConversation()
+    store.openConversation({
+      ok: true,
+      conversation_id: root,
+      history_version: 2,
+      created_at: '',
+      updated_at: '',
+      run_active: false,
+      messages: [{
+        id: 'pending',
+        role: 'assistant',
+        parts: [{
+          type: 'tool-draft_package_estimates_confirm',
+          state: 'approval-requested',
+          toolCallId: 'est-1',
+          input: { draft_id: 'draft-1' },
+          approval: { id: 'est-1' },
+        }],
+      }],
+      pending_tool_calls: [{
+        tool_call_id: 'est-1',
+        tool_name: 'draft_package_estimates_confirm',
+        kind: 'approval',
+        summary: '确认包装尺寸估算',
+      }],
+    })
+
+    let resolveToken!: (value: { data: { approvalToken: string } }) => void
+    const getSpy = vi.spyOn(apiClient, 'get').mockImplementation(() => new Promise(resolve => { resolveToken = resolve }) as never)
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 202 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const approvalPromise = store.respondToApproval('est-1', true)
+    // 请求发出前就应同步隐藏审批待办并切入运行状态，避免用户以为点击无效。
+    expect(store.pendingToolCalls).toEqual([])
+    expect(store.pendingUserActionsCount).toBe(0)
+    expect(store.isRunning).toBe(true)
+
+    // 在途收到旧快照同步时，不能把正在提交的待办重新闪回界面。
+    mocks.fetchUiMessages.mockResolvedValueOnce({
+      ok: true,
+      conversation_id: root,
+      history_version: 2,
+      created_at: '',
+      updated_at: '',
+      run_active: false,
+      messages: store.messages,
+      pending_tool_calls: [{
+        tool_call_id: 'est-1',
+        tool_name: 'draft_package_estimates_confirm',
+        kind: 'approval',
+        summary: '确认包装尺寸估算',
+      }],
+    })
+    store.refreshHistory()
+    await vi.waitFor(() => expect(mocks.fetchUiMessages).toHaveBeenCalledTimes(1))
+    expect(store.pendingToolCalls).toEqual([])
+    expect(store.isRunning).toBe(true)
+
+    mocks.fetchUiMessages.mockResolvedValueOnce({
+      ok: true,
+      conversation_id: root,
+      history_version: 3,
+      created_at: '',
+      updated_at: '',
+      run_active: true,
+      messages: store.messages,
+      pending_tool_calls: [],
+    })
+    await vi.waitFor(() => expect(getSpy).toHaveBeenCalledWith('/api/state?view=settings'))
+    resolveToken({ data: { approvalToken: 'token-fast' } })
+    await approvalPromise
+    expect(store.pendingToolCalls).toEqual([])
+    expect(store.isRunning).toBe(true)
+
+    // 失败场景：乐观移除的待办应在失败后恢复，避免误丢待办。
+    store.openConversation({
+      ok: true,
+      conversation_id: root,
+      history_version: 3,
+      created_at: '',
+      updated_at: '',
+      run_active: false,
+      messages: [{
+        id: 'pending-2',
+        role: 'assistant',
+        parts: [{
+          type: 'tool-draft_package_estimates_confirm',
+          state: 'approval-requested',
+          toolCallId: 'est-2',
+          input: { draft_id: 'draft-2' },
+          approval: { id: 'est-2' },
+        }],
+      }],
+      pending_tool_calls: [{
+        tool_call_id: 'est-2',
+        tool_name: 'draft_package_estimates_confirm',
+        kind: 'approval',
+        summary: '确认第二个估算',
+      }],
+    })
+    getSpy.mockRejectedValueOnce(new Error('网络断开'))
+    mocks.fetchUiMessages.mockRejectedValueOnce(new Error('网络断开'))
+    await expect(store.respondToApproval('est-2', true)).rejects.toThrow('网络断开')
+    expect(store.pendingToolCalls.map(call => call.tool_call_id)).toEqual(['est-2'])
+    expect(store.isRunning).toBe(false)
+  })
 })
 
 describe('停止操作', () => {

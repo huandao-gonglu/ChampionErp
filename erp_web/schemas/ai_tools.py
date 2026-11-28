@@ -921,6 +921,9 @@ class JobReferenceResult(BaseModel):
 PRODUCT_RESEARCH_JOB_TYPE = "product_research"
 
 
+ApprovalTier = Literal["local", "high_impact"]
+
+
 class ToolApprovalSnapshot(BaseModel):
     """服务端生成的审批冻结快照：人类可读摘要 + 规范化执行参数。
 
@@ -931,8 +934,8 @@ class ToolApprovalSnapshot(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    requires_user_confirmation: bool = False
     summary: str = Field(min_length=1, max_length=2000)
+    approval_tier: ApprovalTier = "high_impact"
     canonical_payload: dict[str, JsonValue] = Field(
         default_factory=dict,
         max_length=100,
@@ -989,6 +992,7 @@ class AiToolRequiredInput(BaseModel):
 __all__ = [
     "AI_TOOL_EXECUTION_MODES",
     "AI_TOOL_RECOVERY_POLICIES",
+    "ApprovalTier",
     "AiToolCommand",
     "AiToolDefinition",
     "AiToolExecutionError",

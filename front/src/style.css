@@ -150,6 +150,22 @@
     @apply mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8;
   }
 
+  .page-header-sticky {
+    position: sticky;
+    inset-block-start: var(--workflow-mobile-nav-height, 0px);
+    z-index: 20;
+    margin-inline: calc(var(--workflow-content-px, 0px) * -1);
+    margin-block-start: calc(var(--workflow-content-pt, 0px) * -1);
+    padding-inline: var(--workflow-content-px, 0px);
+    padding-block-start: var(--workflow-content-pt, 0px);
+    padding-block-end: 12px;
+    @apply bg-accent-100/95 backdrop-blur-sm dark:bg-dark-900/95;
+  }
+
+  .page-save-btn {
+    @apply !min-h-9 shrink-0 whitespace-nowrap !rounded-xl !px-3.5 !py-1.5 text-sm;
+  }
+
   .card {
     @apply rounded-2xl border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/70;
   }

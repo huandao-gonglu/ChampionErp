@@ -73,6 +73,16 @@ export const useAiChatStore = defineStore('aiChat', () => {
   let stopRequestVersion = 0
   const inputDrafts = new Map<string, DesktopChatState>()
   const pendingInputIds = new Set<string>()
+  const inFlightPendingKeys = new Set<string>()
+  const pendingKey = (scope: string, callId: string) => JSON.stringify([scope, callId])
+  function filterInFlightPending(scope: string, calls?: PendingToolCall[]): PendingToolCall[] {
+    return (calls ?? []).filter(call => !inFlightPendingKeys.has(pendingKey(scope, call.tool_call_id)))
+  }
+  function hasInFlightPending(scope: string): boolean {
+    const prefix = `[${JSON.stringify(scope)},`
+    for (const key of inFlightPendingKeys) if (key.startsWith(prefix)) return true
+    return false
+  }
   const status = computed(() => chat.value?.status ?? 'ready')
   const conversationLinkId = computed(() => (
     historyVersion.value > 0 || chat.value?.messages.length ? activeConversationId.value : null
@@ -214,8 +224,12 @@ export const useAiChatStore = defineStore('aiChat', () => {
       if (detail.history_version < historyVersion.value) return
       // 原生流持有正在输出的消息；此时只同步等待列表，不用历史快照覆盖实时正文。
       receivedMessages.value = (detail.received_messages ?? []).filter(row => row.message_id !== directRunMessageId)
-      pendingToolCalls.value = detail.pending_tool_calls ?? []
-      parallelReplies.value = detail.parallel_replies ?? []
+      pendingToolCalls.value = filterInFlightPending(conversationId, detail.pending_tool_calls)
+      parallelReplies.value = (detail.parallel_replies ?? []).map(reply => ({
+        ...reply,
+        pending_tool_calls: filterInFlightPending(reply.conversation_id, reply.pending_tool_calls),
+        run_active: reply.run_active || hasInFlightPending(reply.conversation_id),
+      }))
       if (!pendingInputIds.size) latestMessageId.value = detail.latest_message_id ?? latestMessageId.value
       if (parallelPolling.value) {
         if (retryTimer) clearTimeout(retryTimer)
@@ -228,7 +242,7 @@ export const useAiChatStore = defineStore('aiChat', () => {
         }
         return
       }
-      runActive.value = detail.run_active ?? false
+      runActive.value = (detail.run_active ?? false) || hasInFlightPending(conversationId)
       if (runActive.value && detail.run_status === 'cancelled') stopping.value = true
       if (stopping.value && runActive.value) {
         retryTimer = setTimeout(() => void resyncFromServer(conversationId), 2000)
@@ -521,34 +535,84 @@ export const useAiChatStore = defineStore('aiChat', () => {
       receivedNotice.value = '停止请求失败，请重试'
     })
   }
-  async function submitPending(scope: string, message: UIMessage, answerTo?: string, approvalToken?: string) {
+  async function withOptimisticPendingRemoval(scope: string, callId: string, run: () => Promise<void>) {
     const root = activeConversationId.value
     if (!root) throw new Error('当前对话已关闭')
-    try {
-      const response = await accountFetch(AI_CHAT_RUNS_PATH, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', ...(approvalToken && { 'X-Approval-Token': approvalToken }) },
-        body: JSON.stringify({ id: scope, answer_to: answerTo, trigger: 'submit-message', messages: [message] }),
+    const key = pendingKey(scope, callId)
+    const isMain = scope === root
+    const removedMain = isMain ? pendingToolCalls.value.find(call => call.tool_call_id === callId) : undefined
+    const previousRunActive = runActive.value
+    const targetReply = !isMain ? parallelReplies.value.find(reply => reply.conversation_id === scope) : undefined
+    const removedParallel = targetReply?.pending_tool_calls?.find(call => call.tool_call_id === callId)
+    const previousParallelActive = targetReply?.run_active
+
+    inFlightPendingKeys.add(key)
+    if (isMain && removedMain) {
+      pendingToolCalls.value = pendingToolCalls.value.filter(call => call.tool_call_id !== callId)
+      if (!pendingToolCalls.value.some(call => call.kind === 'approval' || call.kind === 'input')) {
+        runActive.value = true
+      }
+    } else if (targetReply && removedParallel) {
+      const remaining = (targetReply.pending_tool_calls ?? []).filter(call => call.tool_call_id !== callId)
+      parallelReplies.value = parallelReplies.value.map(reply => reply.conversation_id !== scope ? reply : {
+        ...reply,
+        pending_tool_calls: remaining,
+        run_active: reply.run_active || !remaining.some(call => call.kind === 'approval' || call.kind === 'input'),
       })
-      if (!response.ok) throw new Error((await response.json()).error ?? '提交失败，请重试')
-      await response.body?.cancel()
+    }
+
+    try {
+      await run()
+    } catch (cause) {
+      inFlightPendingKeys.delete(key)
+      if (activeConversationId.value === root) {
+        if (isMain && removedMain && !pendingToolCalls.value.some(call => call.tool_call_id === callId)) {
+          pendingToolCalls.value = [...pendingToolCalls.value, removedMain]
+          runActive.value = previousRunActive
+        } else if (removedParallel) {
+          parallelReplies.value = parallelReplies.value.map(reply => {
+            if (reply.conversation_id !== scope) return reply
+            const calls = reply.pending_tool_calls ?? []
+            if (calls.some(call => call.tool_call_id === callId)) return reply
+            return { ...reply, pending_tool_calls: [...calls, removedParallel], run_active: previousParallelActive }
+          })
+        }
+      }
+      throw cause
     } finally {
-      await resyncFromServer(root, 0, true)
+      inFlightPendingKeys.delete(key)
+      if (activeConversationId.value === root) {
+        await resyncFromServer(root, 0, true)
+      }
     }
   }
+  async function submitPending(scope: string, message: UIMessage, answerTo?: string, approvalToken?: string) {
+    const response = await accountFetch(AI_CHAT_RUNS_PATH, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...(approvalToken && { 'X-Approval-Token': approvalToken }) },
+      body: JSON.stringify({ id: scope, answer_to: answerTo, trigger: 'submit-message', messages: [message] }),
+    })
+    if (!response.ok) throw new Error((await response.json()).error ?? '提交失败，请重试')
+    await response.body?.cancel()
+  }
   function answerQuestion(scope: string, callId: string, text: string) {
-    return submitPending(scope, { id: crypto.randomUUID(), role: 'user', parts: [{ type: 'text', text }] }, callId)
+    return withOptimisticPendingRemoval(scope, callId, () => submitPending(
+      scope, { id: crypto.randomUUID(), role: 'user', parts: [{ type: 'text', text }] }, callId,
+    ))
   }
   async function submitApproval(scope: string, messages: UIMessage[], id: string, approved: boolean, reason?: string) {
     const root = activeConversationId.value
     for (const message of messages) {
       const part = message.parts.find(part => 'state' in part && part.state === 'approval-requested' && part.approval.id === id)
       if (!part || !('state' in part) || part.state !== 'approval-requested') continue
-      // 只交给 SDK 当前一项，其他待办不随本次决定提交。
-      const decision = new Chat<UIMessage>({ id: scope, messages: [{ ...message, parts: [part] }] })
-      await decision.addToolApprovalResponse({ id, approved, reason })
-      const { data } = await apiClient.get<{ approvalToken: string }>('/api/state')
-      if (activeConversationId.value !== root) return
-      await submitPending(scope, decision.messages[0], undefined, data.approvalToken)
+      const callId = 'toolCallId' in part ? String(part.toolCallId) : id
+      await withOptimisticPendingRemoval(scope, callId, async () => {
+        // 只交给 SDK 当前一项，其他待办不随本次决定提交。
+        const decision = new Chat<UIMessage>({ id: scope, messages: [{ ...message, parts: [part] }] })
+        await decision.addToolApprovalResponse({ id, approved, reason })
+        const { data } = await apiClient.get<{ approvalToken: string }>('/api/state?view=settings')
+        if (activeConversationId.value !== root) return
+        await submitPending(scope, decision.messages[0], undefined, data.approvalToken)
+      })
       return
     }
     throw new Error('这项审批已失效，请查看当前待办。')

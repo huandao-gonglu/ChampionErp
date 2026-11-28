@@ -26,7 +26,9 @@ import {
   desktopImageAction,
   fatalModelErrorInfo,
   isAiToolPart,
+  nestedWriteReceiptsForCall,
   toolNeedsAttention,
+  type ToolDisplayStatus,
   type ToolPartView,
 } from '@/utils/aiMessagePresentation'
 import { launchDesktop } from '@/utils/desktopHandoff'
@@ -37,6 +39,7 @@ import { withAiConversation } from '@/services/withAiConversation'
 const props = withDefaults(defineProps<{
   part: AiUiPart
   pendingKind?: 'approval' | 'external' | 'input'
+  statusOverride?: ToolDisplayStatus
   progress?: string
   codeProgress?: CodeProgressSnapshot
   writeReceipts?: BusinessWriteReceipt[]
@@ -88,7 +91,7 @@ const businessResult = computed(() => (
     ? tool.value.output as { ok?: boolean; status?: string; error?: { message?: string } }
     : undefined
 ))
-const status = computed(() => aiToolStatus(props.part, props.pendingKind, props.active))
+const status = computed(() => props.statusOverride ?? aiToolStatus(props.part, props.pendingKind, props.active))
 const isActiveStatus = computed(() => ['preparing', 'waiting', 'running'].includes(status.value))
 const isAttentionStatus = computed(() => ['failed', 'partial', 'unknown', 'denied', 'approval', 'input', 'desktop'].includes(status.value))
 const toolStatusLabel = computed(() => statusLabels[status.value])
@@ -163,9 +166,23 @@ const scriptDiagnostic = computed(() => (
     && /^(?:(?:Type|Syntax) error in code:|Runtime error:)\r?\n/.test(tool.value.errorText || '')
     ? tool.value.errorText : ''
 ))
+const nestedReceiptErrorMessage = computed(() => {
+  if (!isRunCode.value) return ''
+  const messages: string[] = []
+  for (const receipt of nestedWriteReceiptsForCall(tool.value.toolCallId, props.writeReceipts)) {
+    if (receipt.output?.ok !== false) continue
+    const err = receipt.output.error && typeof receipt.output.error === 'object'
+      ? receipt.output.error as { message?: unknown }
+      : undefined
+    const msg = typeof err?.message === 'string' ? err.message.trim() : ''
+    if (msg && !messages.includes(msg)) messages.push(msg)
+  }
+  return messages.slice(0, 2).join('；')
+})
 const toolError = computed(() => (
-  scriptDiagnostic.value ? businessResult.value?.error?.message || ''
-    : tool.value.errorText || businessResult.value?.error?.message || ''
+  scriptDiagnostic.value
+    ? (businessResult.value?.error?.message || (status.value === 'failed' ? nestedReceiptErrorMessage.value : '') || '')
+    : (tool.value.errorText || businessResult.value?.error?.message || '')
 ))
 
 const toolStatusClass = computed(() => {
@@ -406,21 +423,26 @@ const statusLabels: Record<string, string> = {
     v-else-if="isToolPart && userInputPrompt"
     class="min-w-0 rounded-xl border px-3.5 py-2.5 text-sm"
     :class="status === 'input'
-      ? 'border-amber-300 bg-amber-50/80 text-slate-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-accent-100'
-      : 'border-slate-200 bg-slate-50/70 text-slate-700 dark:border-dark-700 dark:bg-dark-800/60 dark:text-accent-200'"
+      ? 'border-slate-200/90 bg-white text-slate-900 shadow-sm dark:border-dark-700 dark:bg-dark-800/80 dark:text-accent-100'
+      : 'border-slate-200/80 bg-slate-50/70 text-slate-700 dark:border-dark-700/80 dark:bg-dark-800/40 dark:text-accent-200'"
     data-testid="ai-part-user-input"
   >
     <div class="flex flex-wrap items-center gap-2">
-      <component :is="toolIcon" :size="16" class="shrink-0 text-amber-600 dark:text-amber-300" aria-hidden="true" />
-      <span class="min-w-0 font-semibold">{{ userInputPrompt.title || toolName }}</span>
       <span
-        class="inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset"
+        v-if="status === 'input'"
+        class="h-2 w-2 shrink-0 rounded-full bg-amber-500 dark:bg-amber-400"
+        aria-hidden="true"
+      />
+      <component :is="toolIcon" v-else :size="15" class="shrink-0 text-slate-400 dark:text-accent-400" aria-hidden="true" />
+      <span class="min-w-0 text-xs font-semibold">{{ userInputPrompt.title || toolName }}</span>
+      <span
+        class="inline-flex shrink-0 items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset"
         :class="toolStatusClass"
       >
         {{ toolStatusLabel }}
       </span>
     </div>
-    <p v-if="userInputPrompt.question" class="mt-1.5 whitespace-pre-wrap break-words text-sm leading-6">
+    <p v-if="userInputPrompt.question" class="mt-1.5 whitespace-pre-wrap break-words text-sm leading-6 text-slate-700 dark:text-accent-200">
       {{ userInputPrompt.question }}
     </p>
     <p v-if="userInputPrompt.reply" class="mt-2 border-t border-slate-200/80 pt-1.5 text-xs text-slate-500 dark:border-dark-700 dark:text-accent-300">
@@ -476,7 +498,7 @@ const statusLabels: Record<string, string> = {
           :data-testid="liveCodeProgressCompact ? 'ai-tool-progress' : 'ai-tool-meta'"
         >· {{ inlineToolMeta }}</span>
         <span
-          v-else-if="subtleStatusNote"
+          v-if="subtleStatusNote && (!inlineToolMeta || status === 'script_error')"
           class="shrink-0 text-[11px] text-slate-400 dark:text-accent-500"
         >· {{ subtleStatusNote }}</span>
         <span

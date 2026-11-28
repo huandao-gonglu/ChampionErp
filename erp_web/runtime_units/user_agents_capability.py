@@ -45,8 +45,8 @@ def _proposal(document: UserAgentsDocument, request: UserAgentsUpdateRequest) ->
 def _snapshot(request: UserAgentsUpdateRequest, revision: str) -> ToolApprovalSnapshot:
     action = "替换一条" if request.current_text is not None else "新增一条"
     return ToolApprovalSnapshot(
-        requires_user_confirmation=True,
         summary=f"为当前账号{action} AI 自定义指令，供后续对话使用。",
+        approval_tier="local",
         canonical_payload={"revision": revision, "update": request.model_dump(mode="json")},
     )
 

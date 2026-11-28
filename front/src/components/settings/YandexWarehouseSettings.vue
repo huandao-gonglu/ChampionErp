@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, useId } from 'vue'
+import PageSaveButton from '@/components/layout/PageSaveButton.vue'
+import { usePageSaveAction, type PageSaveAction } from '@/composables/usePageSaveAction'
 import { fetchYandexWarehouses, saveYandexWarehouses } from '@/api/yandexWarehouses'
 import type { YandexWarehouseSettings, YandexWarehouseBinding } from '@/api/yandexWarehouses'
 import type { Carrier } from '@/api/logistics'
+const formId = useId()
+const formEl = ref<HTMLFormElement | null>(null)
 const settings = ref<YandexWarehouseSettings | null>(null)
 const bindings = ref<YandexWarehouseBinding[]>([])
 const busy = ref(false), error = ref(''), notice = ref(''), editing = ref(false)
@@ -18,6 +22,17 @@ function missingMode(item: YandexWarehouseBinding) {
   return !!item.shipping_mode && !settings.value?.modes.some(m => m.value === item.shipping_mode && m.carrier === item.carrier)
 }
 const canSave = computed(() => editing.value && bindings.value.every(b => !b.enabled || (b.shipping_mode && !missingMode(b))))
+const saveAction = computed<PageSaveAction | null>(() => (
+  settings.value && (warehouses.value.length || editing.value)
+    ? {
+        label: busy.value ? '保存中…' : '保存发布仓库配置',
+        disabled: busy.value || !canSave.value,
+        form: formId,
+        submitForm: () => formEl.value?.requestSubmit(),
+      }
+    : null
+))
+const { hasHost } = usePageSaveAction(saveAction)
 function removeBinding(warehouseId: number) {
   bindings.value = bindings.value.filter(b => b.warehouse_id !== warehouseId)
   editing.value = true
@@ -54,14 +69,21 @@ onBeforeUnmount(() => { disposed = true })
 </script>
 <template>
   <section class="space-y-4" aria-label="Yandex 核价与发布仓库">
-    <div class="flex flex-wrap items-center justify-between gap-3"><div><h3 class="text-lg font-semibold">设置仓库运输模式</h3><p class="mt-1 text-sm text-accent-500">选择与 Yandex 后台一致的物流商和运输模式，例如 GUOO → Economy（陆运）。</p></div><button type="button" class="btn btn-secondary" :disabled="busy || editing" @click="load(true)">同步 Yandex 仓库</button></div>
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div><h3 class="text-lg font-semibold">设置仓库运输模式</h3><p class="mt-1 text-sm text-accent-500">选择与 Yandex 后台一致的物流商和运输模式，例如 GUOO → Economy（陆运）。</p></div>
+      <div class="flex flex-wrap items-center gap-2">
+        <button v-if="editing" type="button" class="btn btn-outline" :disabled="busy" @click="load()">取消修改</button>
+        <button type="button" class="btn btn-secondary" :disabled="busy || editing" @click="load(true)">同步 Yandex 仓库</button>
+        <PageSaveButton v-if="!hasHost && saveAction" :action="saveAction" />
+      </div>
+    </div>
     <p class="text-sm text-accent-500">核价使用所选模式的运费表，按商品重量、尺寸和货值计算；发布库存时使用核价选中的仓库。这里的设置不会修改 Yandex 后台。</p>
     <p v-if="busy" role="status">正在处理发布仓库…</p>
     <p v-if="error || settings?.error" role="alert" class="text-sm text-amber-700 dark:text-amber-300">{{ error || settings?.error }}</p>
     <p v-if="notice" role="status" class="text-sm text-primary-700 dark:text-primary-300">{{ notice }}</p>
     <p v-if="settings && !settings.warehouses.length" class="text-sm text-accent-500">尚无可用的远端发布仓库，请同步仓库并检查店铺授权。</p>
     <p v-if="settings?.checked_at" class="text-xs text-accent-500">最近同步：{{ new Date(settings.checked_at).toLocaleString('zh-CN') }}</p>
-    <form v-if="settings && (warehouses.length || editing)" class="space-y-4" @submit.prevent="save">
+    <form v-if="settings && (warehouses.length || editing)" :id="formId" ref="formEl" class="space-y-4" @submit.prevent="save">
       <fieldset :disabled="busy" class="space-y-4">
         <article v-for="warehouse in warehouses" :key="warehouse.id" class="space-y-3 rounded border border-accent-200 p-4 dark:border-accent-700">
           <div class="flex flex-wrap items-center justify-between gap-2"><h4 class="font-semibold">{{ warehouse.name }} <span class="text-xs font-normal text-accent-500">ID {{ warehouse.id }}</span></h4><button v-if="binding(warehouse.id)" type="button" class="text-sm text-accent-500 underline" @click="removeBinding(warehouse.id)">解除关联</button></div>
@@ -83,7 +105,6 @@ onBeforeUnmount(() => { disposed = true })
           </template>
           <p class="text-xs text-accent-500">每个仓库选择一种运输模式；Extra Small 为独立轻小件服务，请与 Yandex 后台配置保持一致。</p>
         </article>
-        <div class="flex gap-3"><button type="submit" class="btn btn-primary" :disabled="!canSave">保存发布仓库配置</button><button v-if="editing" type="button" class="btn btn-secondary" @click="load()">取消修改</button></div>
       </fieldset>
     </form>
   </section>

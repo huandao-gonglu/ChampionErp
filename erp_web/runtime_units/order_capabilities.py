@@ -23,21 +23,26 @@ def _source_snapshot(request: SelectSourceRequest, scope: OrderCapabilityScope) 
     selected = next((line["selection"] for line in facts["lines"] if line["selection"]["line_key"] == request.line_key), {})
     candidate = next((row for row in selected.get("candidates", []) if row["id"] == request.candidate_id), {})
     source = request.source.model_dump() if request.source else candidate.get("source", {})
-    return snapshot(f"确认采购来源（不会下单）：{source.get('specification', '')}，{source.get('product_url', '')}", request, facts)
+    return snapshot(
+        f"确认采购来源（不会下单）：{source.get('specification', '')}，{source.get('product_url', '')}",
+        request, facts, approval_tier="local",
+    )
 
 
 def _record_snapshot(request: OrderPurchaseRecordRequest, scope: OrderCapabilityScope) -> ToolApprovalSnapshot:
     facts = order_facts(request.order_id, scope)
-    return snapshot("登记已实际发生的采购单（不会下单）", request, facts)
+    return snapshot("登记已实际发生的采购单（不会下单）", request, facts, approval_tier="local")
 
 
 def _cancel_snapshot(request: CancelPurchaseRequest, scope: OrderCapabilityScope) -> ToolApprovalSnapshot:
-    return snapshot("作废本地采购登记（不会取消远端订单）", request, order_facts(request.order_id, scope))
+    return snapshot("作废本地采购登记（不会取消远端订单）", request, order_facts(request.order_id, scope), approval_tier="local")
 
 
 def _sync_snapshot(request: PurchaseSyncRequest, scope: OrderCapabilityScope) -> ToolApprovalSnapshot:
-    return snapshot("刷新整笔采购及物流；新运单带入后等待确认包裹清单", request,
-                    order_facts(request.order_id, scope))
+    return snapshot(
+        "刷新整笔采购及物流；新运单带入后等待确认包裹清单",
+        request, order_facts(request.order_id, scope), approval_tier="local",
+    )
 
 
 @ai_tool(name="order_detail_read", description="按 platform_orders_query 返回的 items.id 或页面 order_id 读取本地订单详情、商品行、采购来源候选、版本、剩余数量和采购进度。order_id 是 ERP 订单 ID，不是平台单号。不会查询远端；来源不能按标题或 SKU 编码猜测。",

@@ -6,7 +6,7 @@ import hashlib
 import json
 from typing import Any
 
-from erp_web.schemas.ai_tools import ToolApprovalSnapshot
+from erp_web.schemas.ai_tools import ApprovalTier, ToolApprovalSnapshot
 from erp_web.schemas.ai_trace import AiExecutionContext
 from erp_web.schemas.external_requests import ExternalRequestBlocked
 from erp_web.services.alibaba_api_client import AlibabaApiError
@@ -69,7 +69,9 @@ def order_facts(order_id: str, scope: OrderCapabilityScope) -> dict:
     }
 
 
-def snapshot(label: str, request, facts: dict) -> ToolApprovalSnapshot:
+def snapshot(
+    label: str, request, facts: dict, *, approval_tier: ApprovalTier = "high_impact",
+) -> ToolApprovalSnapshot:
     payload = request.model_dump(mode="json")
     order = facts.get("order", {})
     identity = f"{order.get('platform', '')} {order.get('order_id') or payload.get('order_id', '')}"
@@ -78,6 +80,7 @@ def snapshot(label: str, request, facts: dict) -> ToolApprovalSnapshot:
         raise BusinessCapabilityError("ORDER_APPROVAL_TOO_LARGE", "本次变更超出审批展示范围，请缩小操作范围后重试。")
     return ToolApprovalSnapshot(
         summary=summary,
+        approval_tier=approval_tier,
         canonical_payload={"request": payload, "facts": facts},
     )
 

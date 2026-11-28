@@ -72,7 +72,7 @@ BUSINESS_QUERIES = BusinessQueries((
                   config_queries.collection_settings),
     BusinessQuery('settings.pricing_defaults', '核价默认费用、利润率、汇率接口超时和缓存时长；不返回可能含凭据的接口地址。', NoDataParameters,
                   config_queries.pricing_defaults, permission='pricing.read'),
-    BusinessQuery('settings.approval', '业务工具审批模式：ask 为询问审批，full 为完全授权；只读当前保存偏好，不代表任何额外业务授权。', NoDataParameters,
+    BusinessQuery('settings.approval', '业务工具审批模式：ask 为询问审批，auto 为自动审批（仅本地准备类操作自动批准），full 为完全授权；只读当前保存偏好，不代表任何额外业务授权。', NoDataParameters,
                   lambda context, _: {'mode': context.config.ai_tool_approval_mode()}),
     BusinessQuery('operations.availability', '当前请求的模型与桌面能力限制；仅描述本次连接，不代表其他设备都不可用。', NoDataParameters,
                   lambda context, _: {'ok': True, **operation_availability(context.config.load_app_config())}, http_path='/api/operation-availability'),

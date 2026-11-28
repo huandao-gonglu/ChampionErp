@@ -213,19 +213,46 @@ function desktopImageReceiptParts(receipts: BusinessWriteReceipt[], seenToolCall
   return [...deduped.values()]
 }
 
+/** 判断单个回执是否包含未确认的写副作用结果。 */
+function outputHasUnknownOutcome(output: unknown): boolean {
+  const root = record(output)
+  const error = record(root.error)
+  return root.outcome_unknown === true
+    || record(root.details).outcome_unknown === true
+    || record(error.details).outcome_unknown === true
+    || root.status === 'unknown'
+}
+
+/** 提取某次 run_code 对应的嵌套业务写回执。 */
+export function nestedWriteReceiptsForCall(
+  toolCallId: string | undefined,
+  writeReceipts: BusinessWriteReceipt[] = [],
+): BusinessWriteReceipt[] {
+  if (!toolCallId || !writeReceipts.length) return []
+  const prefix = `${toolCallId}__`
+  return writeReceipts.filter(receipt => receipt.tool_call_id.startsWith(prefix))
+}
+
+function isRunCodeRuntimeDiagnosticError(part: AiUiPart): boolean {
+  if (aiToolName(part) !== 'run_code') return false
+  const tool = part as ToolPartView
+  if (tool.state !== 'output-error') return false
+  const output = record(tool.output)
+  if (outputHasUnknownOutcome(output) || output.ok === false || output.status === 'failed') return false
+  return /^Runtime error:\r?\n/.test(tool.errorText || '')
+}
+
 /** 未返回的历史调用不等于审批，也不能因为传输已结束就当作成功。 */
 export function aiToolStatus(part: AiUiPart, pendingKind?: PendingToolCall['kind'], active = false): ToolDisplayStatus {
   const tool = part as ToolPartView
   const output = record(tool.output)
-  const error = record(output.error)
   if (desktopImageAction(part)) return 'desktop'
-  if (output.outcome_unknown === true || record(output.details).outcome_unknown === true
-    || record(error.details).outcome_unknown === true || output.status === 'unknown') return 'unknown'
+  if (outputHasUnknownOutcome(output)) return 'unknown'
   if (tool.state === 'output-denied') return 'denied'
   if (output.ok === false || output.status === 'failed') return 'failed'
   if (tool.state === 'output-error') {
     // Code Mode 原生 ModelRetry 将执行前诊断放在 errorText，没有结构化错误类别。
-    // 只识别其固定前缀；运行时错误可能已有副作用，仍作为失败展示。
+    // 只识别其固定前缀；运行时错误是否已由后续步骤恢复由 presentAssistantParts 结合上下文判定。
     if (aiToolName(part) === 'run_code' && /^(?:Type|Syntax) error in code:\r?\n/.test(tool.errorText || '')) return 'script_error'
     return 'failed'
   }
@@ -250,6 +277,11 @@ export interface DisplayPart {
   part: AiUiPart
   pendingKind?: PendingToolCall['kind']
   progress?: string
+  statusOverride?: ToolDisplayStatus
+}
+
+export function displayToolStatus(entry: DisplayPart, active = false): ToolDisplayStatus {
+  return entry.statusOverride ?? aiToolStatus(entry.part, entry.pendingKind, active)
 }
 
 /** 实时的多个 step 和历史的多个 response 使用相同规则，保留原始顺序和引用。 */
@@ -279,6 +311,38 @@ export function presentAssistantParts(
   )
   // 待审批或后台执行时仍保留完整时间线；结束后才派生折叠的过程。
   const live = active || entries.some(entry => entry.pendingKind !== undefined)
+  // 先计算每个工具的基础状态，识别嵌套回执中的未知结果，再判断是否已有后续步骤恢复中间脚本运行时异常。
+  const baseStatuses = entries.map(entry => (
+    isAiToolPart(entry.part) ? aiToolStatus(entry.part, entry.pendingKind, live) : null
+  ))
+  const hasNestedUnknown = entries.map(entry => {
+    if (!isAiToolPart(entry.part) || aiToolName(entry.part) !== 'run_code') return false
+    const callId = (entry.part as ToolPartView).toolCallId
+    return nestedWriteReceiptsForCall(callId, writeReceipts).some(receipt => outputHasUnknownOutcome(receipt.output))
+  })
+  const progressedToolIndices: number[] = []
+  baseStatuses.forEach((status, index) => {
+    if (!status || hasNestedUnknown[index]) return
+    if (['completed', 'submitted', 'preparing', 'waiting', 'running'].includes(status)) {
+      progressedToolIndices.push(index)
+    }
+  })
+  const lastProgressedToolIndex = progressedToolIndices.at(-1) ?? -1
+  entries.forEach((entry, index) => {
+    if (!isAiToolPart(entry.part)) return
+    if (hasNestedUnknown[index]) {
+      entry.statusOverride = 'unknown'
+      return
+    }
+    // 中途 run_code 运行时异常（非未知副作用）且后续步骤已继续执行/完成时，归为内部重试调整，避免完成态残留误导性红框。
+    if (
+      baseStatuses[index] === 'failed'
+      && isRunCodeRuntimeDiagnosticError(entry.part)
+      && index < lastProgressedToolIndex
+    ) {
+      entry.statusOverride = 'script_error'
+    }
+  })
   const timeline = [
     ...entries.filter(({ part }) => part.type !== 'text' || part.text.trim()),
     ...receiptActions,
@@ -292,9 +356,9 @@ export function presentAssistantParts(
   const response: DisplayPart[] = []
   let hasActiveTool = false
   for (const [index, entry] of entries.entries()) {
-    const { part, pendingKind } = entry
+    const { part } = entry
     if (isAiToolPart(part)) {
-      const status = aiToolStatus(part, pendingKind, live)
+      const status = displayToolStatus(entry, live)
       if (toolNeedsAttention(status)) attention.push(entry)
       else process.push(entry)
       if (['preparing', 'waiting', 'running', 'approval'].includes(status)) hasActiveTool = true
@@ -336,7 +400,7 @@ export function summarizeCompletedProcess(
   if (!tools.length) {
     return duration ? `用时 ${duration}` : '处理过程'
   }
-  const meaningfulTools = tools.filter(entry => aiToolStatus(entry.part, entry.pendingKind, false) !== 'script_error')
+  const meaningfulTools = tools.filter(entry => displayToolStatus(entry, false) !== 'script_error')
   const counted = meaningfulTools.length || tools.length
   const genericLabels = new Set(['核对与整理数据', '处理业务', '处理操作'])
   const specificLabels: string[] = []
@@ -402,7 +466,7 @@ export function splitLiveTimeline(entries: DisplayPart[]): { earlier: DisplayPar
     const foldable = stage.every(entry => {
       if (!isAiToolPart(entry.part)) return true
       if (aiToolName(entry.part) === 'request_user_input' || fatalModelErrorInfo(entry.part)) return false
-      const st = aiToolStatus(entry.part, entry.pendingKind, true)
+      const st = displayToolStatus(entry, true)
       return st === 'completed' || st === 'script_error'
     })
     if (!foldable) break

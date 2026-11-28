@@ -127,3 +127,16 @@ it('草稿工作台原地替换视图，跳去补商品后可返回草稿再返�
     expect(draftBox.isVisible()).toBe(true)
   } finally { wrapper.unmount() }
 })
+
+it('商品编辑页各页签（含图片素材）与草稿编辑页共用同一右上角吸顶保存坐标', async () => {
+  const { wrapper, load, select } = await setup('library')
+  try {
+    load.mockResolvedValueOnce(response('first'))
+    await select(0)
+    const header = wrapper.get('section[aria-label="商品编辑工作台"] header.page-header-sticky')
+    expect(header.get('[data-testid="page-save-button"]').text()).toBe('保存商品')
+
+    await header.findAll('button[role="tab"]').find(tab => tab.text().includes('图片素材'))!.trigger('click')
+    expect(header.get('[data-testid="page-save-button"]').text()).toBe('保存商品素材')
+  } finally { wrapper.unmount() }
+})

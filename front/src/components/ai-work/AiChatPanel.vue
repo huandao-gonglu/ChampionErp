@@ -151,7 +151,7 @@ onBeforeUnmount(() => { disposed = true; resizeObserver?.disconnect() })
 
 <template>
   <section
-    class="flex h-full w-full flex-col"
+    class="flex h-full w-full flex-col overflow-hidden"
     :class="layout === 'page' ? '' : 'mx-auto max-w-5xl'"
     data-testid="ai-chat-panel"
   >
@@ -241,8 +241,12 @@ onBeforeUnmount(() => { disposed = true; resizeObserver?.disconnect() })
         </button>
       </div>
 
+      <ChatPendingActions
+        :key="conversationId"
+        :class="layout === 'page' ? 'mx-6' : ''"
+      />
+
       <div :class="layout === 'page' ? 'w-full shrink-0 px-6 pb-3' : 'shrink-0'">
-        <ChatPendingActions :key="conversationId" />
         <!-- 输入框 -->
         <AiChatComposer
           :model-value="input"

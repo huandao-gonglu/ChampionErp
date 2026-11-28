@@ -27,4 +27,20 @@ describe('草稿工作台重新加载入口', () => {
     await reload.trigger('click')
     expect(wrapper.emitted('reload')).toHaveLength(1)
   })
+
+  it('保存操作固定在顶栏最右侧，不随重新加载按钮显隐位移', async () => {
+    const wrapper = mount(DraftWorkspacePanel, {
+      props: { activeTab: 'text', draftId: 'draft-1', draftTitle: '草稿' },
+      slots: {
+        'secondary-actions': '<button type="button">生成文案</button>',
+        actions: '<button type="button" class="btn btn-primary page-save-btn">保存草稿</button>',
+      },
+    })
+    expect(wrapper.find('.page-header-sticky').exists()).toBe(true)
+    const headerButtons = () => wrapper.get('header').findAll('button').map(b => b.text())
+    expect(headerButtons()).toEqual(['返回草稿箱', '生成文案', '重新加载最新数据', '保存草稿'])
+
+    await wrapper.setProps({ syncMessage: '远端已更新' })
+    expect(headerButtons()).toEqual(['返回草稿箱', '生成文案', '保存草稿'])
+  })
 })

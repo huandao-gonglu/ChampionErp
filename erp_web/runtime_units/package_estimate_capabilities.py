@@ -60,8 +60,8 @@ def _estimate_context(request, scope):
 def _review_snapshot(request, product, rows):
     names = "、".join(str(rows[item.sku_id].get("name") or item.sku_id)[:60] for item in request.estimates[:3])
     return ToolApprovalSnapshot(
-        requires_user_confirmation=True,
         summary=f"将建议的包装外尺寸保存到 {names} 等 {len(request.estimates)} 个规格的商品资料，供引用该商品的草稿核价。",
+        approval_tier="local",
         canonical_payload={"product_id": product["product_id"], "proposal": request.model_dump(mode="json")},
     )
 
@@ -76,7 +76,7 @@ def _prepare_review(request, scope):
     name=CONFIRM, permission="product.write", side_effect="write", approval_required=True,
     approval_snapshot=_prepare_review, idempotency="required", idempotency_keys=("operation_key",),
     recovery_policy="manual", version="1",
-    description="将已选 SKU 缺失的包装外尺寸提交用户逐项核对。每条边填写厘米的 low、suggested、high 和该 SKU 的依据。相同商品的一批 SKU 合并提交。批准后仅保存建议值、区间及依据；拒绝后等待用户修改要求。先读取 product_read 中商品版本。不要用普通商品写工具保存推断。",
+    description="将已选 SKU 缺失的包装外尺寸估算提交审批。每条边填写厘米的 low、suggested、high 和该 SKU 的依据。相同商品的一批 SKU 合并提交。审批通过后（询问审批需用户确认，自动审批或完全授权自动批准）保存建议值、区间及依据；拒绝后等待用户修改要求。先读取 product_read 中商品版本。不要用普通商品写工具保存推断。",
 )
 def draft_package_estimates_confirm(
     request: PackageEstimatesRequest, scope: Annotated[PackageEstimateScope, Injected()],

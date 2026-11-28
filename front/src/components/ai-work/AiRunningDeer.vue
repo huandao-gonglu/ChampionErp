@@ -13,10 +13,12 @@ const props = withDefaults(defineProps<{
   gait: DeerGait
   pace: number
   size?: 'sm' | 'md'
+  question?: boolean
 }>(), {
   gait: 'trot',
   pace: 1,
   size: 'sm',
+  question: false,
 })
 
 const sizeClass = computed(() => (props.size === 'md' ? 'h-6 w-9' : 'h-5 w-7'))
@@ -419,6 +421,52 @@ function jointTransform(length: number, angle: number): string {
           </g>
         </g>
       </g>
+
+      <!-- 等待确认/回复时浮现在鹿头右上方的小气泡问号 -->
+      <g
+        v-if="question"
+        transform="translate(284 18)"
+        data-testid="ai-deer-question"
+      >
+        <g class="ai-deer-question-bubble">
+          <path
+            d="M 0 -50 C 30 -50, 52 -29, 52 0 C 52 28, 30 48, 0 48 C -9 48, -17 46, -24 42 L -46 54 L -36 32 C -46 23, -52 12, -52 0 C -52 -29, -30 -50, 0 -50 Z"
+            fill="currentColor"
+          />
+          <path
+            d="M -12 -17 C -12 -27, -4 -31, 3 -31 C 12 -31, 17 -26, 17 -17 C 17 -9, 9 -5, 4 -2 C 1 0, 0 3, 0 6"
+            class="stroke-white dark:stroke-dark-900"
+            stroke-width="12"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+          <circle cx="0" cy="26" r="6.2" class="fill-white dark:fill-dark-900" />
+        </g>
+      </g>
     </svg>
   </span>
 </template>
+
+<style scoped>
+@keyframes ai-deer-question-float {
+  0%,
+  100% {
+    transform: translate(0px, 0px) scale(1);
+  }
+  50% {
+    transform: translate(0px, -8px) scale(1.04);
+  }
+}
+
+.ai-deer-question-bubble {
+  transform-box: fill-box;
+  transform-origin: left bottom;
+  animation: ai-deer-question-float 2.5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-deer-question-bubble {
+    animation: none;
+  }
+}
+</style>

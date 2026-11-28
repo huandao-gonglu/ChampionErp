@@ -786,7 +786,7 @@ export interface BackendAppConfig {
   system_settings?: BackendSystemSettings
   forbidden_categories?: BackendForbiddenCategories
   image_hosting?: Record<string, unknown>
-  ai_tool_approval_mode?: "ask" | "full"
+  ai_tool_approval_mode?: "ask" | "auto" | "full"
   ai_models?: Array<BackendAiModelConfig>
   ai_use_case_bindings?: Record<string, BackendAiUseCaseBinding>
   pricing?: Record<string, unknown>

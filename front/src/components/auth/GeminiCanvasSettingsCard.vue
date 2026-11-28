@@ -433,7 +433,7 @@ function handleWebInputClick() {
             @click="handleWebInputClick"
             @input="desktopShell && emit('updateField', 'browser_proxy', eventText($event))"
           />
-          <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">支持 HTTP、HTTPS 和 SOCKS5，地址中不填写账号密码；修改后点击上方「保存 AI 设置」生效。</span>
+          <span class="mt-1 block text-xs text-accent-500 dark:text-accent-400">支持 HTTP、HTTPS 和 SOCKS5，地址中不填写账号密码；修改后点击右上角「保存 AI 设置」生效。</span>
         </label>
         <label class="block">
           <span class="mb-1 block text-xs font-semibold text-accent-600 dark:text-accent-300">显示名称</span>

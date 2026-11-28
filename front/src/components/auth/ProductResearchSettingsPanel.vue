@@ -1,9 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import PageSaveButton from '@/components/layout/PageSaveButton.vue'
+import { usePageSaveAction, type PageSaveAction } from '@/composables/usePageSaveAction'
 import { fetchProductResearchSettings, saveProductResearchSettings, testProductResearchSearchProvider } from '@/api/workflow/research'
 import type { ProductResearchConfig } from '@/types/workflow'
 
-defineProps<{ embedded?: boolean }>()
+const props = withDefaults(defineProps<{ embedded?: boolean; active?: boolean }>(), {
+  embedded: false,
+  active: true,
+})
 const settings = ref<ProductResearchConfig | null>(null)
 const busy = ref(false)
 const message = ref('')
@@ -21,6 +26,12 @@ async function save() {
   } catch (exc) { error.value = exc instanceof Error ? exc.message : '保存失败' }
   finally { busy.value = false }
 }
+const saveAction = computed<PageSaveAction | null>(() => (
+  props.active && provider.value
+    ? { label: busy.value ? '保存中…' : '保存设置', disabled: busy.value, onClick: save }
+    : null
+))
+const { hasHost } = usePageSaveAction(saveAction)
 async function test() {
   if (!provider.value) return
   busy.value = true
@@ -49,10 +60,18 @@ onMounted(async () => {
 
 <template>
   <section class="space-y-5" :class="embedded ? '' : 'card p-6'">
-    <div>
-      <h2 class="card-title">选品数据源 · Sorftime</h2>
-      <p class="muted mt-2">查询 Amazon US 商品，在 1688 查找货源，核对后采集入库。</p>
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h2 class="card-title">选品数据源 · Sorftime</h2>
+        <p class="muted mt-2">查询 Amazon US 商品，在 1688 查找货源，核对后采集入库。</p>
+      </div>
+      <div v-if="provider" class="flex flex-wrap items-center gap-2">
+        <button type="button" class="btn btn-secondary" :disabled="busy" @click="test">验证连接与额度</button>
+        <PageSaveButton v-if="!hasHost && saveAction" :action="saveAction" />
+      </div>
     </div>
+    <p v-if="message" role="status" class="text-sm text-success-700">{{ message }}</p>
+    <p v-if="error" role="alert" class="text-sm text-danger-700">{{ error }}</p>
     <template v-if="provider">
       <label class="flex items-center gap-2 text-sm"><input v-model="provider.enabled" type="checkbox" :disabled="busy" />启用 Sorftime</label>
       <label class="block max-w-xl">
@@ -68,12 +87,6 @@ onMounted(async () => {
         <p class="muted">其他已保存市场继续保留，当前接口适配支持 Amazon US。</p>
       </div>
       <p class="muted">每次商品查询或找货预计消耗 2 个额度；确认采集详情与 SKU 预计消耗 2 个额度。连接验证最多按 1 个额度预留，以接口回执为准。</p>
-      <div class="flex gap-3">
-        <button class="btn btn-primary" :disabled="busy" @click="save">保存设置</button>
-        <button class="btn btn-secondary" :disabled="busy" @click="test">验证连接与额度</button>
-      </div>
     </template>
-    <p v-if="message" role="status" class="text-sm text-success-700">{{ message }}</p>
-    <p v-if="error" role="alert" class="text-sm text-danger-700">{{ error }}</p>
   </section>
 </template>

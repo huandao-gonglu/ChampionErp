@@ -247,10 +247,12 @@ describe('AuthSettingsPanel 固定 Gemini Canvas 多账号与桌面交接', () =
     }
     const web = mountPanel(config)
     await web.get('[data-testid="auth-settings-tab-ai_bindings"]').trigger('click')
-    const fields = web.get('[data-testid="save-ai-bindings"]').element.closest('section')!
+    const saveButton = web.get('[data-testid="save-ai-bindings"]')
+    expect(saveButton.element.closest('header')?.classList.contains('page-header-sticky')).toBe(true)
+    const fields = web.get('[data-testid="ai-bindings-section"]').element
     const select = web.findAll('select').find(item => fields.contains(item.element))!
     await select.setValue(fixedCanvas.id)
-    await web.get('[data-testid="save-ai-bindings"]').trigger('click')
+    await saveButton.trigger('click')
     const context = vi.mocked(launchDesktop).mock.calls[0][0]!
     expect(context.state?.modelSettings?.bindings).toMatchObject({ 'image.translate': { model_id: fixedCanvas.id } })
     expect(web.emitted('saveAi')).toBeUndefined()
@@ -304,6 +306,7 @@ describe('AuthSettingsPanel credential lifecycle', () => {
     expect(userWrapper.findAll('alibaba-settings-panel-stub').map(card => card.attributes('provider')))
       .toEqual(['onebound'])
     expect(userWrapper.find('[data-testid="transient-1688-access-token"]').exists()).toBe(false)
+    await userWrapper.get('[data-testid="auth-settings-tab-ai_models"]').trigger('click')
     const payload = await save(userWrapper)
     expect(payload).not.toHaveProperty('1688_api')
     userWrapper.unmount()
@@ -864,5 +867,25 @@ describe('AuthSettingsPanel AI 功能绑定高级设置', () => {
     saved = await save(wrapper)
     expect((saved.ai_models as Array<Record<string, unknown>>)[0].capabilities).toEqual([])
     expect(saved.ai_use_case_bindings).toEqual({})
+  })
+
+  it('整体页面保存按钮统一位于吸顶 PageHeader 右上角，不下沉到内容卡片中', async () => {
+    const wrapper = mountPanel(qwenConfig)
+    const pageHeader = () => wrapper.get('header.page-header-sticky')
+    const contentCard = () => wrapper.findAll('section')[0]!
+
+    expect(pageHeader().get('button.page-save-btn').text()).toBe('保存 AI 设置')
+    expect(contentCard().findAll('button').some(b => b.text() === '保存 AI 设置')).toBe(false)
+
+    await wrapper.get('[data-testid="auth-settings-tab-ai_bindings"]').trigger('click')
+    expect(pageHeader().get('[data-testid="save-ai-bindings"]').text()).toBe('保存功能绑定')
+    expect(contentCard().find('[data-testid="save-ai-bindings"]').exists()).toBe(false)
+
+    await wrapper.get('[data-testid="auth-settings-tab-stores"]').trigger('click')
+    expect(pageHeader().get('button.page-save-btn').text()).toBe('保存当前平台授权')
+    expect(contentCard().findAll('button').some(b => b.text() === '保存当前平台授权')).toBe(false)
+
+    await wrapper.get('[data-testid="auth-settings-tab-alibaba"]').trigger('click')
+    expect(pageHeader().find('button.page-save-btn').exists()).toBe(false)
   })
 })

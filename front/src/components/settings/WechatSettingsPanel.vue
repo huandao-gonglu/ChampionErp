@@ -1,9 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, useId } from 'vue'
+import PageSaveButton from '@/components/layout/PageSaveButton.vue'
+import { usePageSaveAction, type PageSaveAction } from '@/composables/usePageSaveAction'
 import { fetchWechatStatus, saveWechatForwardTypes, startWechatLogin, unbindWechat, verifyWechatLogin, type WechatForwardType } from '@/api/wechat'
 import WorkspaceDialog from '@/components/shared/WorkspaceDialog.vue'
 import type { BackendWechatChannelStatus } from '@/types/workflow.generated'
 
+const formId = useId()
+const forwardingForm = ref<HTMLFormElement | null>(null)
 const state = ref<BackendWechatChannelStatus | null>(null)
 const forwardOptions: Array<{ value: WechatForwardType; title: string; help: string }> = [
   { value: 'reply', title: '回复与结果', help: '普通回答、追问、要求补充信息和最终答复。' },
@@ -21,6 +25,18 @@ const code = ref('')
 const busy = ref(false)
 const error = ref('')
 const statusLabel = computed(() => statusLabels[state.value?.status || 'unbound'])
+const saveAction = computed<PageSaveAction | null>(() => (
+  state.value
+    ? {
+        label: busy.value ? '处理中…' : '保存转发设置',
+        disabled: busy.value || !forwardingDirty.value,
+        testId: 'wechat-save-forwarding',
+        form: formId,
+        submitForm: () => forwardingForm.value?.requestSubmit(),
+      }
+    : null
+))
+const { hasHost } = usePageSaveAction(saveAction)
 let disposed = false
 let timer: ReturnType<typeof setTimeout> | undefined
 let controller: AbortController | undefined
@@ -92,8 +108,13 @@ const statusLabels: Record<string, string> = {
 
 <template>
   <section class="space-y-5 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70" aria-labelledby="wechat-settings-title">
-    <h3 id="wechat-settings-title" class="font-semibold">微信连接</h3>
-    <p class="muted text-sm">使用本人微信扫码，绑定成功后自动创建 ERP 对话。网页和微信使用同一份对话记录。</p>
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div class="space-y-2">
+        <h3 id="wechat-settings-title" class="font-semibold">微信连接</h3>
+        <p class="muted text-sm">使用本人微信扫码，绑定成功后自动创建 ERP 对话。网页和微信使用同一份对话记录。</p>
+      </div>
+      <PageSaveButton v-if="!hasHost && saveAction" :action="saveAction" />
+    </div>
     <p v-if="!state && !error" role="status">正在读取微信连接…</p>
     <p v-if="error || state?.error" role="alert" class="text-sm text-red-600 dark:text-red-400">{{ error || state?.error }} <button type="button" class="underline" :disabled="busy" @click="load">重新读取</button></p>
     <template v-if="state">
@@ -106,7 +127,7 @@ const statusLabels: Record<string, string> = {
       <p class="text-sm">在微信发送 /new，即可新建对话并自动切换；原对话记录保留在 AI Work 中。</p>
       <p v-if="state.pending_deliveries" class="muted text-sm">{{ `待发送消息：${state.pending_deliveries}` }}</p>
       <p class="muted text-sm">沿用 ERP 当前的操作权限与审批设置。需要审批时，请在 ERP 网页确认。</p>
-      <form class="space-y-3 border-t border-accent-200 pt-4 dark:border-dark-700" data-testid="wechat-forwarding" @submit.prevent="perform(() => saveWechatForwardTypes([...selectedForwardTypes]))">
+      <form :id="formId" ref="forwardingForm" class="space-y-3 border-t border-accent-200 pt-4 dark:border-dark-700" data-testid="wechat-forwarding" @submit.prevent="perform(() => saveWechatForwardTypes([...selectedForwardTypes]))">
         <fieldset class="space-y-3" :disabled="busy">
           <legend class="mb-2 font-semibold">转发到微信的消息</legend>
           <p class="muted text-sm">完整文字产生后发送。保存后生效，只影响消息转发，不影响 ERP 执行。</p>
@@ -117,7 +138,6 @@ const statusLabels: Record<string, string> = {
         </fieldset>
         <p class="muted text-sm">思考过程、工具参数及原始回执、逐字片段和网页用户输入不转发。关闭某类后会跳过该类待发消息，重新开启不补发。</p>
         <p v-if="selectedForwardTypes.length === 0" role="status" class="text-sm text-amber-700 dark:text-amber-300">全部关闭并保存后，微信发送的文字仍会交给 ERP 处理，但不会收到回复。</p>
-        <button type="submit" class="btn btn-primary" :disabled="busy || !forwardingDirty" data-testid="wechat-save-forwarding">{{ busy ? '处理中…' : '保存转发设置' }}</button>
       </form>
     </template>
   </section>

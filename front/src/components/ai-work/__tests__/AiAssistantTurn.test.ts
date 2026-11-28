@@ -45,6 +45,7 @@ describe('AiAssistantTurn 的正文标签展示', () => {
       expect(wrapper.get('[data-testid="ai-turn-status"]').text()).toBe('正在思考…')
       expect(deer().get('svg').attributes('viewBox')).toBe('0 0 320 256')
       expect(deer().attributes('data-gait')).toBe('trot')
+      expect(deer().find('[data-testid="ai-deer-question"]').exists()).toBe(false)
 
       // 长时间无任何输出且无活动工具 -> 平滑降速为四拍缓步。
       await vi.advanceTimersByTimeAsync(7000)
@@ -83,6 +84,81 @@ describe('AiAssistantTurn 的正文标签展示', () => {
     } finally {
       wrapper.unmount()
       vi.useRealTimers()
+    }
+  })
+
+  it('等待用户确认或回复时在小鹿头顶显示问号气泡，外部后台执行时不显示', async () => {
+    const approvalPart = {
+      type: 'tool-draft_publish',
+      toolCallId: 'call-approval',
+      state: 'input-available',
+      input: {},
+    } as never
+    const inputPart = {
+      type: 'tool-request_user_input',
+      toolCallId: 'call-input',
+      state: 'input-available',
+      input: { question: '请选择上架站点？' },
+    } as never
+    const externalPart = {
+      type: 'tool-image_batch_start',
+      toolCallId: 'call-external',
+      state: 'input-available',
+      input: {},
+    } as never
+
+    const wrapper = mount(AiAssistantTurn, {
+      props: {
+        active: false,
+        parts: [approvalPart],
+        pendingToolCalls: [{
+          tool_call_id: 'call-approval',
+          tool_name: 'draft_publish',
+          kind: 'approval',
+          summary: '确认发布草稿',
+        }],
+      },
+    })
+    try {
+      expect(wrapper.get('[data-testid="ai-turn-status"]').text()).toBe('等待你确认')
+      expect(wrapper.get('[data-testid="ai-running-deer"]').attributes('data-gait')).toBe('idle')
+      expect(wrapper.find('[data-testid="ai-deer-question"]').exists()).toBe(true)
+
+      await wrapper.setProps({
+        parts: [inputPart],
+        pendingToolCalls: [{
+          tool_call_id: 'call-input',
+          tool_name: 'request_user_input',
+          kind: 'input',
+          summary: '等待选择站点',
+        }],
+      })
+      expect(wrapper.get('[data-testid="ai-turn-status"]').text()).toBe('等待你回复')
+      expect(wrapper.get('[data-testid="ai-running-deer"]').attributes('data-gait')).toBe('idle')
+      expect(wrapper.find('[data-testid="ai-deer-question"]').exists()).toBe(true)
+
+      await wrapper.setProps({
+        parts: [approvalPart, inputPart],
+        pendingToolCalls: [
+          { tool_call_id: 'call-approval', tool_name: 'draft_publish', kind: 'approval', summary: '确认发布草稿' },
+          { tool_call_id: 'call-input', tool_name: 'request_user_input', kind: 'input', summary: '等待选择站点' },
+        ],
+      })
+      expect(wrapper.get('[data-testid="ai-turn-status"]').text()).toBe('等待你回复与确认')
+      expect(wrapper.find('[data-testid="ai-deer-question"]').exists()).toBe(true)
+
+      await wrapper.setProps({
+        parts: [externalPart],
+        pendingToolCalls: [{
+          tool_call_id: 'call-external',
+          tool_name: 'image_batch_start',
+          kind: 'external',
+          summary: '后台处理图片中',
+        }],
+      })
+      expect(wrapper.find('[data-testid="ai-deer-question"]').exists()).toBe(false)
+    } finally {
+      wrapper.unmount()
     }
   })
 

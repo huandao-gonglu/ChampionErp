@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
+import PageSaveButton from '@/components/layout/PageSaveButton.vue'
+import { usePageSaveAction, type PageSaveAction } from '@/composables/usePageSaveAction'
 import { fetchSystemSettings, previewWatermark, saveSystemSettings } from '@/api/systemSettings'
 import type { BackendWatermarkSettings } from '@/types/workflow.generated'
 
+const formId = useId()
+const formEl = ref<HTMLFormElement | null>(null)
 const settings = ref<BackendWatermarkSettings | null>(null)
 const busy = ref(false)
 const loading = ref(true)
@@ -13,6 +17,17 @@ const sampleName = ref('')
 const previewMessage = ref('')
 const previewLoading = ref(false)
 const hasContent = computed(() => Boolean(settings.value?.text.trim() || settings.value?.image_data_url))
+const saveAction = computed<PageSaveAction | null>(() => (
+  settings.value
+    ? {
+        label: busy.value ? '保存中…' : '保存水印设置',
+        disabled: busy.value || loading.value,
+        form: formId,
+        submitForm: () => formEl.value?.requestSubmit(),
+      }
+    : null
+))
+const { hasHost } = usePageSaveAction(saveAction)
 let disposed = false
 let timer: ReturnType<typeof setTimeout> | undefined
 let controller: AbortController | undefined
@@ -87,10 +102,14 @@ onBeforeUnmount(() => { disposed = true; previewVersion++; clearTimeout(timer); 
 
 <template>
   <div class="space-y-4">
-    <div><h3 class="font-semibold">发布图片水印</h3><p class="muted mt-2">斜向平铺，可单独使用文字或图片，也可同时使用。保存后，有内容就添加水印，全部清空则不添加；本地原图不变。</p></div>
+    <div class="flex flex-wrap items-start justify-between gap-3">
+      <div><h3 class="font-semibold">发布图片水印</h3><p class="muted mt-2">斜向平铺，可单独使用文字或图片，也可同时使用。保存后，有内容就添加水印，全部清空则不添加；本地原图不变。</p></div>
+      <PageSaveButton v-if="!hasHost && saveAction" :action="saveAction" />
+    </div>
     <p v-if="loading" role="status">正在读取水印设置…</p>
     <p v-if="error" role="alert" class="text-sm text-red-600 dark:text-red-400">{{ error }} <button v-if="!settings" class="underline" :disabled="loading" @click="load">重新读取</button></p>
-    <form v-if="settings" class="grid items-start gap-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]" @submit.prevent="save">
+    <p v-if="notice" role="status" class="text-sm text-primary-700 dark:text-primary-300">{{ notice }}</p>
+    <form v-if="settings" :id="formId" ref="formEl" class="grid items-start gap-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]" @submit.prevent="save">
       <fieldset :disabled="busy || loading" class="min-w-0 overflow-hidden rounded-xl border border-accent-200 dark:border-dark-700">
         <div class="space-y-5 p-5">
           <div class="space-y-2">
@@ -136,12 +155,8 @@ onBeforeUnmount(() => { disposed = true; previewVersion++; clearTimeout(timer); 
             <input v-model.number="settings.opacity" type="range" min="1" max="100" class="mt-2 block w-full accent-primary-600" />
           </label>
         </div>
-        <div class="space-y-3 border-t border-accent-200 bg-accent-50/60 p-5 dark:border-dark-700 dark:bg-dark-800/50">
-          <p v-if="!hasContent" class="muted text-xs">未填写文字或图片，发布时使用原图。</p>
-          <div class="flex flex-wrap items-center gap-3">
-            <button type="submit" class="btn btn-primary">保存水印设置</button>
-            <p v-if="notice" role="status" class="text-sm text-primary-700 dark:text-primary-300">{{ notice }}</p>
-          </div>
+        <div v-if="!hasContent" class="border-t border-accent-200 bg-accent-50/60 px-5 py-3 dark:border-dark-700 dark:bg-dark-800/50">
+          <p class="muted text-xs">未填写文字或图片，发布时使用原图。</p>
         </div>
       </fieldset>
       <section data-testid="watermark-preview" aria-label="效果预览" :aria-busy="previewLoading" class="space-y-3 lg:sticky lg:top-4 lg:self-start">

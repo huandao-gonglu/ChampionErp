@@ -4,6 +4,8 @@ import { routeLocationKey } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useAccountStore } from '@/stores/account'
 import PageHeader from '@/components/layout/PageHeader.vue'
+import PageSaveButton from '@/components/layout/PageSaveButton.vue'
+import { providePageSaveAction, type PageSaveAction } from '@/composables/usePageSaveAction'
 import AboutSettingsPanel from '@/components/settings/AboutSettingsPanel.vue'
 import YandexWarehouseSettings from '@/components/settings/YandexWarehouseSettings.vue'
 import WatermarkSettingsPanel from '@/components/settings/WatermarkSettingsPanel.vue'
@@ -48,7 +50,20 @@ const loading = ref(true)
 const saving = ref(false)
 const error = ref('')
 const message = ref('')
+const generalForm = ref<HTMLFormElement | null>(null)
 const valid = computed(() => Number.isInteger(hours.value) && hours.value >= 5)
+const { action: childSaveAction } = providePageSaveAction()
+const pageSaveAction = computed<PageSaveAction | null>(() => {
+  if (section.value === 'general') {
+    return {
+      label: saving.value ? '保存中…' : '保存设置',
+      disabled: loading.value || saving.value || savedHours.value === null || !valid.value || hours.value === savedHours.value,
+      form: 'system-settings-form',
+      submitForm: () => generalForm.value?.requestSubmit(),
+    }
+  }
+  return childSaveAction.value
+})
 async function load() {
   loading.value = true
   error.value = ''
@@ -75,8 +90,12 @@ onMounted(load)
 </script>
 
 <template>
-  <section class="space-y-6">
-    <PageHeader title="系统设置" :description="activeTab.summary" />
+  <section class="space-y-3">
+    <PageHeader sticky title="系统设置" :description="activeTab.summary">
+      <template v-if="pageSaveAction" #actions>
+        <PageSaveButton :action="pageSaveAction" />
+      </template>
+    </PageHeader>
     <div class="rounded-lg border border-accent-200 bg-white p-5 shadow-card dark:border-dark-700 dark:bg-dark-900/80">
       <nav class="flex min-w-0 flex-wrap gap-1 border-b border-accent-200 dark:border-dark-700" role="tablist" aria-label="系统设置分类">
         <button
@@ -134,9 +153,10 @@ onMounted(load)
           </div>
           <p class="muted text-sm">切换后立即生效，并自动保存到当前浏览器。</p>
         </section>
-        <form id="system-settings-form" class="space-y-5 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70" @submit.prevent="save">
+        <form id="system-settings-form" ref="generalForm" class="space-y-5 rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70" @submit.prevent="save">
           <p v-if="loading" role="status" class="text-sm text-accent-500">正在读取设置…</p>
           <p v-if="error" role="alert" class="text-sm text-red-600 dark:text-red-400">{{ error }} <button v-if="savedHours === null" type="button" class="underline" :disabled="loading" @click="load">重试</button></p>
+          <p v-if="message" role="status" class="text-sm text-green-700 dark:text-green-400">{{ message }}</p>
           <fieldset :disabled="loading || saving || savedHours === null" class="space-y-3">
             <legend class="mb-3 font-semibold">订单同步</legend>
             <label for="orders-auto-sync-hours" class="block text-sm font-medium">自动同步间隔</label>
@@ -146,10 +166,6 @@ onMounted(load)
             </div>
             <p id="orders-auto-sync-help" class="max-w-3xl text-sm leading-6 text-accent-500 dark:text-accent-300">至少 5 小时。进入订单中心时，距离上次自动同步达到此间隔才会同步订单、采购和仓库状态。手动同步不受限制。</p>
           </fieldset>
-          <p v-if="message" role="status" class="text-sm text-green-700 dark:text-green-400">{{ message }}</p>
-          <div class="flex justify-end border-t border-accent-200 pt-5 dark:border-white/10">
-            <button type="submit" form="system-settings-form" class="btn btn-primary" :disabled="loading || saving || savedHours === null || !valid || hours === savedHours">{{ saving ? '保存中…' : '保存设置' }}</button>
-          </div>
         </form>
       </section>
     </div>

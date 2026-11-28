@@ -19,6 +19,7 @@ const props = defineProps<{
   error?: string
   showTranslateAction?: boolean
   embedded?: boolean
+  hideSaveAction?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -72,6 +73,7 @@ function assignSkus(changes: SkuImageBatchChange[]) {
       :images="images"
       :loading="loading"
       :show-translate-action="showTranslateAction === true"
+      :hide-save-action="hideSaveAction === true"
       :sku-assignments="skuAssignments"
       @assign-skus="assignSkus"
       @translate="emit('translate', $event)"

@@ -21,6 +21,7 @@ import type { ImageAsset } from '@/types/workflow'
 
 const props = defineProps<{
   images: ImageAsset[]; loading: boolean; showTranslateAction?: boolean
+  hideSaveAction?: boolean
   skuAssignments?: SkuImageAssignment[]
 }>()
 const emit = defineEmits<{
@@ -113,6 +114,7 @@ watch(() => props.images, () => {
         </div>
         <div class="flex flex-wrap items-center gap-1.5">
           <button
+            v-if="!hideSaveAction"
             type="button"
             class="btn btn-outline !min-h-8 !rounded-xl !px-2.5 !py-1 text-xs"
             :disabled="loading || !images.length"

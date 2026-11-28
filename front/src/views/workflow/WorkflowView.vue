@@ -353,6 +353,15 @@ async function saveProductFacts() {
   }
 }
 
+async function saveProductImages() {
+  productEditorNotice.value = ''
+  await store.saveCurrentImagePool()
+  if (!error.value) {
+    productEditorSnapshot.value = JSON.stringify(product.value)
+    productEditorNotice.value = '商品素材已保存。'
+  }
+}
+
 async function openProductImageEditor(item?: ProductIndexItem) {
   await openProductEditor(item, 'images')
 }
@@ -566,7 +575,7 @@ watch(
           </select>
         </div>
 
-        <div class="workflow-content py-4">
+        <div class="workflow-content">
           <!-- 主导航视图层（进入商品/草稿编辑时通过 v-show 隐藏，返回时完整保留列表筛选、勾选与状态） -->
           <div
             v-show="!editorOpen && !draftWorkspaceOpen"
@@ -689,14 +698,14 @@ watch(
             </div>
           </div>
 
-          <!-- 原地商品编辑工作台（占满主区宽度，无全屏遮罩弹窗） -->
+          <!-- 原地商品编辑工作台（占满主区宽度，顶栏与页面级 PageHeader 对齐同一右上角坐标） -->
           <section
             v-if="editorOpen"
             aria-label="商品编辑工作台"
-            class="flex min-w-0 flex-col rounded-2xl border border-accent-200/90 bg-accent-50/70 shadow-sm dark:border-dark-700 dark:bg-dark-900/70"
+            class="flex min-w-0 flex-col space-y-4"
           >
-            <header class="product-editor-sticky border-b border-accent-200/90 bg-white/95 px-4 pt-3.5 backdrop-blur-sm dark:border-dark-700 dark:bg-dark-900/95 sm:px-5">
-              <div class="flex flex-wrap items-center justify-between gap-3">
+            <header class="page-header-sticky border-b border-accent-200/90 !pb-0 dark:border-dark-700">
+              <div class="flex flex-wrap items-start justify-between gap-3">
                 <div class="flex min-w-0 flex-1 items-center gap-3">
                   <button
                     type="button"
@@ -723,7 +732,7 @@ watch(
                     <div class="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-accent-500 dark:text-accent-400">
                       <button
                         type="button"
-                        class="inline-flex items-center gap-1 rounded-md bg-accent-100 px-1.5 py-0.5 font-mono text-[11px] text-accent-600 transition hover:bg-accent-200/70 hover:text-accent-900 disabled:opacity-50 dark:bg-dark-800 dark:text-accent-300 dark:hover:bg-dark-700"
+                        class="inline-flex items-center gap-1 rounded-md bg-accent-200/70 px-1.5 py-0.5 font-mono text-[11px] text-accent-600 transition hover:bg-accent-200 hover:text-accent-900 disabled:opacity-50 dark:bg-dark-800 dark:text-accent-300 dark:hover:bg-dark-700"
                         :disabled="!product.productId"
                         :title="product.productId || '当前商品暂无 ID'"
                         @click="copyProductId"
@@ -748,15 +757,26 @@ watch(
                   </div>
                 </div>
 
-                <div class="flex shrink-0 flex-wrap items-center gap-2">
+                <div class="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
                   <button
                     v-if="productEditorTab !== 'images'"
                     type="button"
-                    class="btn btn-primary !min-h-9 !rounded-xl !px-3.5 !py-1.5 text-sm"
+                    data-testid="page-save-button"
+                    class="btn btn-primary page-save-btn"
                     :disabled="loading || !productAttributesValid"
                     @click="saveProductFacts"
                   >
                     <PhFloppyDisk :size="15" aria-hidden="true" />保存商品
+                  </button>
+                  <button
+                    v-else
+                    type="button"
+                    data-testid="page-save-button"
+                    class="btn btn-primary page-save-btn"
+                    :disabled="loading || !imagePool.length"
+                    @click="saveProductImages"
+                  >
+                    <PhFloppyDisk :size="15" aria-hidden="true" />保存商品素材
                   </button>
                 </div>
               </div>
@@ -811,7 +831,7 @@ watch(
               </nav>
             </header>
 
-            <div v-if="error || productEditorNotice" class="space-y-2 px-4 pt-3 sm:px-5">
+            <div v-if="error || productEditorNotice" class="space-y-2">
               <div
                 v-if="error"
                 role="alert"
@@ -832,7 +852,7 @@ watch(
               </div>
             </div>
 
-            <div class="min-w-0 p-4 sm:p-5">
+            <div class="min-w-0">
               <ProductEditorPanel
                 v-if="productEditorTab !== 'images'"
                 embedded
@@ -848,6 +868,7 @@ watch(
                 v-else
                 ref="productImageEditor"
                 embedded
+                hide-save-action
                 :title="imageEditorTitle"
                 :product="product"
                 :images="imagePool"
@@ -856,7 +877,7 @@ watch(
                 @translate="translateEditorImages"
                 @image-edit="editEditorImages"
                 @upload="store.uploadReferenceImages"
-                @save="store.saveCurrentImagePool"
+                @save="saveProductImages"
                 @save-sku-images="store.saveCurrentProduct"
                 @set-main="store.setMainImage"
                 @delete="store.deleteImages"
@@ -880,12 +901,23 @@ watch(
               @update-active-tab="draftWorkspaceTab = $event"
               @close="closeDraftWorkspace"
             >
-              <template #actions>
+              <template #secondary-actions>
                 <span v-if="draftWorkspaceTab === 'text' && modelOperationReason('copy.generate')" role="status" class="muted">{{ modelOperationReason('copy.generate') }}</span>
                 <button v-if="draftWorkspaceTab === 'text'" v-desktop="'copy.generate'" class="btn btn-outline !min-h-9 !rounded-xl !px-3 !py-1.5 text-sm" :disabled="draftWorkspaceLoading || !!modelOperationReason('copy.generate') || !(currentDraft.productId || currentDraftProductContext.productId)" @click="() => store.generateCopy(true)">
                   {{ copyGenerating ? '正在生成本地化文案…' : '生成/改写本地化文案' }}
                 </button>
-                <button class="btn btn-primary !min-h-9 !rounded-xl !px-3.5 !py-1.5 text-sm" :disabled="loading || imageWorkbenchBusy || !currentDraft.draftId" :title="draftSaveBlockedReason" @click="imageSaveState.save">{{ draftWorkspaceTab === 'images' ? '保存图片设置' : '保存草稿' }}</button>
+              </template>
+              <template #actions>
+                <button
+                  type="button"
+                  data-testid="page-save-button"
+                  class="btn btn-primary page-save-btn"
+                  :disabled="loading || imageWorkbenchBusy || !currentDraft.draftId"
+                  :title="draftSaveBlockedReason"
+                  @click="imageSaveState.save"
+                >
+                  <PhFloppyDisk :size="15" aria-hidden="true" />{{ draftWorkspaceTab === 'images' ? '保存图片设置' : '保存草稿' }}
+                </button>
               </template>
 
               <template #text>
@@ -968,9 +1000,15 @@ watch(
 <style scoped>
 .workflow-main {
   --workflow-mobile-nav-height: 0px;
+  --workflow-content-px: 20px;
+  --workflow-content-pt: 16px;
 }
-.workflow-content, .workflow-mobile-nav {
-  padding-inline: 20px;
+.workflow-content {
+  padding-inline: var(--workflow-content-px);
+  padding-block: var(--workflow-content-pt);
+}
+.workflow-mobile-nav {
+  padding-inline: var(--workflow-content-px);
 }
 .workflow-main--collect {
   @apply flex min-h-dvh flex-col;
@@ -990,13 +1028,6 @@ watch(
   .workflow-main--collect {
     block-size: 100dvh;
   }
-}
-.product-editor-sticky {
-  position: sticky;
-  inset-block-start: var(--workflow-mobile-nav-height, 0px);
-  z-index: 20;
-  border-top-left-radius: 1rem;
-  border-top-right-radius: 1rem;
 }
 .product-editor-tab {
   @apply inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 border-transparent px-3 py-2.5 text-xs font-medium text-accent-600 transition hover:text-accent-950 dark:text-accent-300 dark:hover:text-white;

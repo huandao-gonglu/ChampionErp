@@ -194,7 +194,7 @@ def test_fifteen_selected_drafts_prepare_concurrently_and_report_real_remaining_
 
 
 @pytest.mark.parametrize("publish_outcome", ["success", "failed", "enqueue_failed"])
-@pytest.mark.parametrize("approval_mode", ["ask", "full"])
+@pytest.mark.parametrize("approval_mode", ["ask", "auto", "full"])
 def test_publish_submission_finishes_chat_before_remote_result(
     tmp_path, monkeypatch, publish_outcome, approval_mode
 ):
@@ -293,7 +293,7 @@ def test_publish_submission_finishes_chat_before_remote_result(
             for p in m["parts"]
             if p.get("state") == "approval-requested"
         ]
-        if approval_mode == "ask":
+        if approval_mode in {"ask", "auto"}:
             assert len(parts) == 1 and adapter.publish_calls == 0, ui.dump_ui_messages(
                 CONVERSATION
             )

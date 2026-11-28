@@ -14,24 +14,29 @@ from erp_web.services.ai_run_cancellation import check_cancellation
 def automatic_approval_results(
     requests: DeferredToolRequests, *, mode: AiToolApprovalMode,
 ) -> DeferredToolResults | None:
-    """只批准带服务端快照的审批请求；外部任务仍由现有 Job 服务执行。"""
-    if mode != "full":
+    """按审批模式批准带服务端快照的审批请求：auto 仅批 local，full 批准全部；外部任务仍由现有 Job 服务执行。"""
+    if mode == "ask":
         return None
     approvals = {}
     metadata = {}
     confirmed_at = datetime.now(timezone.utc).isoformat()
+    approver = (
+        "local-user:full-authorization"
+        if mode == "full"
+        else "local-user:auto-approval"
+    )
     for call in requests.approvals:
         snapshot = requests.metadata.get(call.tool_call_id, {})
-        if snapshot.get("requires_user_confirmation"):
-            continue
         if not snapshot.get("approval_digest") or not snapshot.get("approval_revision"):
+            continue
+        if mode == "auto" and snapshot.get("approval_tier") != "local":
             continue
         approvals[call.tool_call_id] = True
         metadata[call.tool_call_id] = {
             **snapshot,
-            "approver": "local-user:full-authorization",
+            "approver": approver,
             "approval_confirmed_at": confirmed_at,
-            "approval_mode": "full",
+            "approval_mode": mode,
         }
     return requests.build_results(approvals=approvals, metadata=metadata) if approvals else None
 

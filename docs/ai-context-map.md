@@ -813,7 +813,7 @@ POST /api/v1/ai-chat/runs（Vercel SubmitMessage，可带 target_draft_ids）
   → ai_chat_facade → VercelAiUiService → GlobalAgentChatService
     → AiAgentFactory → Pydantic Agent → 原生 Tool → AiToolRuntime → 领域 Capability
       ├─ 普通结果/缺字段 → 原生模型继续决策
-      ├─ ApprovalRequired → 原生 HandleDeferredToolCalls（完全授权）或工具卡（询问审批）→ DeferredToolResults
+      ├─ ApprovalRequired → 原生 HandleDeferredToolCalls（自动审批/完全授权按分级自动批）或工具卡（询问审批/高影响确认）→ DeferredToolResults
       │   └─ product_publish_request → PublishingBus 接收 → 返回提交回执 → AI 汇报已提交并结束发布操作
       └─ CallDeferred → 原生请求和历史同事务落盘
           → AgentJobService 领取领域 Job → 真实终态 → DeferredToolResults → 同一入口恢复
@@ -827,14 +827,14 @@ POST /api/v1/ai-chat/runs（Vercel SubmitMessage，可带 target_draft_ids）
 - `erp_web/runtime_units/collect_helpers.py::claim_products_to_markets`：AI 认领和采集箱市场选择共享按语言分组逻辑；全部市场从真实店铺绑定及平台注册表解析。
 - `erp_web/services/ai_tool_bridge.py`：机械参数校验、原生并发、审批快照与 Deferred 转接；不选择下一步。
 - `erp_web/services/tool_approval.py`：业务审批内容 digest，绑定工具名/版本、operation key、原生 call ID 和审批版本；执行前重核。
-- `erp_web/schemas/ai_approval.py`、`erp_web/services/ai_approval_policy.py`：工具审批偏好 `ask/full` 与原生 `HandleDeferredToolCalls` 接法。完全授权只产生带原快照的 `DeferredToolResults.approvals`，不修改工具权限、不跳过执行校验，也不接管 Agent 循环。
+- `erp_web/schemas/ai_approval.py`、`erp_web/services/ai_approval_policy.py`：工具审批偏好 `ask / auto / full` 与原生 `HandleDeferredToolCalls` 接法。审批快照通过 `approval_tier` 区分 `local`（尺寸估算、偏好更新、本地采购登记与收货仓绑定）与默认 `high_impact`（发布、改价、删除、采购下单付款、买家消息、跨境报单）；`auto` 仅自动批准 `local`，`full` 自动批准全部带原快照的审批。自动批准只产生 `DeferredToolResults.approvals`，不修改工具权限、不跳过执行校验，也不接管 Agent 循环；`request_user_input` 业务提问不受模式跳过。
 - `erp_web/facades/ai_approval_facade.py`：`POST /api/ai/approval-mode` 的受信 UI 入口，要求 `X-Approval-Token`；模式存入 `app_config.ai_tool_approval_mode`，只读值随 `/api/state` 返回。普通设置保存保留最新授权偏好，模型没有修改模式的工具。
-- `front/src/components/ai-work/AiApprovalModeSelect.vue`：主对话与浮动对话共用的“询问审批 / 完全授权”选择器，全局保存。完全授权覆盖后续调用和未决定的审批，既有批准/拒绝不改写；普通未返回工具只显示“等待工具结果”，审批标签以服务端 `pending_tool_calls` 为准。
+- `front/src/components/ai-work/AiApprovalModeSelect.vue`：主对话与浮动对话共用的“询问审批 / 自动审批 / 完全授权”选择器，全局保存；普通未返回工具只显示“等待工具结果”，审批标签以服务端 `pending_tool_calls` 为准。
 - `erp_web/services/agent_run_storage.py`：原生 hook 到消息 CAS、输入收件箱与副作用检查点的适配。
 - ERP 主 Agent 的固定规则归 `erp_web/assets/systemAgents.md` 和 `services/agent_instructions.py`，功能模板归 `erp_web/assets/prompts/` 和 `services/ai_prompt_templates.py`。文件只从当前发布包加载，不接受用户路径，不回退到实例目录的旧 prompt/agents.md；缺失或无效时明确报错。发布直接更新系统规则，不再向账号复制功能 prompt。
 - 用户补充偏好唯一归 `config/userAgents.md`，`services/user_agents.py` 提供固定路径、UTF-8、32 KiB、原子写入和内容版本校验。`GlobalAgentChatService.instructions()` 在每次新运行及 Deferred 恢复时，沿 `AiAgentFactory` 的原生 instructions 加载系统规则和当前账号偏好；不增加 Agent loop。已核对 Pydantic AI 2.44.0 与[原生指令文档](https://ai.pydantic.dev/agents/#instructions)。用户偏好不替代系统权限、业务校验或本轮明确要求，注释大纲不注入模型。
 - `GET/POST /api/system-settings/user-agents` 经 `auth_config_facade` → `ConfigStore` → `user_agents` 读写当前账号文件；POST 必须携带 expected_revision，冲突返回 409。前端「系统设置 → AI 自定义指令」编辑此文件，功能绑定页维护模型及生成参数。
-- 主对话的 `user_agents_update` 仅在本轮用户明确要求记忆或更新偏好时提交追加或替换。工具绑定当前账号的 `ConfigStore`，用 [Pydantic AI 原生 Deferred 审批](https://pydantic.dev/docs/ai/tools-toolsets/deferred-tools/) 确认正文并冻结文件版本。它复用需本人确认的快照，完全授权模式也等待确认；设置页的并发编辑使旧审批失效。保存回执只返回本次规则和版本，开发过程不得追加业务规则或任务总结。
+- 主对话的 `user_agents_update` 仅在本轮用户明确要求记忆或更新偏好时提交追加或替换。工具绑定当前账号的 `ConfigStore`，用 [Pydantic AI 原生 Deferred 审批](https://pydantic.dev/docs/ai/tools-toolsets/deferred-tools/) 冻结正文与文件版本，快照标记为 `approval_tier="local"`（询问审批等待确认，自动审批与完全授权自动批准）；设置页的并发编辑仍使旧审批失效。保存回执只返回本次规则和版本，开发过程不得追加业务规则或任务总结。
 - `assets/account-defaults/userAgents.md` 只有注释过的编辑大纲，账号首次初始化以排他创建方式复制；存在的文件（包括空文件）不覆盖。实际 `config/userAgents.md` 不入 Git、不随发布写入。旧 app_config 的 ai_use_case_prompts 字段可读后丢弃，旧 prompt/agents.md 文件保留但不再执行；旧内容若需保留为偏好，由用户自行整理到新文件，不自动混入系统或用户指令。回归见 `tests/test_agent_instructions.py`、`test_user_agents.py`、账号 HTTP 及前端指令设置测试。
 - `erp_web/schemas/ai_page_context.py`：主对话页面背景的有界契约与中文指令渲染，只接受页面枚举和资源 ID。`vercel_ai_ui_service.py` 校验请求的 `page_context` 后写入原生消息 metadata，缺省表示本条消息不携带背景；客户端消息 metadata 仍被丢弃。`AgentRunStorage` 随用户输入更新背景，Factory 使用 Pydantic AI 原生动态 `instructions` 注入模型系统上下文，不创建独立系统消息历史或新 Agent loop；Deferred 恢复复用已保存快照，后续关闭开关会清除当前背景。
 - `front/src/stores/aiPageContext.ts`、`useAiPageContext.ts`：可见页面及编辑区域提供定位信息，输入框眼睛开关默认开启并在本机记住选择；普通发送和运行中追加消息均在发送瞬间复制背景。关闭编辑器、切换页面或 KeepAlive 停用时撤销该区域背景，页面背景不作为写权限，也不携带表单未保存值。
@@ -1438,7 +1438,7 @@ Mercado Libre 仍使用其独立的远端 domain discovery 关键字能力，不
   发布计划与库存证据保存选中仓库及其实际 Campaign，确认查询使用该 Campaign。
   合批不改变发布成功判定、手动重试与未知写入规则，不增加重启后续发。
 - `erp_web/facades/agent_tool_visibility.py` 在原生工具集的 `prepared` 阶段检查目标草稿已选、启用的 SKU。缺包装边长时，当前允许的商品读取、原图识别、运费区间试算与估算确认工具直接可见；无页面目标时从本轮真实的草稿读取或核价缺项回执定位。工具可见性不产生写入或授权。
-- 核价页或主对话可以发起包装外尺寸估算。`package_estimate_capabilities.py` 使用草稿已选 SKU 和商品版本，复用核价批处理比较区间端点，保留整组 SKU 共同选仓语义。端点报价只供估算比较。确认建议使用 Pydantic AI 原生审批，服务端快照的 `requires_user_confirmation` 标记让通用自动批准策略跳过需要人工核对的建议。确认后经 ProductStore 保存建议值和逐边依据，商品编辑及重采集按当前值保留适用标记。
+- 核价页或主对话可以发起包装外尺寸估算。`package_estimate_capabilities.py` 使用草稿已选 SKU 和商品版本，复用核价批处理比较区间端点，保留整组 SKU 共同选仓语义。端点报价只供估算比较。确认建议使用 Pydantic AI 原生审批，快照标记 `approval_tier="local"`（询问审批等待人工核对，自动审批与完全授权自动批准）。确认后经 ProductStore 保存建议值和逐边依据，商品编辑及重采集按当前值保留适用标记。
 - 前端 `ProductSkuEditor.vue` 维护商品事实，`DraftSkuPanel.vue` 负责草稿选品和覆盖，`actions/pricing.ts` 按 SKU × 目标调用现有核价引擎。包装资料或费用改变后必须重新应用售价。
 - `erp_web/product_model/sku_image_model.py`：SKU 图片资产引用与原图地址迁移的纯函数 owner。采集统一下载规格图并按来源去重；内部 `image_asset_id` 是唯一关联，草稿以同名覆盖字段单独选图。旧持久化 `image` 只在读取边界迁移，发布不再按 URL/路径匹配。
 - 前端 `SkuImagePicker.vue` 从素材池选图；商品素材池“关联 SKU”复用商品保存入口；草稿 V2 不提供配图入口。`replace_selected` 处理结果只替换当前草稿的相应 SKU 引用，换图不使核价失效。无调用方的 `set_sku` 素材标记 action 已删除。

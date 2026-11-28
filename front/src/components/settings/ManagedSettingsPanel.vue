@@ -1,9 +1,13 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, useId } from 'vue'
+import PageSaveButton from '@/components/layout/PageSaveButton.vue'
+import { usePageSaveAction, type PageSaveAction } from '@/composables/usePageSaveAction'
 import { fetchOneBoundQuota, restoreOneBoundKey, type OneBoundQuotaView } from '@/api/alibabaAuthorization'
 import { fetchManagedSettings, saveManagedSettings, type ManagedSettings } from '@/api/managedSettings'
 import { testApiConfig } from '@/api/workflow/settings'
 
+const formId = useId()
+const formEl = ref<HTMLFormElement | null>(null)
 const settings = ref<ManagedSettings | null>(null)
 const oneboundQuota = ref<OneBoundQuotaView | null>(null)
 const secrets = ref({ alibaba: '', alibaba_crossborder: '', onebound: '', crossborderbus: '' })
@@ -14,6 +18,13 @@ const applications = [
 const operation = ref<'load' | 'save' | 'test' | 'restore' | null>(null)
 const error = ref('')
 const notice = ref('')
+const saveAction = computed<PageSaveAction>(() => ({
+  label: operation.value === 'save' ? '保存中…' : '保存共享设置',
+  disabled: !settings.value || operation.value !== null,
+  form: formId,
+  submitForm: () => formEl.value?.requestSubmit(),
+}))
+const { hasHost } = usePageSaveAction(saveAction)
 
 async function loadOneBoundQuota() {
   try { oneboundQuota.value = await fetchOneBoundQuota() }
@@ -90,13 +101,16 @@ onMounted(load)
 </script>
 
 <template>
-  <form class="space-y-6" :aria-busy="operation !== null" @submit.prevent="save" @invalid.capture="showInvalidField" @input="notice = ''" @change="notice = ''">
-    <header class="sticky top-[var(--workflow-mobile-nav-height,0px)] z-10 space-y-2 border-b border-accent-200 bg-white py-2 dark:border-dark-700 dark:bg-dark-900">
+  <form :id="formId" ref="formEl" class="space-y-6" :aria-busy="operation !== null" @submit.prevent="save" @invalid.capture="showInvalidField" @input="notice = ''" @change="notice = ''">
+    <header
+      class="space-y-2 border-b border-accent-200 bg-white py-2 dark:border-dark-700 dark:bg-dark-900"
+      :class="hasHost ? '' : 'sticky top-[var(--workflow-mobile-nav-height,0px)] z-10'"
+    >
       <div class="flex flex-wrap items-center justify-between gap-3">
         <h3 class="font-semibold">管理员共享设置</h3>
         <div class="flex flex-wrap items-center gap-2">
           <button type="button" class="btn btn-outline" :disabled="operation !== null" @click="load">重新读取</button>
-          <button type="submit" class="btn btn-primary" :disabled="!settings || operation !== null">{{ operation === 'save' ? '保存中…' : '保存共享设置' }}</button>
+          <PageSaveButton v-if="!hasHost" :action="saveAction" />
         </div>
       </div>
       <p v-if="error" role="alert" class="text-sm text-red-600 dark:text-red-400">{{ error }}</p>

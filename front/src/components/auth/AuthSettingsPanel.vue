@@ -9,6 +9,8 @@ import ApiModelPicker from './ApiModelPicker.vue'
 import GeminiCanvasSettingsCard from './GeminiCanvasSettingsCard.vue'
 import { testAiModel } from '@/api/workflow/settings'
 import PageHeader from '@/components/layout/PageHeader.vue'
+import PageSaveButton from '@/components/layout/PageSaveButton.vue'
+import { providePageSaveAction, type PageSaveAction } from '@/composables/usePageSaveAction'
 import ProductResearchSettingsPanel from '@/components/auth/ProductResearchSettingsPanel.vue'
 import AlibabaSettingsPanel from '@/components/auth/AlibabaSettingsPanel.vue'
 import CrossborderBusSettingsPanel from '@/components/auth/CrossborderBusSettingsPanel.vue'
@@ -1917,11 +1919,45 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
   } catch (cause) { aiSettingsError.value = cause instanceof Error ? cause.message : '模型设置恢复失败，请重试。' }
   finally { restoringModelHandoff = '' }
 }, { flush: 'post', immediate: true })
+
+const { action: childSaveAction } = providePageSaveAction()
+const pageSaveAction = computed<PageSaveAction | null>(() => {
+  if (activeAuthSettingsTab.value === 'ai_models') {
+    return {
+      label: '保存 AI 设置',
+      disabled: aiControlsLocked.value,
+      onClick: () => saveAiSettings('models'),
+    }
+  }
+  if (activeAuthSettingsTab.value === 'ai_bindings') {
+    return {
+      label: '保存功能绑定',
+      disabled: aiControlsLocked.value,
+      testId: 'save-ai-bindings',
+      onClick: () => saveAiSettings('bindings'),
+    }
+  }
+  if (activeAuthSettingsTab.value === 'stores') {
+    return {
+      label: '保存当前平台授权',
+      disabled: props.loading,
+      onClick: () => emit('saveStore', selectedStorePayload()),
+    }
+  }
+  if (activeAuthSettingsTab.value === 'research' || activeAuthSettingsTab.value === 'crossborderbus') {
+    return childSaveAction.value
+  }
+  return null
+})
 </script>
 
 <template>
-  <div class="space-y-6">
-    <PageHeader title="授权配置" :description="activeAuthSettingsTabMeta.summary" />
+  <div class="space-y-3">
+    <PageHeader sticky title="授权配置" :description="activeAuthSettingsTabMeta.summary">
+      <template v-if="pageSaveAction" #actions>
+        <PageSaveButton :action="pageSaveAction" />
+      </template>
+    </PageHeader>
     <div v-if="capabilityProbeDialog.open" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm">
       <div class="w-full max-w-3xl rounded-lg border border-accent-200 bg-white p-4 shadow-xl dark:border-dark-700 dark:bg-dark-900" role="dialog" aria-modal="true" :aria-label="`测试 ${capabilityProbeLabel}`" data-testid="capability-probe-dialog">
         <div class="flex flex-wrap items-start justify-between gap-3">
@@ -1974,7 +2010,6 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
               <button class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="addAiModel">添加模型</button>
               <button v-desktop="!selectedAiModelIsApi" class="btn btn-outline py-1.5 text-sm" type="button" :disabled="aiControlsLocked || !selectedAiModel || selectedFixedCanvas || localModelBlocked" @click="duplicateSelectedAiModel">复制当前模型</button>
               <button v-desktop="!selectedAiModelIsApi" class="btn btn-outline py-1.5 text-sm text-rose-700" type="button" :disabled="aiControlsLocked || selectedSystemModel || selectedFixedCanvas || localModelBlocked || aiModels.length <= 1" @click="removeSelectedAiModel">删除当前模型</button>
-              <button class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="saveAiSettings('models')">保存 AI 设置</button>
             </div>
           </div>
 
@@ -2223,14 +2258,12 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
           </div>
         </section>
 
-        <section v-show="activeAuthSettingsTab === 'ai_bindings'" class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
-          <div class="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h3 class="font-semibold text-accent-950 dark:text-white">功能绑定</h3>
-              <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">只需配置默认通用模型与图片翻译/重绘模型；文本与类目等子功能默认继承通用模型，按需在下方高级区单独覆盖。</p>
-            </div>
-            <button data-testid="save-ai-bindings" class="btn btn-primary py-1.5 text-sm" type="button" :disabled="aiControlsLocked" @click="saveAiSettings('bindings')">保存功能绑定</button>
+        <section v-show="activeAuthSettingsTab === 'ai_bindings'" data-testid="ai-bindings-section" class="rounded-lg border border-accent-200 bg-accent-50 p-4 dark:border-dark-700 dark:bg-dark-950/70">
+          <div>
+            <h3 class="font-semibold text-accent-950 dark:text-white">功能绑定</h3>
+            <p class="mt-1 text-sm text-accent-500 dark:text-accent-400">只需配置默认通用模型与图片翻译/重绘模型；文本与类目等子功能默认继承通用模型，按需在下方高级区单独覆盖。</p>
           </div>
+          <p v-if="aiSettingsError" role="alert" class="mt-3 text-sm text-rose-700 dark:text-rose-300">{{ aiSettingsError }}</p>
           <template v-if="bindableUseCases.length">
             <!-- 主视图：仅突出 2 个核心槽位 -->
             <div v-if="primaryBindableUseCases.length" class="mt-4 grid gap-3 xl:grid-cols-2" data-testid="ai-bindings-primary">
@@ -2534,7 +2567,6 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
               <select v-model="selectedStorePlatform" data-testid="store-platform-select" class="input w-64">
                 <option v-for="platform in storePlatforms" :key="platform.key" :value="platform.key">{{ platform.label }}</option>
               </select>
-              <button class="btn btn-primary" :disabled="props.loading" @click="emit('saveStore', selectedStorePayload())">保存当前平台授权</button>
             </div>
           </div>
 
@@ -2725,7 +2757,7 @@ watch([receivedDesktopHandoff, () => props.modelsReading, () => aiModels.value.l
         </template>
 
         <section v-show="activeAuthSettingsTab === 'research'">
-          <ProductResearchSettingsPanel embedded />
+          <ProductResearchSettingsPanel embedded :active="activeAuthSettingsTab === 'research'" />
         </section>
         <CrossborderBusSettingsPanel v-if="activeAuthSettingsTab === 'crossborderbus'" />
       </div>

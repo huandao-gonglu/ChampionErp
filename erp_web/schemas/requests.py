@@ -267,7 +267,7 @@ REQUEST_CONTRACTS: dict[str, RequestContract] = {
     "/api/online-products/close": _contract(fields={"job_id": STRING, "expected_updated_at": STRING, "acknowledge": BOOLEAN}, required=("job_id", "expected_updated_at", "acknowledge")),
     "/api/online-products/retry": _contract(fields={"job_id": STRING, "idempotency_key": STRING}, required=("job_id", "idempotency_key")),
     "/api/ai/approval-mode": _contract(
-        fields={"mode": FieldRule("enum", choices=frozenset({"ask", "full"}))},
+        fields={"mode": FieldRule("enum", choices=frozenset({"ask", "auto", "full"}))},
         required=("mode",),
     ),
     "/api/ai-config/save": _EMPTY,

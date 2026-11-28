@@ -31,10 +31,10 @@ const tabs: Array<{ key: DraftWorkspaceTab; label: string; summary: string }> = 
 </script>
 
 <template>
-  <section class="flex min-w-0 flex-col rounded-2xl border border-accent-200/90 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-900">
-    <!-- 吸顶工作台顶栏：返回导航 + 标题 + 操作 + 6 分区标签 -->
-    <div class="draft-workspace-sticky border-b border-accent-200/90 bg-white/95 px-4 pt-3.5 backdrop-blur-sm dark:border-dark-700 dark:bg-dark-900/95 sm:px-5">
-      <header class="flex flex-wrap items-center justify-between gap-3">
+  <section class="flex min-w-0 flex-col space-y-4">
+    <!-- 吸顶工作台顶栏：与页面级 PageHeader 对齐同一右上角坐标，保存按钮固定在最右侧 -->
+    <div class="page-header-sticky border-b border-accent-200/90 !pb-0 dark:border-dark-700">
+      <header class="flex flex-wrap items-start justify-between gap-3">
         <div class="flex min-w-0 flex-1 basis-64 items-center gap-3">
           <button
             type="button"
@@ -53,8 +53,8 @@ const tabs: Array<{ key: DraftWorkspaceTab; label: string; summary: string }> = 
             </p>
           </div>
         </div>
-        <div class="flex shrink-0 flex-wrap items-center gap-2">
-          <slot name="actions" />
+        <div class="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <slot name="secondary-actions" />
           <button
             v-if="!props.syncMessage"
             type="button"
@@ -64,6 +64,7 @@ const tabs: Array<{ key: DraftWorkspaceTab; label: string; summary: string }> = 
           >
             <PhArrowsClockwise :size="15" :class="{ 'animate-spin': props.refreshing }" aria-hidden="true" />{{ props.refreshing ? '正在加载…' : '重新加载最新数据' }}
           </button>
+          <slot name="actions" />
         </div>
       </header>
 
@@ -108,7 +109,7 @@ const tabs: Array<{ key: DraftWorkspaceTab; label: string; summary: string }> = 
       </nav>
     </div>
 
-    <div :key="props.activeTab" role="tabpanel" class="min-w-0 p-4 sm:p-5">
+    <div :key="props.activeTab" role="tabpanel" class="min-w-0 rounded-2xl border border-accent-200/90 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-900 sm:p-5">
       <div :inert="props.editingDisabled && props.activeTab !== 'images' ? true : undefined">
         <slot :name="props.activeTab" />
       </div>
@@ -117,13 +118,6 @@ const tabs: Array<{ key: DraftWorkspaceTab; label: string; summary: string }> = 
 </template>
 
 <style scoped>
-.draft-workspace-sticky {
-  position: sticky;
-  inset-block-start: var(--workflow-mobile-nav-height, 0px);
-  z-index: 20;
-  border-top-left-radius: 1rem;
-  border-top-right-radius: 1rem;
-}
 .draft-workspace-tab {
   @apply shrink-0 whitespace-nowrap border-b-2 border-transparent px-3.5 py-2.5 text-xs font-medium text-accent-600 transition hover:text-accent-950 dark:text-accent-300 dark:hover:text-white;
 }

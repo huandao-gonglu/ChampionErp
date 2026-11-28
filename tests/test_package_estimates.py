@@ -100,7 +100,7 @@ def proposal(app, draft_id):
 
 
 @pytest.mark.parametrize("decision", ["approve", "deny", "stale"])
-def test_full_authorization_still_waits_for_package_review(tmp_path, decision):
+def test_ask_mode_waits_for_package_review(tmp_path, decision):
     app, draft_id = seed_draft()
     original, args = proposal(app, draft_id)
     read = lambda: app.db.load_product_model(original["product_id"])
@@ -113,7 +113,7 @@ def test_full_authorization_still_waits_for_package_review(tmp_path, decision):
             yield {0: DeltaToolCall(name=CONFIRM, json_args=json.dumps(args), tool_call_id="estimate")}
 
     ui = service(tmp_path, FunctionModel(stream_function=model), build_global_chat_toolset(app))
-    ui.chat_service.approval_mode_reader = lambda: "full"
+    ui.chat_service.approval_mode_reader = lambda: "ask"
     asyncio.run(ui.prepare_run(body("估算包装", target_draft_ids=[draft_id])).stream(lambda _: None))
     assert read() == original
     part, = [p for m in ui.dump_ui_messages(CONVERSATION)["messages"] for p in m["parts"] if p.get("state") == "approval-requested"]
@@ -146,6 +146,31 @@ def test_full_authorization_still_waits_for_package_review(tmp_path, decision):
     app.products.update_product_sku_facts({"product_id": saved["product_id"], "expected_updated_at": saved["updated_at"],
                                           "changes": [{"sku_id": "sku-0", "package_dimensions": {"length_cm": 30}}]})
     assert "package_estimates" not in read()["sku_items"][0]
+
+
+@pytest.mark.parametrize("mode", ["auto", "full"])
+def test_auto_and_full_modes_auto_approve_package_estimates(tmp_path, mode):
+    app, draft_id = seed_draft()
+    original, args = proposal(app, draft_id)
+    read = lambda: app.db.load_product_model(original["product_id"])
+
+    @discovering_tools(CONFIRM)
+    async def model(messages, info):
+        if any(isinstance(part, ToolReturnPart) and part.tool_name == CONFIRM for msg in messages for part in msg.parts):
+            yield "包装尺寸估算已自动保存。"
+        else:
+            yield {0: DeltaToolCall(name=CONFIRM, json_args=json.dumps(args), tool_call_id="estimate")}
+
+    ui = service(tmp_path, FunctionModel(stream_function=model), build_global_chat_toolset(app))
+    ui.chat_service.approval_mode_reader = lambda: mode
+    asyncio.run(ui.prepare_run(body("估算包装", target_draft_ids=[draft_id])).stream(lambda _: None))
+    pending = [p for m in ui.dump_ui_messages(CONVERSATION)["messages"] for p in m["parts"] if p.get("state") == "approval-requested"]
+    assert pending == []
+    saved = read()
+    row = saved["sku_items"][0]
+    assert row["package_dimensions"] == {**original["sku_items"][0]["package_dimensions"], "length_cm": "32.0"}
+    assert row["package_estimates"]["length_cm"] == {**args["estimates"][0]["dimensions"]["length_cm"], "basis": args["estimates"][0]["basis"]}
+    assert not app.products.draft_record(draft_id)["sku_items"][0]["pricing"]["applied"]
 
 
 def test_estimate_range_boundaries_and_invalid_inputs():

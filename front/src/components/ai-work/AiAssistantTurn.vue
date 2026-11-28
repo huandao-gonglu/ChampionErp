@@ -4,7 +4,7 @@ import { PhCaretRight, PhCheck, PhCopy, PhGitBranch } from '@phosphor-icons/vue'
 import type { AiTurnTiming, AiUiPart, BusinessWriteReceipt, CodeProgressSnapshot, PendingToolCall } from '@/types/aiWork'
 import {
   aiToolName,
-  aiToolStatus,
+  displayToolStatus,
   fatalModelErrorInfo,
   isAiToolPart,
   presentAssistantParts,
@@ -67,7 +67,7 @@ watch([timeline, () => display.value.live], ([entries, live]) => {
   const current = Date.now()
   for (const entry of entries) {
     if (!isAiToolPart(entry.part)) continue
-    const st = aiToolStatus(entry.part, entry.pendingKind, true)
+    const st = displayToolStatus(entry, true)
     if (['preparing', 'waiting', 'running'].includes(st)) {
       next[entry.key] = activeStepStarts.value[entry.key] ?? current
     }
@@ -87,7 +87,7 @@ const liveStepBadge = computed(() => {
   if (waitingForUser.value) return ''
   const tools = timeline.value.filter(entry => isAiToolPart(entry.part))
   if (tools.length < 2) return ''
-  const done = tools.filter(entry => !['preparing', 'waiting', 'running', 'approval', 'input'].includes(aiToolStatus(entry.part, entry.pendingKind, true))).length
+  const done = tools.filter(entry => !['preparing', 'waiting', 'running', 'approval', 'input'].includes(displayToolStatus(entry, true))).length
   return `${Math.min(done + 1, tools.length)}/${tools.length}`
 })
 const liveSplit = computed(() => splitLiveTimeline(timeline.value))
@@ -235,6 +235,7 @@ const deerMotion = computed(() => {
             :key="entry.key"
             :part="entry.part"
             :pending-kind="entry.pendingKind"
+            :status-override="entry.statusOverride"
             :progress="entry.progress"
             :code-progress="entryCodeProgress(entry)"
             :write-receipts="writeReceipts"
@@ -251,6 +252,7 @@ const deerMotion = computed(() => {
         <AiMessagePart
           :part="entry.part"
           :pending-kind="entry.pendingKind"
+          :status-override="entry.statusOverride"
           :progress="entry.progress"
           :code-progress="entryCodeProgress(entry)"
           :write-receipts="writeReceipts"
@@ -264,7 +266,7 @@ const deerMotion = computed(() => {
         class="flex min-w-0 items-center gap-2 pt-1.5 text-xs text-slate-500 dark:text-accent-400"
         data-testid="ai-turn-progress"
       >
-        <AiRunningDeer :gait="deerMotion.gait" :pace="deerMotion.pace" size="sm" />
+        <AiRunningDeer :gait="deerMotion.gait" :pace="deerMotion.pace" :question="waitingForUser" size="sm" />
         <span
           class="min-w-0 truncate"
           :class="waitingForUser ? 'font-medium text-amber-700 dark:text-amber-300' : 'ai-shimmer-text font-medium'"
@@ -300,6 +302,7 @@ const deerMotion = computed(() => {
             :key="entry.key"
             :part="entry.part"
             :pending-kind="entry.pendingKind"
+            :status-override="entry.statusOverride"
             :write-receipts="writeReceipts"
             :active="active"
             variant="process"
@@ -314,6 +317,7 @@ const deerMotion = computed(() => {
           :key="entry.key"
           :part="entry.part"
           :pending-kind="entry.pendingKind"
+          :status-override="entry.statusOverride"
           :write-receipts="writeReceipts"
           :active="active"
         />

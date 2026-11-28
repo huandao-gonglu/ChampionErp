@@ -1,9 +1,11 @@
 import { apiClient } from './client'
 
-export type AiToolApprovalMode = 'ask' | 'full'
+export type AiToolApprovalMode = 'ask' | 'auto' | 'full'
 
 function readMode(value: unknown): AiToolApprovalMode {
-  if (value !== 'ask' && value !== 'full') throw new Error('服务端未返回有效的审批模式，请刷新重试')
+  if (value !== 'ask' && value !== 'auto' && value !== 'full') {
+    throw new Error('服务端未返回有效的审批模式，请刷新重试')
+  }
   return value
 }
 

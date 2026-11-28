@@ -311,6 +311,29 @@ describe('AiMessagePart', () => {
     expect(wrapper.findAll('[role="alert"]').some(alert => alert.text().includes(errorText))).toBe(false)
   })
 
+  it('未恢复的 run_code 运行时异常若有失败子回执，优先展示真实业务错误原因', () => {
+    const wrapper = mount(AiMessagePart, {
+      props: {
+        part: {
+          type: 'tool-run_code',
+          toolCallId: 'rc-fail',
+          state: 'output-error',
+          input: { code: 'await draft_changes_apply(draft_id="d1")' },
+          errorText: 'Runtime error:\nTraceback (most recent call last):\nIndexError: list index out of range',
+        } as unknown as AiUiPart,
+        writeReceipts: [
+          {
+            tool_call_id: 'rc-fail__1',
+            tool_name: 'draft_changes_apply',
+            output: { ok: false, error: { message: '属性 14871214 不能直接写入中文' } },
+          },
+        ],
+      },
+    })
+    expect(wrapper.get('[role="alert"]').text()).toContain('属性 14871214 不能直接写入中文')
+    expect(wrapper.text()).not.toContain('此次操作未成功')
+  })
+
   it('历史导出的未返回工具不能被断言为等待审批', () => {
     const pending = mountPart({ type: 'tool-category_match', state: 'approval-requested' })
     expect(pending.text()).toContain('结果未确认')
